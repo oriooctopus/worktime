@@ -1,5 +1,5 @@
 """Tests for skills/indicator-dot/indicator-dot.py."""
-import importlib.util, os, sys
+import importlib.util, json, os, sys
 from datetime import datetime
 
 import pytest
@@ -211,3 +211,35 @@ def test_report_probe_stays_plain():
               "mode": "focused", "focus_pct": None, "periods": []}
     _, lines = ind.report_probe(status)
     assert all("\033" not in l for l in lines)
+
+
+# --- the vault lives at a different path on each machine ---
+
+def test_env_var_wins(monkeypatch, tmp_path):
+    assert ind.dashboard_dir(env={"WORKTIME_DASHBOARD": str(tmp_path)}) == str(tmp_path)
+
+
+def test_profile_dashboard_dir_is_used(tmp_path):
+    prof = tmp_path / "profile.json"
+    prof.write_text(json.dumps({"dashboard_dir": "/somewhere/Dashboard"}))
+    assert ind.dashboard_dir(env={}, profile_path=str(prof)) == "/somewhere/Dashboard"
+
+
+def test_falls_back_to_whichever_location_exists(tmp_path, monkeypatch):
+    """The Mac keeps the vault under Documents/Main, this box under
+    ~/obsidian-vault. Hardcoding either one breaks the other machine."""
+    real = tmp_path / "obsidian-vault" / "Dashboard"
+    real.mkdir(parents=True)
+    monkeypatch.setattr(ind, "VAULT_DASHBOARDS",
+                        ["/definitely/not/here", str(real)])
+    assert ind.dashboard_dir(env={}, profile_path=str(tmp_path / "none.json")) == str(real)
+
+
+def test_broken_profile_does_not_stop_resolution(tmp_path):
+    prof = tmp_path / "profile.json"; prof.write_text("{not json")
+    assert ind.dashboard_dir(env={}, profile_path=str(prof))
+
+
+def test_returns_a_named_path_even_when_nothing_exists(tmp_path, monkeypatch):
+    monkeypatch.setattr(ind, "VAULT_DASHBOARDS", ["/nope/a", "/nope/b"])
+    assert ind.dashboard_dir(env={}, profile_path=str(tmp_path / "none.json")) == "/nope/a"

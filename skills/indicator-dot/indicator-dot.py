@@ -26,10 +26,43 @@ except ImportError:  # Python < 3.9
 
 # The probe that owns the working/not-working decision.
 PROBE = os.path.expanduser("~/.claude/bin/worktime-probe.py")
+# The same vault has a different path on each machine: the Mac (where the probe
+# runs) keeps it under Documents/Main, the Linux box under ~/obsidian-vault.
+# Hardcoding either one breaks the other, so resolve at import.
+VAULT_DASHBOARDS = ["~/Documents/Main/Dashboard", "~/obsidian-vault/Dashboard"]
+
+
+def dashboard_dir(env=None, profile_path=None):
+    """First dashboard directory that actually exists on this machine.
+
+    Order: WORKTIME_DASHBOARD env, profile config, then the known locations.
+    Falls back to the first candidate so error messages name a real path.
+    """
+    env = os.environ if env is None else env
+    if env.get("WORKTIME_DASHBOARD"):
+        return os.path.expanduser(env["WORKTIME_DASHBOARD"])
+    path = profile_path if profile_path is not None else os.path.expanduser(
+        "~/.config/worktime/profile.json")
+    if os.path.exists(path):
+        try:
+            with open(path) as f:
+                configured = json.load(f).get("dashboard_dir")
+            if configured:
+                return os.path.expanduser(configured)
+        except (OSError, ValueError):
+            pass  # a broken profile must not stop the status from rendering
+    for candidate in VAULT_DASHBOARDS:
+        expanded = os.path.expanduser(candidate)
+        if os.path.isdir(expanded):
+            return expanded
+    return os.path.expanduser(VAULT_DASHBOARDS[0])
+
+
+DASHBOARD = dashboard_dir()
 # Where the probe writes daily snapshots (used for --at historical lookups).
-SNAPSHOT_DIR = os.path.expanduser("~/Documents/Main/Dashboard/worktime")
+SNAPSHOT_DIR = os.path.join(DASHBOARD, "worktime")
 # Calendar file the probe reads for meeting-based presence.
-CALENDAR = os.path.expanduser("~/Documents/Main/Dashboard/calendar-today.md")
+CALENDAR = os.path.join(DASHBOARD, "calendar-today.md")
 # The probe refuses this file once it is this old; mirror that cutoff.
 MAX_AGE_HOURS = 6
 
