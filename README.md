@@ -78,6 +78,16 @@ Install it with
 Exit code is 0 green, 1 amber, 2 unusable, so it composes in scripts. Colour is
 used only when stdout is a terminal; piping or redirecting gives plain text.
 
+## Web view
+
+`web/server.py` serves the same status as a page, with today's timeline:
+current dot state, what is covering the current moment, data freshness, and
+every tracked stretch. Dependency-free stdlib server on port 8313, installed as
+the `worktime-web` systemd unit and bound to 0.0.0.0 for the tailnet.
+
+It imports `indicator-dot.py` rather than reimplementing the rule, so the page,
+the `dot` command and the skill cannot drift apart.
+
 ## Not yet in this repo
 
 `worktime-probe.py` and the menu bar app live on the Mac and are not versioned

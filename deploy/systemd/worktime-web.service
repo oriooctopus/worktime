@@ -1,0 +1,12 @@
+[Unit]
+Description=Worktime status web UI (port 8313)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 %h/coding/worktime/web/server.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
