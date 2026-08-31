@@ -56,6 +56,9 @@ td.m{text-align:right;color:var(--dim);width:64px}
                   margin-right:5px;vertical-align:-1px}
 .key .m::before{background:var(--green)}.key .b::before{background:#3b82f6}
 .key .p::before{background:var(--dim);opacity:.45}
+tr.on td{color:var(--green)}
+em{font-style:normal;font-size:11px;text-transform:uppercase;letter-spacing:.06em;
+   color:var(--green);border:1px solid var(--green);border-radius:3px;padding:0 4px;margin-left:6px}
 footer{color:var(--dim);font-size:12px;margin-top:30px}
 </style></head><body><main>
 <div class="status"><div class="dot" id="dot"></div><h1 id="head">…</h1></div>
@@ -66,7 +69,7 @@ footer{color:var(--dim);font-size:12px;margin-top:30px}
 <h2>Stretches</h2><table id="rows"></table>
 <footer id="foot"></footer></main><script>
 const S=6*60,E=22*60, mins=t=>{const[a,b]=t.split(":");return a*60|0,+a*60+ +b};
-function kind(r){return r[3]!=="work"?"personal":r[2].includes("browsing")?"browsing":"meeting"}
+function kind(r){return r.source!=="work"?"personal":r.label.includes("browsing")?"browsing":"meeting"}
 async function tick(){
   let d; try{d=await(await fetch("/api/status",{cache:"no-store"})).json()}catch(e){return}
   const st=d.state;
@@ -75,19 +78,46 @@ async function tick(){
   sub.innerHTML=d.detail.map(x=>`<div>${x}</div>`).join("");
   tl.innerHTML="";
   for(const r of d.rows){
-    const a=Math.max(mins(r[0]),S), b=Math.min(mins(r[1]),E); if(b<=a)continue;
+    const a=Math.max(mins(r.start),S), b=Math.min(mins(r.shown_end),E); if(b<=a)continue;
     const el=document.createElement("i"); el.className=kind(r);
-    el.style.left=((a-S)/(E-S)*100)+"%"; el.style.width=((b-a)/(E-S)*100)+"%";
-    el.title=`${r[0]}–${r[1]} ${r[2]}`; tl.appendChild(el);
+    el.style.left=((a-S)/(E-S)*100)+"%"; el.style.width=(Math.max(b-a,1)/(E-S)*100)+"%";
+    el.title=`${r.start}–${r.shown_end} ${r.label}`; tl.appendChild(el);
   }
   const n=document.createElement("div"); n.className="now";
   n.style.left=((mins(d.now)-S)/(E-S)*100)+"%"; tl.appendChild(n);
-  rows.innerHTML=d.rows.map(r=>`<tr><td class="t">${r[0]}–${r[1]}</td><td>${r[2]}</td>
-    <td class="m">${mins(r[1])-mins(r[0])}m</td></tr>`).join("");
+  rows.innerHTML=d.rows.length? d.rows.map(r=>`<tr${r.ongoing?' class="on"':""}>
+    <td class="t">${r.start}–${r.shown_end}</td>
+    <td>${r.label}${r.ongoing?' <em>now</em>':""}</td>
+    <td class="m">${mins(r.shown_end)-mins(r.start)}m</td></tr>`).join("")
+    : `<tr><td class="t">—</td><td>nothing tracked yet today</td><td class="m"></td></tr>`;
   foot.textContent=`${d.generated?"generated "+d.generated:""} · refreshed ${d.now}`;
 }
 tick(); setInterval(tick,15000);
 </script></body></html>"""
+
+
+def visible_rows(rows, now_min):
+    """Rows that have actually happened, most recent first.
+
+    A row starting later today is a plan, not a record -- showing it invites the
+    same mistake as a mark that claims time before it is earned. A row in
+    progress is clipped to now for the same reason: a 16:30-17:30 meeting at
+    17:00 has produced 30 minutes, not 60.
+    """
+    out = []
+    for start, end, label, source in rows:
+        if minutes(start) > now_min:
+            continue
+        ongoing = minutes(end) > now_min
+        out.append({"start": start, "end": end, "label": label, "source": source,
+                    "ongoing": ongoing,
+                    "shown_end": f"{now_min // 60:02d}:{now_min % 60:02d}" if ongoing else end})
+    out.sort(key=lambda r: (minutes(r["start"]), minutes(r["end"])), reverse=True)
+    return out
+
+
+def minutes(hhmm):
+    return ind.minutes(hhmm)
 
 
 def status():
@@ -101,9 +131,11 @@ def status():
     age = (datetime.now().timestamp() - os.path.getmtime(path)) / 3600
     code, lines = ind.report(text, now, age)
     rows, generated = ind.parse(text)
+    now_min = now.hour * 60 + now.minute
     return {"state": {0: "green", 1: "amber"}.get(code, "red"),
             "headline": lines[0].split(" - ", 1)[-1] if " - " in lines[0] else lines[0],
-            "detail": [l.strip() for l in lines[1:]], "rows": rows,
+            "detail": [l.strip() for l in lines[1:]],
+            "rows": visible_rows(rows, now_min),
             "generated": generated, "now": now.strftime("%H:%M")}
 
 
