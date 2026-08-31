@@ -90,6 +90,28 @@ def report(text, now, age_hours=None):
     return code, out
 
 
+# Colour only when a human is looking; piping or redirecting stays plain so the
+# output can be parsed or logged.
+COLOURS = {"GREEN": "\033[32m", "AMBER": "\033[33m", "STALE": "\033[31m",
+           "UNKNOWN": "\033[31m"}
+RESET = "\033[0m"
+DIM = "\033[2m"
+
+
+def colourise(lines):
+    out = []
+    for i, line in enumerate(lines):
+        key = next((k for k in COLOURS if line.lstrip().startswith(k)), None)
+        if key:
+            glyph = "*" if key in ("STALE", "UNKNOWN") else "\u25cf"
+            out.append(f"{COLOURS[key]}{glyph} {line}{RESET}")
+        elif i:
+            out.append(f"{DIM}{line}{RESET}")
+        else:
+            out.append(line)
+    return out
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--file", default=CALENDAR)
@@ -106,6 +128,8 @@ def main():
         now = now.replace(hour=int(h), minute=int(m))
     age = (datetime.now().timestamp() - os.path.getmtime(a.file)) / 3600
     code, lines = report(text, now, age)
+    if sys.stdout.isatty():
+        lines = colourise(lines)
     print("\n".join(lines))
     sys.exit(code)
 

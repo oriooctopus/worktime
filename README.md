@@ -66,6 +66,18 @@ actually went.
 
 It deliberately never says `gap_sec`, `dwell` or `blocks` to the user.
 
+## Checking the current state from a terminal
+
+```
+dot            # green/amber right now, with what is covering it
+dot --at 13:20 # any earlier moment today
+```
+
+Install it with
+`ln -s "$PWD/skills/indicator-dot/indicator-dot.py" ~/.local/bin/dot`.
+Exit code is 0 green, 1 amber, 2 unusable, so it composes in scripts. Colour is
+used only when stdout is a terminal; piping or redirecting gives plain text.
+
 ## Not yet in this repo
 
 `worktime-probe.py` and the menu bar app live on the Mac and are not versioned

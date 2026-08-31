@@ -88,3 +88,25 @@ def test_stale_data_is_flagged_and_downgraded():
 def test_no_rows_is_unknown():
     code, lines = ind.report("---\ngenerated: x\n---\n", at(16, 48))
     assert code == 2 and "UNKNOWN" in lines[0]
+
+
+# --- terminal colouring (only when a human is looking) ---
+
+def test_colourise_marks_green_and_dims_context():
+    out = ind.colourise(["GREEN - working: x", "  data 1 min old"])
+    assert out[0].startswith(ind.COLOURS["GREEN"]) and out[0].endswith(ind.RESET)
+    assert out[1].startswith(ind.DIM)
+
+
+def test_colourise_uses_a_different_colour_for_amber():
+    assert ind.colourise(["AMBER - nope"])[0].startswith(ind.COLOURS["AMBER"])
+
+
+def test_colourise_flags_stale_lines_even_when_indented():
+    out = ind.colourise(["GREEN - working: x", "  STALE: data 9.0h old"])
+    assert ind.COLOURS["STALE"] in out[1]
+
+
+def test_report_itself_stays_plain_so_output_can_be_parsed():
+    _, lines = ind.report(DOC, at(16, 48), age_hours=0.1)
+    assert all("\033" not in l for l in lines)
