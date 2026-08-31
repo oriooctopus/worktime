@@ -207,3 +207,33 @@ def test_config_gap_sec_actually_splits_blocks():
     wide = cwb.build_blocks(visits, dict(CFG, gap_sec=720, min_block_sec=10))
     tight = cwb.build_blocks(visits, dict(CFG, gap_sec=180, min_block_sec=10))
     assert len(wide) == 1 and len(tight) == 2
+
+
+# --- chrome history location ---
+
+def test_history_path_uses_the_profile_when_set(tmp_path):
+    f = tmp_path / "profile.json"
+    f.write_text(json.dumps({"chrome_history_path": "/custom/History"}))
+    assert cwb.chrome_history_path(str(f)) == "/custom/History"
+
+
+def test_history_path_expands_a_tilde(tmp_path):
+    f = tmp_path / "profile.json"
+    f.write_text(json.dumps({"chrome_history_path": "~/Chrome/History"}))
+    assert cwb.chrome_history_path(str(f)).startswith(os.path.expanduser("~"))
+
+
+def test_history_path_falls_back_to_a_platform_default(tmp_path):
+    got = cwb.chrome_history_path(str(tmp_path / "nope.json"))
+    assert got in cwb.CHROME_HISTORY_DEFAULTS.values()
+
+
+def test_macos_default_points_at_the_real_chrome_location():
+    assert cwb.CHROME_HISTORY_DEFAULTS["macos"].endswith(
+        "Library/Application Support/Google/Chrome/Default/History")
+
+
+def test_malformed_profile_raises(tmp_path):
+    f = tmp_path / "profile.json"; f.write_text("{not json")
+    with pytest.raises(cwb.WorkBlocksError):
+        cwb.chrome_history_path(str(f))

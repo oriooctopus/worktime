@@ -798,3 +798,41 @@ def test_work_blocks_sort_in_among_real_events(tokens_file, tmp_path):
     with open(output_path) as f:
         lines = [l for l in f.read().splitlines() if l.startswith("| 1")]
     assert lines[0].startswith("| 12:00") and "13:00" in lines[1]
+
+
+# --- per-person profile (makes the pipeline usable by someone other than its author) ---
+
+def test_missing_profile_falls_back_to_defaults(tmp_path):
+    p = ce.load_profile(str(tmp_path / "nope.json"))
+    assert p["timezone"] and p["personal_account"] and p["work_calendar_id"]
+
+
+def test_profile_overrides_identity(tmp_path):
+    f = tmp_path / "profile.json"
+    f.write_text(json.dumps({"timezone": "Europe/London",
+                             "personal_account": "her@gmail.com",
+                             "work_calendar_id": "her@work.com"}))
+    p = ce.load_profile(str(f))
+    assert p == {"timezone": "Europe/London", "personal_account": "her@gmail.com",
+                 "work_calendar_id": "her@work.com"}
+
+
+def test_partial_profile_keeps_defaults_for_the_rest(tmp_path):
+    f = tmp_path / "profile.json"
+    f.write_text(json.dumps({"timezone": "Europe/London"}))
+    p = ce.load_profile(str(f))
+    assert p["timezone"] == "Europe/London" and p["personal_account"]
+
+
+def test_profile_with_a_typo_key_raises(tmp_path):
+    """A silently ignored key means her answer never took effect."""
+    f = tmp_path / "profile.json"
+    f.write_text(json.dumps({"timezon": "Europe/London"}))
+    with pytest.raises(ce.CalendarExportError):
+        ce.load_profile(str(f))
+
+
+def test_malformed_profile_raises(tmp_path):
+    f = tmp_path / "profile.json"; f.write_text("{not json")
+    with pytest.raises(ce.CalendarExportError):
+        ce.load_profile(str(f))

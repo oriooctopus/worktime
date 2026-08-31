@@ -54,7 +54,39 @@ try:
 except ImportError:  # Python < 3.9 (this box: 3.8.10)
     from backports.zoneinfo import ZoneInfo
 
+PROFILE_PATH = os.path.expanduser("~/.config/worktime/profile.json")
+
+
+def load_profile(path=None):
+    """Per-person identity: timezone, which accounts are personal vs work.
+
+    Hardcoding these made the pipeline single-user. A missing file keeps the
+    original author's values so an existing install does not break on upgrade.
+    """
+    path = path if path is not None else PROFILE_PATH
+    defaults = {"timezone": "America/New_York",
+                "personal_account": "oliverullman@gmail.com",
+                "work_calendar_id": "oliver.ullman@rubrik.com"}
+    if not os.path.exists(path):
+        return defaults
+    try:
+        with open(path) as f:
+            loaded = json.load(f)
+    except (OSError, ValueError) as e:
+        raise CalendarExportError(f"profile {path} is unreadable: {e}")
+    unknown = set(loaded) - set(defaults) - {"_comment", "chrome_history_path"}
+    if unknown:
+        raise CalendarExportError(f"profile {path}: unknown key(s) {sorted(unknown)}")
+    return {**defaults, **{k: v for k, v in loaded.items() if k in defaults}}
+
+
+_PROFILE = None
 TZ_NAME = "America/New_York"
+try:
+    _PROFILE = load_profile()
+    TZ_NAME = _PROFILE["timezone"]
+except Exception:  # a broken profile must not stop the module importing; run() re-reads it
+    _PROFILE = None
 NY_TZ = ZoneInfo(TZ_NAME)
 
 TOKENS_PATH = os.path.expanduser("~/.claude/tokens.env")
@@ -62,8 +94,8 @@ OUTPUT_PATH = os.path.expanduser("~/obsidian-vault/Dashboard/calendar-today.md")
 OVERRIDES_PATH = os.path.expanduser("~/.config/calendar-export/overrides.json")
 WORK_BLOCKS_PATH = os.path.expanduser("~/.cache/activity-export/chrome-work-blocks.json")
 BROWSING_LABEL = "Working (browsing)"
-PERSONAL_ACCOUNT = "oliverullman@gmail.com"
-WORK_CALENDAR_ID = "oliver.ullman@rubrik.com"
+PERSONAL_ACCOUNT = (_PROFILE or {}).get("personal_account", "oliverullman@gmail.com")
+WORK_CALENDAR_ID = (_PROFILE or {}).get("work_calendar_id", "oliver.ullman@rubrik.com")
 # "My calendars" on the personal account are exactly the ones it can write.
 # Read-only subscriptions (holidays, football fixtures, a school calendar) are
 # not appointments Oliver attends and must not become work rows.

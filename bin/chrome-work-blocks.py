@@ -22,7 +22,35 @@ except ImportError:  # Python < 3.9 (this box: 3.8.10)
 
 TZ = ZoneInfo("America/New_York")
 CHROME_EPOCH = datetime(1601, 1, 1)
-CHROME_HISTORY = "/mnt/c/chrome-cdp-profile/Default/History"
+PROFILE_PATH = os.path.expanduser("~/.config/worktime/profile.json")
+# Where Chrome keeps History differs per platform. macOS matters because
+# total_foreground_duration -- the only signal that separates reading from a
+# parked tab -- exists on the machine doing the browsing and is stripped by sync.
+CHROME_HISTORY_DEFAULTS = {
+    "wsl": "/mnt/c/chrome-cdp-profile/Default/History",
+    "macos": os.path.expanduser("~/Library/Application Support/Google/Chrome/Default/History"),
+    "linux": os.path.expanduser("~/.config/google-chrome/Default/History"),
+}
+
+
+def chrome_history_path(profile_path=None):
+    path = profile_path if profile_path is not None else PROFILE_PATH
+    if os.path.exists(path):
+        try:
+            with open(path) as f:
+                configured = json.load(f).get("chrome_history_path")
+        except (OSError, ValueError) as e:
+            raise WorkBlocksError(f"profile {path} is unreadable: {e}")
+        if configured:
+            return os.path.expanduser(configured)
+    if sys.platform == "darwin":
+        return CHROME_HISTORY_DEFAULTS["macos"]
+    if "microsoft" in os.uname().release.lower():
+        return CHROME_HISTORY_DEFAULTS["wsl"]
+    return CHROME_HISTORY_DEFAULTS["linux"]
+
+
+CHROME_HISTORY = chrome_history_path()
 CONFIG_PATH = os.path.expanduser("~/.config/activity-export/work-domains.json")
 CACHE_PATH = os.path.expanduser("~/.cache/activity-export/chrome-work-blocks.json")
 

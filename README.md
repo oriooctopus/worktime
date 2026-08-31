@@ -12,6 +12,7 @@ prompt-only probe both look identical to lunch.
 
 ```
 bin/    the three exporters (run on the machine with the data)
+skills/ worktime-setup: guided config for a non-technical user
 tests/  pytest suites; run with `python3 -m pytest tests`
 deploy/ systemd units (Linux) and launchd plists (macOS)
 config/ example configs only -- real ones live in ~/.config
@@ -53,6 +54,17 @@ it, the exporter has to run on the machine doing the browsing.
 In `work-domains.json`. Defaults: `gap_sec` 180 (browsing breaks run 4-7
 minutes; a 12-minute threshold borrowed from prompt bouts swallows them all),
 `max_dwell_sec` 600, `min_dwell_sec` 30, `min_block_sec` 180.
+
+## Setting it up for a different person
+
+`skills/worktime-setup` is a Claude Code skill that asks plain-language
+questions -- what counts as work, what counts as personal, how long a pause is
+a break -- and writes both config files. It reads the person's own most-visited
+sites first so they pick from a real list rather than inventing one, then shows
+them today's tracked stretches and asks whether that matches how their day
+actually went.
+
+It deliberately never says `gap_sec`, `dwell` or `blocks` to the user.
 
 ## Install
 
