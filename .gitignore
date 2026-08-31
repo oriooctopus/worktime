@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+# Real configs and credentials live in ~/.config and ~/.claude, never here.
+config/*.json
+!config/*.example.json

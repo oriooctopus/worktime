@@ -1,0 +1,12 @@
+{
+  "_comment": "Hand corrections, keyed by date. Copy to ~/.config/calendar-export/overrides.json.",
+  "2026-01-01": {
+    "overrides": [
+      {"start": "13:45", "end": "14:07", "note": "meeting overran its scheduled end"}
+    ],
+    "add": [
+      {"start": "16:20", "end": "16:23", "label": "Working", "source": "work",
+       "note": "always give a manual mark a fixed end; an open end keeps claiming time with no evidence"}
+    ]
+  }
+}

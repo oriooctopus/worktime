@@ -1,0 +1,6 @@
+[Unit]
+Description=Export today's Rubrik work calendar to the Obsidian vault dashboard
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 %h/.claude/bin/calendar-export.py

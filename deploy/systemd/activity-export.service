@@ -1,0 +1,6 @@
+[Unit]
+Description=Export WhatsApp/iMessage/Chrome activity to the Obsidian vault dashboard
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 %h/.claude/bin/activity-export.py

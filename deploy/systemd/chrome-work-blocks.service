@@ -1,0 +1,6 @@
+[Unit]
+Description=Derive work blocks from classified Chrome browsing
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 %h/.claude/bin/chrome-work-blocks.py

@@ -1,0 +1,23 @@
+{
+  "_comment": "URL substrings deciding which browsing counts as work. 'ignore' wins over 'work', so a longer ignore rule carves an exception out of a broad work domain. Anything matching neither is neutral: it will not start a block, but it will not break one either. Copy to ~/.config/activity-export/work-domains.json.",
+  "work": [
+    "github.com/your-org",
+    "your-company.com",
+    "mail.google.com/mail/u/1",
+    "docs.google.com",
+    "jira",
+    "confluence"
+  ],
+  "ignore": [
+    "instagram.com",
+    "facebook.com",
+    "reddit.com",
+    "x.com",
+    "youtube.com",
+    "netflix.com"
+  ],
+  "gap_sec": 180,
+  "min_dwell_sec": 30,
+  "max_dwell_sec": 600,
+  "min_block_sec": 180
+}
