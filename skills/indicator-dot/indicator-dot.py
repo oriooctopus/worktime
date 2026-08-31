@@ -1,15 +1,22 @@
 #!/usr/bin/env python3
-"""Report what the menu bar dot would show, without touching the Mac.
+"""Report what the menu bar dot would show.
 
-This reads the same file the probe reads (`calendar-today.md`) and applies the
-same rule the probe is believed to apply: a row tagged `work` covering now means
-working. It is a mirror, not the probe itself -- until worktime-probe.py is in
-this repo, a disagreement between this and the real dot means this file's
-assumption is wrong, not the dot.
+Two paths:
+
+- Current time (default): calls ``worktime-probe.py status`` for the live
+  verdict. The probe combines prompt activity, Slack messages, manual marks,
+  and calendar events; this is the authoritative answer. A working session
+  with no calendar meeting still shows GREEN here, matching the real dot.
+
+- Historical time (--at HH:MM): reads the probe's daily snapshot JSON if
+  available, and falls back to the calendar-only rule (a work-tagged row
+  covering the requested time means working). The fallback does not reflect
+  prompt activity or manual marks -- use it only when the snapshot is absent.
 
 Prints one status line plus context. Exit 0 working, 1 not working, 2 unusable.
+Colour only when stdout is a terminal; piping gives plain text.
 """
-import argparse, os, re, sys
+import argparse, json, os, re, subprocess, sys
 from datetime import datetime, timedelta
 
 try:
@@ -17,15 +24,110 @@ try:
 except ImportError:  # Python < 3.9
     from backports.zoneinfo import ZoneInfo
 
-CALENDAR = os.path.expanduser("~/obsidian-vault/Dashboard/calendar-today.md")
-# The probe refuses the file once it is this old; mirror that rather than
-# reporting a confident status from data the probe would have thrown away.
+# The probe that owns the working/not-working decision.
+PROBE = os.path.expanduser("~/.claude/bin/worktime-probe.py")
+# Where the probe writes daily snapshots (used for --at historical lookups).
+SNAPSHOT_DIR = os.path.expanduser("~/Documents/Main/Dashboard/worktime")
+# Calendar file the probe reads for meeting-based presence.
+CALENDAR = os.path.expanduser("~/Documents/Main/Dashboard/calendar-today.md")
+# The probe refuses this file once it is this old; mirror that cutoff.
 MAX_AGE_HOURS = 6
-ROW = re.compile(r"^\|\s*(\d{2}:\d{2})\s*\|\s*(\d{2}:\d{2})\s*\|\s*(.*?)\s*\|\s*(\w+)\s*\|\s*$")
 
+# Tags the probe counts as work meetings. Empty string covers exporters that
+# predated the Calendar column; "rubrik" is a legacy tag from the work account.
+WORK_TAGS = {"work", "rubrik", ""}
+
+# Match optional trailing tag (\w* not \w+ so empty-tag rows parse too).
+ROW = re.compile(r"^\|\s*(\d{2}:\d{2})\s*\|\s*(\d{2}:\d{2})\s*\|\s*(.*?)\s*\|\s*(\w*)\s*\|\s*$")
+
+
+# ---------------------------------------------------------------------------
+# Probe path (authoritative, current-time only)
+# ---------------------------------------------------------------------------
+
+def probe_status(python=None):
+    """Call worktime-probe.py status and return parsed JSON, or None on failure."""
+    if not os.path.exists(PROBE):
+        return None
+    py = python or sys.executable
+    try:
+        r = subprocess.run([py, PROBE, "status"],
+                           capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if r.returncode != 0:
+        return None
+    try:
+        return json.loads(r.stdout)
+    except ValueError:
+        return None
+
+
+def report_probe(status):
+    """Format output from probe status JSON. Returns (code, lines)."""
+    state = status.get("state", "unknown")
+    why = status.get("why", "")
+    worked = status.get("worked_minutes", 0)
+    mode = status.get("mode", "focused")
+    focus_pct = status.get("focus_pct")
+
+    if state in ("working", "marked"):
+        colour = "BLUE" if state == "marked" else "GREEN"
+        lines = [f"{colour} - {why}"]
+        if worked:
+            h, m = divmod(worked, 60)
+            summary = f"{h}h {m}m worked today, {mode} mode"
+            if focus_pct is not None:
+                summary += f", {focus_pct}% focus"
+            lines.append(f"  {summary}")
+        for p in status.get("periods", [])[:3]:
+            s, e = p["start"], p["end"]
+            what = p.get("what") or ("in progress" if p.get("current") else "")
+            lines.append(f"  {s//60:02d}:{s%60:02d}–{e//60:02d}:{e%60:02d} · "
+                         f"{p['len']}m  {what}".rstrip())
+        return 0, lines
+    elif state == "idle":
+        lines = [f"AMBER - {why}"]
+        qs = status.get("quiet_since")
+        if qs:
+            lines.append(f"  quiet since {qs}")
+        return 1, lines
+    else:
+        return 2, [f"UNKNOWN - probe returned state={state!r}"]
+
+
+# ---------------------------------------------------------------------------
+# Snapshot path (historical --at lookups)
+# ---------------------------------------------------------------------------
+
+def snapshot_report(day_str, at_min):
+    """Find the probe's verdict for a past time from its saved snapshot.
+
+    Returns (code, lines) or None if no snapshot exists for the day.
+    """
+    path = os.path.join(SNAPSHOT_DIR, f"{day_str}.json")
+    if not os.path.exists(path):
+        return None
+    try:
+        snap = json.load(open(path))
+    except (OSError, ValueError):
+        return None
+    for w in snap.get("worked", []):
+        if w["start"] <= at_min < w["end"]:
+            s, e = w["start"], w["end"]
+            what = w.get("what", "")
+            lines = [f"GREEN - working: {s//60:02d}:{s%60:02d}–{e//60:02d}:{e%60:02d}"
+                     + (f", {what}" if what else "")]
+            return 0, lines
+    return 1, [f"AMBER - not a worked period at {at_min//60:02d}:{at_min%60:02d}"]
+
+
+# ---------------------------------------------------------------------------
+# Calendar fallback path (when probe or snapshot unavailable)
+# ---------------------------------------------------------------------------
 
 def parse(text):
-    """Return ([(start, end, label, source)], generated_str_or_None)."""
+    """Return ([(start, end, label, tag)], generated_str_or_None)."""
     rows, generated = [], None
     for line in text.splitlines():
         m = ROW.match(line)
@@ -44,21 +146,26 @@ def minutes(hhmm):
 def covering(rows, now_min):
     """Work-tagged rows covering now, longest first."""
     hits = [r for r in rows
-            if r[3] == "work" and minutes(r[0]) <= now_min < minutes(r[1])]
+            if r[3] in WORK_TAGS and minutes(r[0]) <= now_min < minutes(r[1])]
     return sorted(hits, key=lambda r: minutes(r[1]) - minutes(r[0]), reverse=True)
 
 
 def previous(rows, now_min):
-    past = [r for r in rows if r[3] == "work" and minutes(r[1]) <= now_min]
+    past = [r for r in rows if r[3] in WORK_TAGS and minutes(r[1]) <= now_min]
     return max(past, key=lambda r: minutes(r[1])) if past else None
 
 
 def upcoming(rows, now_min):
-    fut = [r for r in rows if r[3] == "work" and minutes(r[0]) > now_min]
+    fut = [r for r in rows if r[3] in WORK_TAGS and minutes(r[0]) > now_min]
     return min(fut, key=lambda r: minutes(r[0])) if fut else None
 
 
 def report(text, now, age_hours=None):
+    """Calendar-based status. Used for --at historical queries and as fallback.
+
+    This is an approximation: it only sees calendar events, not prompt
+    activity or manual marks. Use report_probe() for the authoritative answer.
+    """
     rows, generated = parse(text)
     out = []
     if not rows:
@@ -90,10 +197,12 @@ def report(text, now, age_hours=None):
     return code, out
 
 
-# Colour only when a human is looking; piping or redirecting stays plain so the
-# output can be parsed or logged.
-COLOURS = {"GREEN": "\033[32m", "AMBER": "\033[33m", "STALE": "\033[31m",
-           "UNKNOWN": "\033[31m"}
+# ---------------------------------------------------------------------------
+# Terminal colour
+# ---------------------------------------------------------------------------
+
+COLOURS = {"GREEN": "\033[32m", "BLUE": "\033[34m", "AMBER": "\033[33m",
+           "STALE": "\033[31m", "UNKNOWN": "\033[31m"}
 RESET = "\033[0m"
 DIM = "\033[2m"
 
@@ -103,7 +212,7 @@ def colourise(lines):
     for i, line in enumerate(lines):
         key = next((k for k in COLOURS if line.lstrip().startswith(k)), None)
         if key:
-            glyph = "*" if key in ("STALE", "UNKNOWN") else "\u25cf"
+            glyph = "*" if key in ("STALE", "UNKNOWN") else "●"
             out.append(f"{COLOURS[key]}{glyph} {line}{RESET}")
         elif i:
             out.append(f"{DIM}{line}{RESET}")
@@ -112,21 +221,54 @@ def colourise(lines):
     return out
 
 
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--file", default=CALENDAR)
-    p.add_argument("--at", help="HH:MM to evaluate instead of now")
+    p.add_argument("--file", default=CALENDAR,
+                   help="Override the calendar file (for testing).")
+    p.add_argument("--at", help="HH:MM to evaluate instead of now.")
+    p.add_argument("--no-probe", action="store_true",
+                   help="Skip the probe and use the calendar-only path.")
     a = p.parse_args()
-    if not os.path.exists(a.file):
-        print(f"UNKNOWN - no calendar file at {a.file}", file=sys.stderr)
-        sys.exit(2)
-    text = open(a.file).read()
+
     tz = ZoneInfo("America/New_York")
     now = datetime.now(tz)
+
     if a.at:
+        # Historical query: try snapshot, fall back to calendar.
         h, m = a.at.split(":")
         now = now.replace(hour=int(h), minute=int(m))
-    age = (datetime.now().timestamp() - os.path.getmtime(a.file)) / 3600
+        day_str = now.strftime("%Y-%m-%d")
+        at_min = int(h) * 60 + int(m)
+        snap = snapshot_report(day_str, at_min)
+        if snap is not None:
+            code, lines = snap
+            if sys.stdout.isatty():
+                lines = colourise(lines)
+            print("\n".join(lines))
+            sys.exit(code)
+        # Fall through to calendar.
+    elif not a.no_probe:
+        # Current-time: ask the probe.
+        status = probe_status()
+        if status is not None:
+            code, lines = report_probe(status)
+            if sys.stdout.isatty():
+                lines = colourise(lines)
+            print("\n".join(lines))
+            sys.exit(code)
+        # Fall through to calendar if probe unavailable.
+
+    # Calendar fallback.
+    cal_file = a.file
+    if not os.path.exists(cal_file):
+        print(f"UNKNOWN - no calendar file at {cal_file}", file=sys.stderr)
+        sys.exit(2)
+    text = open(cal_file).read()
+    age = (datetime.now().timestamp() - os.path.getmtime(cal_file)) / 3600
     code, lines = report(text, now, age)
     if sys.stdout.isatty():
         lines = colourise(lines)

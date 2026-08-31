@@ -11,7 +11,7 @@ prompt-only probe both look identical to lunch.
 ## Layout
 
 ```
-bin/    the three exporters (run on the machine with the data)
+bin/    exporters plus the probe and menu bar app
 skills/ worktime-setup (guided config), indicator-dot (current status)
 tests/  pytest suites; run with `python3 -m pytest tests`
 deploy/ systemd units (Linux) and launchd plists (macOS)
@@ -88,13 +88,73 @@ the `worktime-web` systemd unit and bound to 0.0.0.0 for the tailnet.
 It imports `indicator-dot.py` rather than reimplementing the rule, so the page,
 the `dot` command and the skill cannot drift apart.
 
-## Not yet in this repo
+## The probe (`bin/worktime-probe.py`)
 
-`worktime-probe.py` and the menu bar app live on the Mac and are not versioned
-anywhere. They hold the actual working/not-working decision, so every statement
-here about how a `work`-tagged row is treated is inference from behaviour, not
-from reading the code. `skills/indicator-dot` mirrors the assumed rule and says
-so when it might be wrong.
+The probe owns the working/not-working decision. The menu bar app
+(`bin/worktime-bar/`) polls `worktime-probe.py status` every five seconds and
+draws a coloured dot; it never recomputes state itself.
+
+**Inputs the probe reads:**
+
+- **Claude prompts** — timestamps from `~/.claude/hooks/prompt-count.py`.
+  Every prompt sent to Claude Code is evidence of presence.
+- **Slack messages sent** — fetched from the Slack search API (token in
+  `~/.slack-mcp-token.json`). Messages received say nothing about presence;
+  only sends count.
+- **Tool-approval events** — written by the Claude Code Notification hook to
+  `~/.claude/stats/worktime/approvals.jsonl`. Approving a tool use is a human
+  action; unattended agent activity is not.
+- **GitHub Chrome visits** — code-review pages from
+  `~/Documents/Main/Dashboard/activity/<date>.md` (the Linux box's activity
+  export). Reviewing a PR produces no prompts and no Slack messages.
+- **Linux desktop prompts** — also from the activity export. A Claude prompt
+  on the other machine is evidence of *absence* from Rubrik work, and is
+  subtracted from Mac work periods.
+- **Manual marks** — written by `worktime-probe.py mark [note]`. The strongest
+  signal: a human declaration overrides silence.
+- **Calendar events** — from `~/Documents/Main/Dashboard/calendar-today.md`
+  (written by `bin/calendar-export.py`). Work-tagged meetings extend presence
+  across a quiet stretch.
+
+**How it decides working vs not working:**
+
+A prompt run chains prompts closer together than `GAP_AFTER` (5 minutes in
+focused mode) into one work period. The period starts 60 seconds before its
+first prompt (80 seconds if it opens a new conversation) and ends 20 seconds
+after its last one, floored at one minute total. In unfocused mode the gap
+threshold ramps from 1 minute up to 5 over the first 10 minutes of the bout,
+so a sparse stream of prompts between meetings doesn't inflate the day.
+
+For the live dot (`status`), the verdict is:
+
+1. **Green** — a prompt or Slack send arrived within the current cutoff, OR a
+   manual mark is active right now, OR a work calendar meeting covers the
+   current minute.
+2. **Blue** — a manual mark is active (shown distinctly so it's clear the green
+   is asserted, not derived).
+3. **Amber** — none of the above.
+
+**How work vs personal calendar rows are treated:**
+
+Rows tagged `work`, `rubrik`, or with an empty Calendar column count as work
+meetings and extend presence. Rows tagged `personal` are visible in the
+dashboard tooltip (they explain a quiet stretch) but do not contribute worked
+time. A therapy appointment or football fixture is not time on the job.
+
+**Schedule:** `worktime-probe.py check` writes a label record and updates the
+Obsidian snapshot every 20 minutes (driven by launchd). The menu bar polls
+`worktime-probe.py status` every 5 seconds; the status path is memoised
+against a fingerprint of the input files and re-derives state only when
+something actually changed.
+
+**Menu bar dot states:**
+
+| Colour | Meaning |
+|--------|---------|
+| Green  | Working: recent prompt or Slack activity, or a work meeting is live |
+| Blue   | Manually marked as working |
+| Amber  | Idle: no recent activity and no meeting |
+| Red    | Probe failed to run or returned an error |
 
 ## Install
 
