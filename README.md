@@ -12,7 +12,7 @@ prompt-only probe both look identical to lunch.
 
 ```
 bin/    the three exporters (run on the machine with the data)
-skills/ worktime-setup: guided config for a non-technical user
+skills/ worktime-setup (guided config), indicator-dot (current status)
 tests/  pytest suites; run with `python3 -m pytest tests`
 deploy/ systemd units (Linux) and launchd plists (macOS)
 config/ example configs only -- real ones live in ~/.config
@@ -65,6 +65,14 @@ them today's tracked stretches and asks whether that matches how their day
 actually went.
 
 It deliberately never says `gap_sec`, `dwell` or `blocks` to the user.
+
+## Not yet in this repo
+
+`worktime-probe.py` and the menu bar app live on the Mac and are not versioned
+anywhere. They hold the actual working/not-working decision, so every statement
+here about how a `work`-tagged row is treated is inference from behaviour, not
+from reading the code. `skills/indicator-dot` mirrors the assumed rule and says
+so when it might be wrong.
 
 ## Install
 
