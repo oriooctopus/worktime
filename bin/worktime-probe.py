@@ -1161,10 +1161,18 @@ def calendar_events(day: str) -> list[dict] | None:
     if vault is not None:
         return vault
 
-    token = subprocess.run(
-        ["gcloud", "auth", "application-default", "print-access-token"],
-        capture_output=True, text=True,
-    ).stdout.strip()
+    # gcloud is optional: this machine may have no SDK installed at all, which
+    # is the same answer as an unusable grant -- "no source could supply data",
+    # the None this function is documented to return. Letting the missing
+    # binary raise instead killed the whole status call, and the menu bar has
+    # no way to tell a crash from a real verdict: the dot just went red.
+    try:
+        token = subprocess.run(
+            ["gcloud", "auth", "application-default", "print-access-token"],
+            capture_output=True, text=True,
+        ).stdout.strip()
+    except FileNotFoundError:
+        return None
     if not token:
         return None
 
