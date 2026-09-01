@@ -763,8 +763,8 @@ def session_first_stamps(day: str) -> set[int]:
 APPROVALS = os.path.join(STATE, "approvals.jsonl")
 
 
-def approvals_for(day: str) -> list[str]:
-    """When Claude Code asked for a permission decision, as HH:MM:SS.
+def approval_rows_for(day: str) -> list[dict]:
+    """One day's permission decisions, whole records, oldest first.
 
     Written by the Notification hook, because the transcript cannot express
     this: an approved tool and an unattended one produce the same `tool_result`
@@ -780,8 +780,13 @@ def approvals_for(day: str) -> list[str]:
             continue
         r = json.loads(line)
         if r.get("day") == day:
-            out.append(r["t"])
-    return sorted(out)
+            out.append(r)
+    return sorted(out, key=lambda r: r["t"])
+
+
+def approvals_for(day: str) -> list[str]:
+    """Just the times, as HH:MM:SS -- what the event streams need."""
+    return [r["t"] for r in approval_rows_for(day)]
 
 
 # The WSL box's activity export -- see the header comment at the top of
@@ -809,8 +814,8 @@ GITHUB_TITLE = re.compile(r"·\s*Pull Re|·\s*scaledata/|/pull/\d+", re.I)
 GITHUB_AUTH = re.compile(r"/saml/|/login/oauth/|sso\.rubrik\.com", re.I)
 
 
-def github_visits_for(day: str) -> list[datetime]:
-    """Chrome visits to GitHub code pages, from the WSL box's activity export.
+def github_rows_for(day: str) -> list[tuple[datetime, str]]:
+    """Chrome visits to GitHub code pages, with the page each one landed on.
 
     Reading a PR or a diff is real work and was previously invisible to this
     probe -- prompts and Slack sends were the only evidence of working, so a
@@ -836,8 +841,13 @@ def github_visits_for(day: str) -> list[datetime]:
         if not hit or GITHUB_AUTH.search(detail):
             continue
         h, mnt = m.group(1).split(":")
-        out.append(base.replace(hour=int(h), minute=int(mnt)))
-    return sorted(out)
+        out.append((base.replace(hour=int(h), minute=int(mnt)), detail))
+    return sorted(out, key=lambda r: r[0])
+
+
+def github_visits_for(day: str) -> list[datetime]:
+    """Just the visit times -- what the event streams need."""
+    return [when for when, _detail in github_rows_for(day)]
 
 
 DESKTOP_ROW = re.compile(
@@ -892,6 +902,105 @@ def events_for(day: str) -> list[datetime]:
     out += [at(t) for t in approvals_for(day)]
     out += github_visits_for(day)
     return sorted(out)
+
+
+# How many recent events the menu bar lists. Ten is roughly one working
+# period's worth of evidence -- enough to recognise the stretch the dot is
+# currently reporting on, and to see the moment it started.
+ACTIVITY_LIST_N = 10
+
+# Long enough to recognise a prompt or a message, short enough that the widget
+# is choosing where to truncate for its own width rather than being handed a
+# paragraph. Matches the spirit of TIP_PROMPT_CHARS.
+ACTIVITY_TEXT_CHARS = 120
+
+
+def one_line(text: str, unescape: bool = False) -> str:
+    """Flatten to a single line, capped, for a native menu row.
+
+    Optionally reverses the HTML escaping the snapshot layer applies. That
+    escaping exists for the dashboard, which renders into markup; this payload
+    is read by an AppKit menu, where `&amp;` is not an ampersand but the
+    literal five characters. Only the streams that were escaped on the way in
+    get unescaped here -- doing it blindly would eat a real "&amp;" someone had
+    typed.
+    """
+    t = " ".join(text.split())
+    if unescape:
+        t = t.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+    return t[:ACTIVITY_TEXT_CHARS]
+
+
+def recent_activities(day: str, limit: int = ACTIVITY_LIST_N) -> list[dict]:
+    """The most recent work events, newest first, each with what it was.
+
+    The same four streams events_for() merges, deliberately: this is meant to
+    be the readable form of exactly what the dot's verdict was derived from, so
+    a stream that moves the dot but is missing here -- or the reverse -- would
+    make the list a second opinion on the day rather than an explanation of it.
+
+    Desktop prompts stay out for the same reason. They do reach the model, but
+    with the opposite polarity: a prompt on the other machine is evidence of
+    being away from this job, and listing it under "work" would read as the
+    tracker claiming the exact opposite of what it concluded.
+
+    Scoped to one day because everything else the widget shows is -- a list
+    that quietly reached into yesterday would be the only part of the menu not
+    describing today.
+    """
+    rows: list[tuple[str, dict]] = []
+
+    # Sort keys are HH:MM:SS where the stream has seconds and HH:MM:00 where it
+    # does not. Prompts and Chrome visits are only recorded to the minute, so
+    # within a shared minute their order against Slack is arbitrary -- which is
+    # invisible, since the rows are displayed to the minute too.
+    for sess in full_day(day).get("sessions", []):
+        for pr in sess.get("prompts", []):
+            rows.append((f"{pr['ts']}:00", {
+                "t": pr["ts"], "kind": "prompt",
+                "what": one_line(pr["text"])}))
+
+    for r in slack_for(day):
+        # `ch` is empty for a DM, where the search response carries the other
+        # party's user ID rather than a name -- so `im` is what decides the
+        # label, exactly as the period summaries key on it.
+        where = "DM" if r["im"] or not r["ch"] else f"#{r['ch']}"
+        rows.append((r["t"], {
+            "t": r["t"][:5], "kind": "slack",
+            "what": one_line(f"{where} · {r['text']}", unescape=True)}))
+
+    for r in approval_rows_for(day):
+        rows.append((r["t"], {
+            "t": r["t"][:5], "kind": "approval",
+            "what": f"approved {r.get('tool') or 'a tool'}"}))
+
+    for when, detail in github_rows_for(day):
+        rows.append((when.strftime("%H:%M:00"), {
+            "t": when.strftime("%H:%M"), "kind": "github",
+            "what": one_line(detail)}))
+
+    rows.sort(key=lambda r: r[0], reverse=True)
+
+    # Collapse a consecutive run of the identical event into one row carrying
+    # its count -- the same trap chrome-work-blocks unions intervals for. One
+    # PR page reloaded through a redirect chain lands eight times in two
+    # minutes, and eight rows of it is not eight things that happened; it filled
+    # the entire list on a real day, hiding every other piece of evidence behind
+    # one page. Only an adjacent run merges, so returning to that PR an hour
+    # later is still its own row rather than being folded into the earlier one.
+    #
+    # Collapsed before the limit is applied, so ten rows are ten distinct
+    # activities rather than ten samples of however few. The whole day is
+    # collapsed rather than stopping at the tenth row: cutting the walk short
+    # there would leave that last row's own duplicates uncounted, so it alone
+    # would report a smaller number than it should.
+    out: list[dict] = []
+    for _, a in rows:
+        if out and out[-1]["kind"] == a["kind"] and out[-1]["what"] == a["what"]:
+            out[-1]["n"] += 1
+            continue
+        out.append(dict(a, n=1))
+    return out[:limit]
 
 
 # Markdown, not JSON. Obsidian Sync ships .md between devices by default but
@@ -2044,6 +2153,13 @@ STATUS_CACHE = os.path.join(STATE, "status-cache.json")
 # often the menu bar polls.
 MIN_RECOMPUTE_SEC = 10
 
+# Bumped whenever the cached payload gains a field. A cache written by the
+# previous build is missing the new key entirely, and the alternative to
+# versioning is a .get() default on every read -- which would quietly serve an
+# empty activity list as though the day had none. A version mismatch is simply
+# a miss, handled by the path that already exists for a stale day.
+STATUS_CACHE_V = 2
+
 
 def activity_fingerprint(day: str) -> str:
     """A signature of every input the live verdict is derived from.
@@ -2079,19 +2195,25 @@ def activity_fingerprint(day: str) -> str:
     return hashlib.sha1("|".join(sorted(parts)).encode()).hexdigest()
 
 
-def live_activity(day: str) -> tuple[datetime | None, list[int]]:
-    """Last event and the mark-closing stamps, memoised against the fingerprint.
+def live_activity(day: str) -> tuple[datetime | None, list[int], list[dict]]:
+    """Last event, mark-closing stamps and the recent list, memoised on the
+    fingerprint.
 
-    Returns only the two things status() needs. Everything time-dependent --
-    how long the silence has run, whether a mark is still open right now -- is
+    Returns only the things status() needs. Everything time-dependent -- how
+    long the silence has run, whether a mark is still open right now -- is
     recomputed by the caller from these, so a cache hit still produces a
     verdict that moves with the clock.
+
+    The activity list rides along here rather than being built in status()
+    because it is a function of exactly the same inputs as `last`: it can only
+    change when the fingerprint does, so caching it beside them means a poll
+    during genuine silence still costs nothing but a walk of stat() calls.
     """
     try:
         c = json.load(open(STATUS_CACHE))
     except (OSError, ValueError):
         c = {}
-    hit = c.get("day") == day
+    hit = c.get("day") == day and c.get("v") == STATUS_CACHE_V
 
     # The floor is what makes this affordable during real work, and the
     # fingerprint is what makes it responsive during quiet. An active Claude
@@ -2102,12 +2224,13 @@ def live_activity(day: str) -> tuple[datetime | None, list[int]]:
     # which is invisible, because a stretch of work in progress is already
     # green and stays green.
     if hit and time.time() - c.get("at", 0) < MIN_RECOMPUTE_SEC:
-        return (datetime.fromisoformat(c["last"]) if c["last"] else None), c["stamps"]
+        return ((datetime.fromisoformat(c["last"]) if c["last"] else None),
+                c["stamps"], c["acts"])
 
     fp = activity_fingerprint(day)
     if hit and c.get("fp") == fp:
         last = datetime.fromisoformat(c["last"]) if c["last"] else None
-        return last, c["stamps"]
+        return last, c["stamps"], c["acts"]
 
     events = events_for(day)
     # Prompts and Slack only, matching what marks_for() closes an open mark on.
@@ -2115,6 +2238,7 @@ def live_activity(day: str) -> tuple[datetime | None, list[int]]:
     stamps = sorted([t.hour * 60 + t.minute for t in prompts_for(day)]
                     + [sec_of(r["t"]) // 60 for r in slack_for(day)])
     last = events[-1] if events else None
+    acts = recent_activities(day)
     # Per-pid, because this is now written by whichever process polls first and
     # there are several: the menu bar every 5s, the cron check, and any CLI run.
     # A shared fixed name meant two of them raced on the same path -- the first
@@ -2122,10 +2246,11 @@ def live_activity(day: str) -> tuple[datetime | None, list[int]]:
     # FileNotFoundError, which surfaced as the dot dropping out mid-poll.
     tmp = f"{STATUS_CACHE}.{os.getpid()}.tmp"
     with open(tmp, "w") as fh:
-        json.dump({"fp": fp, "day": day, "stamps": stamps, "at": time.time(),
+        json.dump({"v": STATUS_CACHE_V, "fp": fp, "day": day, "stamps": stamps,
+                   "at": time.time(), "acts": acts,
                    "last": last.isoformat() if last else None}, fh)
     os.replace(tmp, STATUS_CACHE)
-    return last, stamps
+    return last, stamps, acts
 
 
 def status() -> dict:
@@ -2138,7 +2263,7 @@ def status() -> dict:
     now = now_local()
     day = now.strftime("%Y-%m-%d")
     now_m = now.hour * 60 + now.minute
-    last, stamps = live_activity(day)
+    last, stamps, activities = live_activity(day)
     quiet_sec = (now - last).total_seconds() if last else None
     quiet = quiet_sec / 60 if quiet_sec is not None else None
 
@@ -2217,7 +2342,10 @@ def status() -> dict:
             "gap_after_sec": cutoff_sec,
             "mode": mode_now(),
             "focus_pct": focus_pct,
-            "periods": periods}
+            "periods": periods,
+            # Newest first, same as `periods`. The periods say how the day was
+            # divided up; this says what the divisions were made out of.
+            "activities": activities}
 
 
 def backfill(days: int) -> None:

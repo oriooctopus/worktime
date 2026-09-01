@@ -63,6 +63,16 @@ struct Period {
     var current = false
 }
 
+// One piece of evidence the probe's verdict was derived from: a prompt, a
+// Slack message sent, a permission approval, or a GitHub page read. `n` is
+// how many identical consecutive events the probe folded into this one.
+struct Activity {
+    var t = ""
+    var kind = ""
+    var what = ""
+    var n = 1
+}
+
 struct Status {
     var state = "unknown"
     var why = "not yet polled"
@@ -74,6 +84,7 @@ struct Status {
     var mode = "focused"
     var focusPct: Int?
     var periods: [Period] = []
+    var activities: [Activity] = []
 }
 
 func runProbe(_ args: [String]) -> String? {
@@ -244,6 +255,59 @@ final class PeriodRowView: NSView {
     required init?(coder: NSCoder) { fatalError("not used") }
 }
 
+// A single line, unlike the two-line period rows: ten of these hang under one
+// header, and giving each a second line would turn the dropdown into a page.
+// The three parts are separately colored so the eye can skip the columns it
+// isn't looking for -- the time and the kind recede, the text reads.
+//
+// Same custom-NSView reason as PeriodRowView: an NSMenuItem's own title is
+// recolored by the menu's vibrancy pass no matter what is set on it, and these
+// rows would come out dimmed to the point of being hard to read.
+final class ActivityRowView: NSView {
+    init(_ a: Activity, width: CGFloat) {
+        super.init(frame: NSRect(x: 0, y: 0, width: width, height: 17))
+
+        let line = NSMutableAttributedString(string: a.t + "  ", attributes: [
+            // Monospaced digits so the times form a straight column. The
+            // proportional face renders 1 narrower than 8, which is enough to
+            // visibly ragged the left edge of a ten-row list.
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular),
+            .foregroundColor: NSColor.secondaryLabelColor,
+        ])
+        line.append(NSAttributedString(string: a.kind + "  ", attributes: [
+            .font: NSFont.systemFont(ofSize: 11),
+            .foregroundColor: NSColor.tertiaryLabelColor,
+        ]))
+        line.append(NSAttributedString(string: a.what, attributes: [
+            .font: NSFont.systemFont(ofSize: 11),
+            .foregroundColor: NSColor.labelColor,
+        ]))
+        // Only when it collapsed something. A "×1" on every other row would be
+        // noise standing in for the ordinary case.
+        if a.n > 1 {
+            line.append(NSAttributedString(string: "  ×\(a.n)", attributes: [
+                .font: NSFont.systemFont(ofSize: 11),
+                .foregroundColor: NSColor.secondaryLabelColor,
+            ]))
+        }
+
+        let f = NSTextField(labelWithString: "")
+        f.attributedStringValue = line
+        // Truncated here rather than by the probe: the widget is the only
+        // party that knows its own width, and the payload is capped already.
+        f.lineBreakMode = .byTruncatingTail
+        f.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(f)
+        NSLayoutConstraint.activate([
+            f.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            f.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
+            f.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+}
+
 func addPeriodItem(_ p: Period, to menu: NSMenu,
                    status: (symbol: String, text: String, color: NSColor)? = nil) {
     let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
@@ -385,7 +449,9 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate {
                    + (recent + earlier).map { p in
                        let s = periodStrings(p)
                        return s.top + "\u{1}" + s.what
-                   }).joined(separator: "\u{2}")
+                   }
+                   + status.activities.map { "\($0.t)\u{1}\($0.kind)\u{1}\($0.what)\u{1}\($0.n)" }
+                  ).joined(separator: "\u{2}")
         if key == lastMenuKey { return }
         lastMenuKey = key
 
@@ -401,6 +467,27 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate {
             addPeriodItem(p, to: m, status: s)
         }
         if !recent.isEmpty { m.addItem(.separator()) }
+
+        // The evidence behind the periods above, above the actions rather than
+        // in a submenu. The period rows say how the day was divided; without
+        // this, the only answer to "why is it green right now" was the one
+        // rounded phrase in the status line, and the only way to check what the
+        // tracker had actually seen was to read the dashboard.
+        //
+        // Ten single-line rows is the one place this menu spends real height,
+        // which is why they are single-line and why the older periods stay in
+        // their submenu: the list is the log, so the periods don't need to be.
+        if !status.activities.isEmpty {
+            let head = NSMenuItem(title: "Recent activity", action: nil, keyEquivalent: "")
+            head.isEnabled = false
+            m.addItem(head)
+            for a in status.activities {
+                let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+                item.view = ActivityRowView(a, width: 300)
+                m.addItem(item)
+            }
+            m.addItem(.separator())
+        }
 
         // One toggle, never both. A second "Mark as working" while a mark is
         // already running just appends an identical open mark -- which is
@@ -508,6 +595,12 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate {
                        nSlack: p["n_slack"] as? Int ?? 0,
                        what: p["what"] as? String ?? "",
                        current: p["current"] as? Bool ?? false)
+            }
+            s.activities = (j["activities"] as? [[String: Any]] ?? []).map { a in
+                Activity(t: a["t"] as? String ?? "",
+                         kind: a["kind"] as? String ?? "",
+                         what: a["what"] as? String ?? "",
+                         n: a["n"] as? Int ?? 1)
             }
             DispatchQueue.main.async { self.apply(s) }
         }

@@ -797,5 +797,183 @@ class ApprovalMatching(unittest.TestCase):
         self.assertEqual(len(self.events()), 1)
 
 
+DAY = "2026-08-26"
+
+
+class RecentActivities(unittest.TestCase):
+    """The menu bar's list of what the dot's verdict was actually derived from.
+
+    Every source is stubbed rather than read off disk, because the point of
+    each assertion is the merging and collapsing -- the parsers that feed it
+    have their own tests above.
+    """
+
+    def acts(self, prompts=(), slack=(), approvals=(), github=(), limit=10):
+        def sess(ps):
+            return {"sessions": [{"label": "s",
+                                  "prompts": [{"ts": t, "text": x} for t, x in ps]}]}
+
+        saved = {n: getattr(wp, n) for n in
+                 ("full_day", "slack_for", "approval_rows_for", "github_rows_for")}
+        wp.full_day = lambda _d: sess(prompts)
+        wp.slack_for = lambda _d: list(slack)
+        wp.approval_rows_for = lambda _d: list(approvals)
+        wp.github_rows_for = lambda _d: [
+            (wp.datetime.strptime(f"{DAY} {t}", "%Y-%m-%d %H:%M")
+               .replace(tzinfo=wp.LOCAL), detail)
+            for t, detail in github]
+        try:
+            return wp.recent_activities(DAY, limit=limit)
+        finally:
+            for n, f in saved.items():
+                setattr(wp, n, f)
+
+    def test_all_four_streams_merge_newest_first(self):
+        got = self.acts(
+            prompts=[("09:00", "fix the dot")],
+            slack=[{"t": "09:01:30", "ch": "ruby-dev", "im": False, "text": "on it"}],
+            approvals=[{"t": "09:02:00", "tool": "Bash"}],
+            github=[("09:03", "Some PR by someone · Pull Re")])
+        self.assertEqual([a["kind"] for a in got],
+                         ["github", "approval", "slack", "prompt"])
+        self.assertEqual([a["t"] for a in got],
+                         ["09:03", "09:02", "09:01", "09:00"])
+
+    def test_repeated_page_collapses_into_one_counted_row(self):
+        # The redirect-chain trap: one PR reloaded eight times is one thing
+        # that happened. Uncollapsed it filled the entire list on a real day,
+        # hiding every other piece of evidence behind a single page.
+        got = self.acts(
+            prompts=[("09:00", "hello")],
+            github=[(f"09:1{i}", "Add Copy Link action by jackie") for i in range(8)])
+        self.assertEqual([a["kind"] for a in got], ["github", "prompt"])
+        self.assertEqual(got[0]["n"], 8)
+        self.assertEqual(got[1]["n"], 1)
+
+    def test_same_page_revisited_later_is_its_own_row(self):
+        # Only an ADJACENT run merges. Coming back to a PR after doing
+        # something else is a second visit, not more of the first one.
+        got = self.acts(
+            prompts=[("09:05", "meanwhile")],
+            github=[("09:00", "the same PR"), ("09:10", "the same PR")])
+        self.assertEqual([(a["kind"], a["n"]) for a in got],
+                         [("github", 1), ("prompt", 1), ("github", 1)])
+
+    def test_limit_counts_distinct_rows_not_raw_events(self):
+        got = self.acts(
+            prompts=[(f"09:{i:02d}", "repeated") for i in range(30)],
+            slack=[{"t": f"08:{i:02d}:00", "ch": "c", "im": False, "text": f"m{i}"}
+                   for i in range(20)],
+            limit=3)
+        # 30 identical prompts are one row, so the limit still has room for
+        # two Slack messages behind them rather than being spent on the run.
+        self.assertEqual([a["kind"] for a in got], ["prompt", "slack", "slack"])
+        self.assertEqual(got[0]["n"], 30)
+
+    def test_last_row_count_is_not_truncated_by_the_limit(self):
+        # Stopping the walk at the limit would leave the final row's own
+        # duplicates uncounted, so it alone would under-report.
+        got = self.acts(prompts=[("09:00", "a"), ("09:01", "b"), ("09:02", "b")],
+                        limit=1)
+        self.assertEqual(len(got), 1)
+        self.assertEqual(got[0]["n"], 2)
+
+    def test_slack_entities_are_unescaped_for_a_native_menu(self):
+        # slack_plain() escapes for the dashboard's markup. An AppKit menu
+        # renders "&amp;" as five literal characters, so it has to come back.
+        got = self.acts(slack=[{"t": "09:00:00", "ch": "dev", "im": False,
+                                "text": "Tom &amp; Jerry &lt;3"}])
+        self.assertEqual(got[0]["what"], "#dev · Tom & Jerry <3")
+
+    def test_dm_is_labelled_by_type_not_by_its_empty_channel_name(self):
+        # The search response carries the other party's user ID, not a name,
+        # so `im` is what decides -- exactly as the period summaries key on it.
+        got = self.acts(slack=[{"t": "09:00:00", "ch": "", "im": True, "text": "hi"}])
+        self.assertEqual(got[0]["what"], "DM · hi")
+
+    def test_prompt_newlines_are_flattened_to_one_line(self):
+        got = self.acts(prompts=[("09:00", "first line\n\n  second   line")])
+        self.assertEqual(got[0]["what"], "first line second line")
+
+    def test_approval_names_the_tool_it_approved(self):
+        got = self.acts(approvals=[{"t": "09:00:00", "tool": "Write"}])
+        self.assertEqual(got[0]["what"], "approved Write")
+
+    def test_text_is_capped_so_the_payload_stays_bounded(self):
+        got = self.acts(prompts=[("09:00", "x" * 500)])
+        self.assertEqual(len(got[0]["what"]), wp.ACTIVITY_TEXT_CHARS)
+
+    def test_desktop_prompts_are_not_listed_as_work(self):
+        # They reach the model with the OPPOSITE polarity: a prompt on the
+        # other machine is evidence of being away from this job. Listing one
+        # under "work" would have the tracker asserting the reverse of what it
+        # concluded. Read through the real parsers off a real activity file.
+        d = tempfile.mkdtemp()
+        with open(os.path.join(d, f"{DAY}.md"), "w") as fh:
+            fh.write("| time | source | direction | who | detail |\n|---|---|---|---|---|\n"
+                     "| 09:00 | claude | prompt | me | build the iOS app |\n"
+                     "| 09:05 | chrome | visit | synced | a PR · scaledata/sdmain |\n")
+        saved = (wp.ACTIVITY_DIR, wp.full_day, wp.slack_for, wp.approval_rows_for)
+        try:
+            wp.ACTIVITY_DIR = d
+            wp.full_day = lambda _d: {"sessions": []}
+            wp.slack_for = lambda _d: []
+            wp.approval_rows_for = lambda _d: []
+            got = wp.recent_activities(DAY)
+        finally:
+            (wp.ACTIVITY_DIR, wp.full_day, wp.slack_for,
+             wp.approval_rows_for) = saved
+        self.assertEqual([(a["kind"], a["t"]) for a in got], [("github", "09:05")])
+
+    def test_desktop_prompts_still_reach_the_model_they_belong_to(self):
+        # The exclusion above is about this list, not about the signal: the
+        # hole-punching path must still see it, or dropping it from the menu
+        # would have quietly changed what the dot reports.
+        d = tempfile.mkdtemp()
+        with open(os.path.join(d, f"{DAY}.md"), "w") as fh:
+            fh.write("| time | source | direction | who | detail |\n|---|---|---|---|---|\n"
+                     "| 09:00 | claude | prompt | me | build the iOS app |\n")
+        old = wp.ACTIVITY_DIR
+        try:
+            wp.ACTIVITY_DIR = d
+            self.assertEqual(len(wp.desktop_prompts_for(DAY)), 1)
+        finally:
+            wp.ACTIVITY_DIR = old
+
+
+class StatusCacheVersion(unittest.TestCase):
+    def test_cache_from_an_older_build_is_a_miss_not_a_crash(self):
+        # The v1 payload has no "acts" key. Indexing it would raise on the
+        # first poll after an upgrade, which the menu bar can only read as
+        # "probe did not answer" -- a red dot until the cache happened to be
+        # rewritten. A version mismatch takes the path a stale day already had.
+        import time
+        d = tempfile.mkdtemp()
+        path = os.path.join(d, "status-cache.json")
+        with open(path, "w") as fh:
+            json.dump({"fp": "whatever", "day": DAY, "stamps": [540],
+                       "at": time.time(), "last": None}, fh)
+        saved = {n: getattr(wp, n) for n in
+                 ("STATUS_CACHE", "events_for", "prompts_for", "slack_for",
+                  "full_day", "approval_rows_for", "github_rows_for")}
+        try:
+            wp.STATUS_CACHE = path
+            wp.events_for = lambda _d: []
+            wp.prompts_for = lambda _d: []
+            wp.slack_for = lambda _d: []
+            wp.full_day = lambda _d: {"sessions": []}
+            wp.approval_rows_for = lambda _d: []
+            wp.github_rows_for = lambda _d: []
+            last, stamps, acts = wp.live_activity(DAY)
+        finally:
+            for n, f in saved.items():
+                setattr(wp, n, f)
+        # Recomputed from the stubs rather than served from the old file.
+        self.assertIsNone(last)
+        self.assertEqual(stamps, [])
+        self.assertEqual(acts, [])
+        self.assertEqual(json.load(open(path))["v"], wp.STATUS_CACHE_V)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
