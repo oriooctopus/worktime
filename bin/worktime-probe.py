@@ -20,6 +20,8 @@ Usage:
   worktime-probe.py mode [focused|unfocused]  -- read or set the focus mode
 """
 
+from __future__ import annotations  # 3.8 can parse the annotations
+
 import hashlib
 import json
 import os
@@ -31,7 +33,10 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:  # the Linux box runs 3.8; the Mac does not need this
+    from backports.zoneinfo import ZoneInfo
 
 # Ambient local time is not trustworthy here. The sandbox some callers run
 # under denies /var/db/timezone/zoneinfo, and tzset() answers that denial by
@@ -1690,6 +1695,74 @@ def write_vault_snapshot(day: str, events: list[datetime]) -> None:
     with open(tmp, "w") as fh:
         json.dump(snap, fh, indent=1)
     os.replace(tmp, path)
+
+    # Same conclusions in markdown, because the .json above never leaves this
+    # machine. Written with the same raise-don't-swallow rule: a sidecar that
+    # silently stopped updating is indistinguishable from a quiet day.
+    md_path = markdown_snapshot_path(day)
+    md_tmp = f"{md_path}.{os.getpid()}.tmp"
+    with open(md_tmp, "w") as fh:
+        fh.write(render_markdown_snapshot(day, snap))
+    os.replace(md_tmp, md_path)
+
+
+def render_markdown_snapshot(day: str, snap: dict) -> str:
+    """The snapshot's conclusions as markdown, so Obsidian Sync will carry them.
+
+    The .json beside this file does not leave the machine that wrote it --
+    Obsidian Sync ships .md by default and skips everything else, which is the
+    same reason CAL_FILE is markdown. Enabling "Sync all other file types"
+    would also work, but it turns on syncing for every non-markdown file in the
+    vault, against a 1 GB quota, to move one small file.
+
+    Deliberately omits prompt text and session labels. `sessions` carries what
+    was actually typed, and this file syncs to every device and sits in a vault
+    that gets shared and backed up; times and counts answer "when was I
+    working" without publishing the content of the work. Add them later behind
+    the same redaction config activity-export uses, not by widening this.
+    """
+    worked = snap.get("worked", [])
+    gaps = snap.get("gaps", [])
+
+    def hhmm(m):
+        return f"{m // 60:02d}:{m % 60:02d}"
+
+    total = sum(w["len"] for w in worked)
+    lines = [
+        "---",
+        f"generated: {now_local().isoformat(timespec='seconds')}",
+        "---",
+        f"# Worktime — {day}",
+        "",
+        f"{len(worked)} work {'period' if len(worked) == 1 else 'periods'}, "
+        f"{total // 60}h{total % 60:02d}m total.",
+        "",
+        "Written by worktime-probe.py. Read-only — edits are overwritten on the",
+        "next run. Prompt text is deliberately not published here.",
+        "",
+        "| Start | End | Mins | Prompts | Slack | Marked | Meeting | What |",
+        "|-------|-----|------|---------|-------|--------|---------|------|",
+    ]
+    for w in worked:
+        meeting = "; ".join(
+            m.get("title") or "(busy)" for m in w.get("meetings", [])
+            if m.get("counts", True)) or ""
+        marked = "yes" if w.get("marks") else ""
+        what = (w.get("what") or "").replace("|", "\\|")
+        lines.append(
+            f"| {hhmm(w['start'])} | {hhmm(w['end'])} | {w['len']} | "
+            f"{w.get('n_prompts', 0)} | {w.get('n_slack', 0)} | {marked} | "
+            f"{meeting.replace('|', '/')} | {what} |")
+    if gaps:
+        lines += ["", "## Gaps", "",
+                  "| Start | End | Mins |", "|-------|-----|------|"]
+        for g in gaps:
+            lines.append(f"| {hhmm(g['start'])} | {hhmm(g['end'])} | {g['len']} |")
+    return "\n".join(lines) + "\n"
+
+
+def markdown_snapshot_path(day: str) -> str:
+    return os.path.join(VAULT_SNAPSHOT_DIR, f"{day}.md")
 
 
 def closed_gap(events: list[datetime], now: datetime):

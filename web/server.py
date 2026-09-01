@@ -7,7 +7,7 @@ the /indicator-dot skill can never disagree about what the status is.
 Binds 0.0.0.0 so it is reachable over the tailnet; there is no auth because it
 exposes only calendar row labels already visible in the vault.
 """
-import importlib.util, json, os, sys
+import importlib.util, json, os, re, sys
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -56,7 +56,12 @@ td.m{text-align:right;color:var(--dim);width:64px}
                   margin-right:5px;vertical-align:-1px}
 .key .m::before{background:var(--green)}.key .b::before{background:#3b82f6}
 .key .p::before{background:var(--dim);opacity:.45}
+#sess td.big{font-variant-numeric:tabular-nums}
+#sess .parts{color:var(--dim);font-size:12.5px;margin-top:2px}
+#sess .parts b{color:var(--fg);font-weight:500}
 tr.on td{color:var(--green)}
+tr.on.personal td{color:var(--dim)}
+tr.on.personal em{color:var(--dim);border-color:var(--dim)}
 em{font-style:normal;font-size:11px;text-transform:uppercase;letter-spacing:.06em;
    color:var(--green);border:1px solid var(--green);border-radius:3px;padding:0 4px;margin-left:6px}
 footer{color:var(--dim);font-size:12px;margin-top:30px}
@@ -66,7 +71,8 @@ footer{color:var(--dim);font-size:12px;margin-top:30px}
 <h2>Today</h2><div class="tl" id="tl"></div>
 <div class="ticks"><span>6am</span><span>9am</span><span>12pm</span><span>3pm</span><span>6pm</span><span>9pm</span></div>
 <div class="key"><span class="m">Meeting</span><span class="b">Browsing</span><span class="p">Personal</span></div>
-<h2>Stretches</h2><table id="rows"></table>
+<div id="sesswrap" hidden><h2>Sessions</h2><table id="sess"></table></div>
+<h2 id="strh">Stretches</h2><table id="rows"></table>
 <footer id="foot"></footer></main><script>
 const S=6*60,E=22*60, mins=t=>{const[a,b]=t.split(":");return a*60|0,+a*60+ +b};
 function kind(r){return r.source!=="work"?"personal":r.label.includes("browsing")?"browsing":"meeting"}
@@ -85,7 +91,21 @@ async function tick(){
   }
   const n=document.createElement("div"); n.className="now";
   n.style.left=((mins(d.now)-S)/(E-S)*100)+"%"; tl.appendChild(n);
-  rows.innerHTML=d.rows.length? d.rows.map(r=>`<tr${r.ongoing?' class="on"':""}>
+  if(d.periods){
+    sesswrap.hidden=false; strh.textContent="Stretches (raw)";
+    sess.innerHTML=d.periods.map(p=>{
+      const bits=[];
+      if(p.n_prompts) bits.push(`<b>${p.n_prompts}</b> prompts`);
+      if(p.n_slack)   bits.push(`<b>${p.n_slack}</b> Slack`);
+      if(p.meeting)   bits.push(`meeting ${p.meeting}`);
+      if(p.marked)    bits.push("marked");
+      const h=Math.floor(p.minutes/60), m=p.minutes%60;
+      return `<tr><td class="t big">${p.start}–${p.end}</td>
+        <td>${p.what||"—"}<div class="parts">${bits.join(" · ")||"&nbsp;"}</div></td>
+        <td class="m">${h?h+"h":""}${h?String(m).padStart(2,"0"):m+"m"}</td></tr>`;
+    }).join("");
+  } else { sesswrap.hidden=true; strh.textContent="Stretches"; }
+  rows.innerHTML=d.rows.length? d.rows.map(r=>`<tr${r.ongoing?' class="on'+(r.source!=="work"?" personal":"")+'"':""}>
     <td class="t">${r.start}–${r.shown_end}</td>
     <td>${r.label}${r.ongoing?' <em>now</em>':""}</td>
     <td class="m">${mins(r.shown_end)-mins(r.start)}m</td></tr>`).join("")
@@ -94,6 +114,37 @@ async function tick(){
 }
 tick(); setInterval(tick,15000);
 </script></body></html>"""
+
+
+SNAPSHOT_ROW = re.compile(
+    r"^\|\s*(\d{2}:\d{2})\s*\|\s*(\d{2}:\d{2})\s*\|\s*(\d+)\s*\|\s*(\d+)\s*\|"
+    r"\s*(\d+)\s*\|\s*(\w*)\s*\|\s*(.*?)\s*\|\s*(.*?)\s*\|\s*$")
+
+
+def snapshot_path(now):
+    """Today's markdown sidecar, written by the probe on the machine it runs on."""
+    return os.path.join(ind.DASHBOARD, "worktime", now.strftime("%Y-%m-%d") + ".md")
+
+
+def parse_snapshot(text):
+    """Work periods from the probe's markdown sidecar.
+
+    These are the probe's own conclusions -- prompts, meetings and marks already
+    unioned into sessions by merge_spans. Nothing here recomputes that: a second
+    definition of a session would drift from the one the dot actually uses.
+    """
+    periods = []
+    for line in text.splitlines():
+        m = SNAPSHOT_ROW.match(line)
+        if not m or m.group(1) == "Start":
+            continue
+        start, end, mins, prompts, slack, marked, meeting, what = m.groups()
+        periods.append({"start": start, "end": end, "minutes": int(mins),
+                        "n_prompts": int(prompts), "n_slack": int(slack),
+                        "marked": bool(marked.strip()),
+                        "meeting": meeting.strip(), "what": what.strip()})
+    periods.sort(key=lambda p: minutes(p["start"]), reverse=True)
+    return periods
 
 
 def visible_rows(rows, now_min):
@@ -120,6 +171,16 @@ def minutes(hhmm):
     return ind.minutes(hhmm)
 
 
+def load_periods(now):
+    path = snapshot_path(now)
+    if not os.path.exists(path):
+        return None  # None means "no probe data here", not "no work today"
+    try:
+        return parse_snapshot(open(path).read())
+    except OSError:
+        return None
+
+
 def status():
     path = ind.CALENDAR
     if not os.path.exists(path):
@@ -136,6 +197,7 @@ def status():
             "headline": lines[0].split(" - ", 1)[-1] if " - " in lines[0] else lines[0],
             "detail": [l.strip() for l in lines[1:]],
             "rows": visible_rows(rows, now_min),
+            "periods": load_periods(now),
             "generated": generated, "now": now.strftime("%H:%M")}
 
 
