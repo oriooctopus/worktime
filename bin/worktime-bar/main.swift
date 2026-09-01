@@ -247,11 +247,23 @@ final class FocusLog {
             try? FileManager.default.createDirectory(
                 atPath: FOCUS_DIR, withIntermediateDirectories: true)
             let path = (FOCUS_DIR as NSString).appendingPathComponent("\(day).jsonl")
-            if !FileManager.default.fileExists(atPath: path) {
-                FileManager.default.createFile(atPath: path, contents: nil)
+            // O_APPEND, so every write lands at the file's real end as one
+            // atomic step. seekToEndOfFile() instead caches an offset for the
+            // life of the process, which is only correct while this process is
+            // the sole writer -- and it is not: running a second copy by hand
+            // (a build under test, a verification run) alongside the launchd
+            // one gives both a stale offset, and the later write lands a few
+            // bytes inside the earlier one. That truncates a line's opening
+            // brace, and the probe parses the whole log strictly, so one torn
+            // line takes down every reading the dot depends on.
+            let fd = open(path, O_WRONLY | O_APPEND | O_CREAT, 0o644)
+            guard fd >= 0 else {
+                FileHandle.standardError.write(
+                    "focus log open failed: \(String(cString: strerror(errno)))\n"
+                        .data(using: .utf8)!)
+                return
             }
-            handle = FileHandle(forWritingAtPath: path)
-            handle?.seekToEndOfFile()
+            handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
             handleDay = day
         }
         guard let data = line.data(using: .utf8) else { return }
@@ -449,8 +461,14 @@ let ACTIVITY_FONT = NSFont.systemFont(ofSize: 11)
 // Whole minutes below an hour and whole hours above it. The rows are recorded
 // to the minute, so there is no finer truth to show, and a second unit ("2h
 // 40m") would widen the column for a list whose top rows are the point.
+//
+// Rounded to the nearest minute rather than floored, because the header above
+// this list rounds ("2m since last activity" is `f"{quiet:.0f}m"` in the
+// probe) and the newest row is usually describing that very same event. Two
+// numbers for one instant is what the reader notices first, and flooring made
+// them disagree for the 30 seconds either side of every minute boundary.
 func activityAge(_ a: Activity, now: Date = Date()) -> String {
-    let mins = Int((now.timeIntervalSince1970 - a.at) / 60)
+    let mins = Int(((now.timeIntervalSince1970 - a.at) / 60).rounded(.toNearestOrEven))
     if mins < 1 { return "now" }
     if mins < 60 { return "\(mins)m" }
     return "\(mins / 60)h"

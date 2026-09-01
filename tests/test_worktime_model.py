@@ -886,13 +886,15 @@ class RecentActivities(unittest.TestCase):
     have their own tests above.
     """
 
-    def acts(self, prompts=(), slack=(), approvals=(), github=(), limit=10):
+    def acts(self, prompts=(), slack=(), approvals=(), github=(), focus=(),
+             limit=10):
         def sess(ps):
             return {"sessions": [{"label": "s",
                                   "prompts": [{"ts": t, "text": x} for t, x in ps]}]}
 
         saved = {n: getattr(wp, n) for n in
-                 ("full_day", "slack_for", "approval_rows_for", "github_rows_for")}
+                 ("full_day", "slack_for", "approval_rows_for", "github_rows_for",
+                  "focus_for", "focus_app_by_minute")}
         wp.full_day = lambda _d: sess(prompts)
         wp.slack_for = lambda _d: list(slack)
         wp.approval_rows_for = lambda _d: list(approvals)
@@ -900,6 +902,16 @@ class RecentActivities(unittest.TestCase):
             (wp.datetime.strptime(f"{DAY} {t}", "%Y-%m-%d %H:%M")
                .replace(tzinfo=wp.LOCAL), detail)
             for t, detail in github]
+        # `focus` is (HH:MM, app) pairs: the minutes the machine was attended
+        # and what held each one. Both stubs are driven from it because the
+        # two must agree -- a minute in one and not the other is a state the
+        # real pair cannot produce.
+        wp.focus_for = lambda _d: [
+            wp.datetime.strptime(f"{DAY} {t}", "%Y-%m-%d %H:%M")
+              .replace(tzinfo=wp.LOCAL)
+            for t, _app in focus]
+        wp.focus_app_by_minute = lambda _d: {
+            int(t[:2]) * 60 + int(t[3:5]): app for t, app in focus}
         try:
             return wp.recent_activities(DAY, limit=limit)
         finally:
@@ -911,7 +923,8 @@ class RecentActivities(unittest.TestCase):
             prompts=[("09:00", "fix the dot")],
             slack=[{"t": "09:01:30", "ch": "ruby-dev", "im": False, "text": "on it"}],
             approvals=[{"t": "09:02:00", "tool": "Bash"}],
-            github=[("09:03", "Some PR by someone · Pull Re")])
+            github=[("09:03", "Some PR by someone · Pull Re")],
+            focus=[("09:01", "Slack")])
         self.assertEqual([a["kind"] for a in got],
                          ["github", "approval", "slack", "prompt"])
         self.assertEqual([a["t"] for a in got],
@@ -952,6 +965,7 @@ class RecentActivities(unittest.TestCase):
             prompts=[(f"09:{i:02d}", "repeated") for i in range(30)],
             slack=[{"t": f"08:{i:02d}:00", "ch": "c", "im": False, "text": f"m{i}"}
                    for i in range(20)],
+            focus=[(f"08:{i:02d}", "Slack") for i in range(20)],
             limit=3)
         # 30 identical prompts are one row, so the limit still has room for
         # two Slack messages behind them rather than being spent on the run.
@@ -970,14 +984,37 @@ class RecentActivities(unittest.TestCase):
         # slack_plain() escapes for the dashboard's markup. An AppKit menu
         # renders "&amp;" as five literal characters, so it has to come back.
         got = self.acts(slack=[{"t": "09:00:00", "ch": "dev", "im": False,
-                                "text": "Tom &amp; Jerry &lt;3"}])
+                                "text": "Tom &amp; Jerry &lt;3"}],
+                        focus=[("09:00", "Slack")])
         self.assertEqual(got[0]["what"], "#dev · Tom & Jerry <3")
 
     def test_dm_is_labelled_by_type_not_by_its_empty_channel_name(self):
         # The search response carries the other party's user ID, not a name,
         # so `im` is what decides -- exactly as the period summaries key on it.
-        got = self.acts(slack=[{"t": "09:00:00", "ch": "", "im": True, "text": "hi"}])
+        got = self.acts(slack=[{"t": "09:00:00", "ch": "", "im": True, "text": "hi"}],
+                        focus=[("09:00", "Slack")])
         self.assertEqual(got[0]["what"], "DM · hi")
+
+    def test_a_send_from_a_minute_focus_did_not_count_is_left_out(self):
+        # A send is not evidence in its own right -- it rides on the minute
+        # having been attended. Sent from the phone, nothing here was
+        # attended, and the row would be a newer top entry than the header's
+        # "Nm since last activity" can see: two ages for one event that do
+        # not agree, which is exactly what the header/list pair is for.
+        got = self.acts(prompts=[("09:00", "at the mac")],
+                        slack=[{"t": "12:00:00", "ch": "dev", "im": False,
+                                "text": "from the train"}],
+                        focus=[("09:00", "Ghostty")])
+        self.assertEqual([a["kind"] for a in got], ["prompt"])
+
+    def test_a_send_from_an_attended_minute_says_what_that_minute_was_about(self):
+        # The other side of it: focus knows the minute was Slack and nothing
+        # more, so the send is the only thing that can say what was going on.
+        got = self.acts(slack=[{"t": "09:00:00", "ch": "dev", "im": False,
+                                "text": "shipping it"}],
+                        focus=[("09:00", "Slack")])
+        self.assertEqual([(a["kind"], a["what"]) for a in got],
+                         [("slack", "#dev · shipping it")])
 
     def test_prompt_newlines_are_flattened_to_one_line(self):
         got = self.acts(prompts=[("09:00", "first line\n\n  second   line")])

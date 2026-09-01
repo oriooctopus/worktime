@@ -1142,6 +1142,14 @@ def recent_activities(day: str, limit: int = ACTIVITY_LIST_N) -> list[dict]:
     attended machine, so the minute it names is a minute focus already counted.
     It says what that minute was ABOUT, which is the one thing focus cannot.
 
+    That last part is checked rather than assumed -- a send only appears if
+    focus really did count its minute. Sending from the phone breaks the
+    assumption, and an unchecked row is worse here than a missing one: the
+    header above this list reads "Nm since last activity" off the last event,
+    which cannot see Slack, so a send newer than any tracked event would sit
+    at the top of the list showing a smaller age than the header, disagreeing
+    with it about the one number they are both reporting.
+
     Focus fills in last, and only for minutes nothing else explains. Emitting
     it for every attended minute would satisfy the invariant and destroy the
     list: focus covers nearly every minute at the keyboard, so it would
@@ -1159,6 +1167,8 @@ def recent_activities(day: str, limit: int = ACTIVITY_LIST_N) -> list[dict]:
     describing today.
     """
     rows: list[tuple[str, dict]] = []
+    attended = focus_for(day)
+    attended_minutes = {t.hour * 60 + t.minute for t in attended}
 
     # Sort keys are HH:MM:SS where the stream has seconds and HH:MM:00 where it
     # does not. Prompts and Chrome visits are only recorded to the minute, so
@@ -1171,6 +1181,9 @@ def recent_activities(day: str, limit: int = ACTIVITY_LIST_N) -> list[dict]:
                 "what": one_line(pr["text"])}))
 
     for r in slack_for(day):
+        hh, mm = int(r["t"][:2]), int(r["t"][3:5])
+        if hh * 60 + mm not in attended_minutes:
+            continue
         # `ch` is empty for a DM, where the search response carries the other
         # party's user ID rather than a name -- so `im` is what decides the
         # label, exactly as the period summaries key on it.
@@ -1191,7 +1204,7 @@ def recent_activities(day: str, limit: int = ACTIVITY_LIST_N) -> list[dict]:
 
     spoken = {k[:5] for k, _ in rows}
     by_minute = focus_app_by_minute(day)
-    for when in focus_for(day):
+    for when in attended:
         hm = when.strftime("%H:%M")
         app = by_minute.get(when.hour * 60 + when.minute)
         if hm in spoken or not app:
