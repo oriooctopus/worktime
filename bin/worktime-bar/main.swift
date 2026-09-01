@@ -113,6 +113,131 @@ func runProbe(_ args: [String]) -> String? {
     return String(data: data, encoding: .utf8)
 }
 
+// ---------------------------------------------------------------------------
+// Focus sampling
+//
+// Which app is frontmost, and how long since the last mouse or key event.
+// Written here rather than derived by the probe because neither fact survives:
+// nothing on disk records that Slack was frontmost at 14:03, so a probe that
+// only ever reads files cannot see a stretch spent reading Slack. Sends were
+// the previous stand-in and they are a poor one -- reading half an hour of
+// #ruby-dev and answering nothing produces no evidence at all.
+//
+// Sampled on the poll tick rather than driven by
+// NSWorkspace.didActivateApplicationNotification. Sampling makes the machine
+// going away -- sleep, lock, this app crashing -- indistinguishable from
+// samples simply stopping, which is exactly how it should read; the
+// notification path would leave the last activation standing forever and
+// credit the whole absence to whatever happened to be frontmost when the lid
+// closed. It also declines to notice a two-second glance at Slack, which is
+// the right call for time accounting.
+//
+// Neither API needs a permission grant. Accessibility is required only for
+// window TITLES -- which Slack channel, which document -- and this
+// deliberately stays at app granularity to avoid asking for that.
+let FOCUS_DIR = ("~/.claude/stats/worktime/focus" as NSString).expandingTildeInPath
+
+// A row is written when the frontmost app changes, and otherwise every
+// FOCUS_HEARTBEAT_SEC. The heartbeat is what makes an interrupted span
+// truncate honestly: the probe credits the stretch between consecutive rows
+// only while they stay close together, so a machine that sleeps for two hours
+// leaves a two-hour hole between rows and earns nothing for it. Without the
+// heartbeat a single row would sit there claiming the whole absence -- the
+// same trap `visit_duration` falls into in the Chrome exporter.
+let FOCUS_HEARTBEAT_SEC = 30.0
+
+final class FocusLog {
+    private var lastBundle: String?
+    private var lastWrite = Date.distantPast
+    private var handle: FileHandle?
+    private var handleDay = ""
+
+    private static let stamp: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss"
+        return f
+    }()
+
+    private static let dayfmt: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        return f
+    }()
+
+    // Seconds since the last input event of any kind, across the whole login
+    // session. `.combinedSessionState` rather than `.hidSystemState` so that
+    // input synthesised into the session counts the same as a real mouse --
+    // the question is whether a person is driving the machine, not which
+    // device the events came from.
+    static func idleSeconds() -> Double {
+        guard let anyInput = CGEventType(rawValue: ~0) else { return 0 }
+        return CGEventSource.secondsSinceLastEventType(.combinedSessionState,
+                                                       eventType: anyInput)
+    }
+
+    func sample(now: Date = Date()) {
+        let app = NSWorkspace.shared.frontmostApplication
+        let bundle = app?.bundleIdentifier ?? ""
+        let changed = bundle != lastBundle
+        let due = now.timeIntervalSince(lastWrite) >= FOCUS_HEARTBEAT_SEC
+        guard changed || due else { return }
+
+        let day = Self.dayfmt.string(from: now)
+        let row: [String: Any] = [
+            "day": day,
+            "t": Self.stamp.string(from: now),
+            "app": app?.localizedName ?? "",
+            "bundle": bundle,
+            // Rounded, not thresholded. The threshold is the probe's to choose
+            // and lives beside its other thresholds; duplicating it here would
+            // give the two halves separate definitions of "away" that could
+            // drift apart without either one looking wrong.
+            "idle": Int(Self.idleSeconds().rounded()),
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: row),
+              var line = String(data: data, encoding: .utf8)
+        else { return }
+        line += "\n"
+        write(line, day: day)
+        lastBundle = bundle
+        lastWrite = now
+    }
+
+    // One file per day, opened once and held. Appending through a fresh
+    // FileHandle every 30s would reopen the file ~2,900 times a day for no
+    // benefit, and a single ever-growing file would have to be re-read in full
+    // to answer a question that only ever concerns today.
+    private func write(_ line: String, day: String) {
+        if handleDay != day {
+            handle?.closeFile()
+            handle = nil
+        }
+        if handle == nil {
+            try? FileManager.default.createDirectory(
+                atPath: FOCUS_DIR, withIntermediateDirectories: true)
+            let path = (FOCUS_DIR as NSString).appendingPathComponent("\(day).jsonl")
+            if !FileManager.default.fileExists(atPath: path) {
+                FileManager.default.createFile(atPath: path, contents: nil)
+            }
+            handle = FileHandle(forWritingAtPath: path)
+            handle?.seekToEndOfFile()
+            handleDay = day
+        }
+        guard let data = line.data(using: .utf8) else { return }
+        // Logged rather than swallowed: a focus log that silently stopped
+        // writing would read downstream as a day spent away from the machine,
+        // which is a plausible-looking answer and therefore the dangerous kind
+        // of failure.
+        do { try handle?.write(contentsOf: data) } catch {
+            FileHandle.standardError.write("focus log write failed: \(error)\n"
+                .data(using: .utf8)!)
+            handle?.closeFile()
+            handle = nil
+            handleDay = ""
+        }
+    }
+}
+
 // A coloured glyph as the button's attributed title, not an NSImage.
 // An NSImage built with lockFocus() drew nothing at all when the process was
 // started by launchd: there is no window context to focus in that environment,
@@ -348,6 +473,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // smoothly between polls rather than jumping every 5s.
     var lastActivityAt: Date?
     var hotKeyRef: EventHotKeyRef?
+    let focusLog = FocusLog()
     // One menu for the app's lifetime, mutated in place rather than replaced.
     // Assigning a freshly built NSMenu to item.menu does nothing to a menu that
     // is already on screen: AppKit goes on displaying the instance it was handed
@@ -389,8 +515,14 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate {
         item.menu = menu
         build()
         refresh()
+        focusLog.sample()
         registerHotKey()
         timer = Timer.scheduledTimer(withTimeInterval: POLL_SEC, repeats: true) { _ in
+            // Sampled here and not inside refresh(): menuNeedsUpdate also calls
+            // refresh(), so opening the menu would otherwise log an extra
+            // sample and make "how often was this app frontmost" partly a
+            // measure of how often the dropdown was opened.
+            self.focusLog.sample()
             self.refresh()
         }
         blinkTimer = Timer.scheduledTimer(withTimeInterval: BLINK_INTERVAL, repeats: true) { _ in

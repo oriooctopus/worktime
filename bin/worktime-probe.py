@@ -623,9 +623,17 @@ def marks_for(day: str, stamps: list[int] | None = None) -> list[dict]:
     A mark is work that leaves no trace anywhere else -- reading a PR, thinking,
     a whiteboard. It is open-ended by design: declaring "I am working" should
     not also require predicting when you will stop. It runs until the next real
-    event (a prompt or a Slack send) proves the tracker can see you again, and
-    stops there rather than continuing to credit time the normal signals now
-    cover. If nothing has happened since, it runs to now.
+    event (a prompt, or an attended minute at the front of a work app) proves
+    the tracker can see you again, and stops there rather than continuing to
+    credit time the normal signals now cover. If nothing has happened since, it
+    runs to now.
+
+    Focus makes this close much sooner than it used to, and that is the point:
+    a mark declared while sitting at the machine is superseded within the
+    minute by evidence of sitting at the machine, and the minutes carry on
+    being counted by focus_for() rather than by the human's word. What still
+    runs long is a mark made while genuinely away -- a whiteboard, an offsite,
+    a phone call -- which is the case marks exist for.
 
     An explicit end is honoured when given, which is how a stretch is recorded
     after the fact.
@@ -638,7 +646,7 @@ def marks_for(day: str, stamps: list[int] | None = None) -> list[dict]:
     # through the snapshot, never here -- so there is no cycle.
     if stamps is None:
         stamps = sorted(t.hour * 60 + t.minute for t in prompts_for(day))
-        stamps += sorted(sec_of(r["t"]) // 60 for r in slack_for(day))
+        stamps += [t.hour * 60 + t.minute for t in focus_for(day)]
         stamps.sort()
 
     out = []
@@ -794,6 +802,123 @@ def approvals_for(day: str) -> list[str]:
     return [r["t"] for r in approval_rows_for(day)]
 
 
+FOCUS_DIR = os.path.join(STATE, "focus")
+
+# How long after your last keystroke or mouse move the machine stops counting
+# as attended. Below this you are working with a pause in it; above it you are
+# somewhere else and the app that happens to be frontmost is just the app that
+# was frontmost when you left.
+#
+# Two minutes is tight for reading -- a long diff or a spoken meeting produces
+# no input for far longer -- and it is only safe because neither of those cases
+# depends on this signal: covered_by_meeting() holds the call and
+# github_visits_for() holds the review, both from evidence of their own. What
+# this is left covering is the case with no other evidence at all, where the
+# honest default is to stop counting rather than to keep crediting silence.
+FOCUS_IDLE_SEC = 120
+
+# The most time one sample may vouch for. The bar writes every
+# FOCUS_HEARTBEAT_SEC (30s), so consecutive rows are normally 30s apart and
+# anything materially longer means the log stopped -- sleep, lock, a crash, the
+# app not running. Those minutes get credited to nobody, which is the whole
+# point: the failure mode this avoids is one sample before lunch claiming the
+# hour until the next one.
+FOCUS_MAX_GAP_SEC = 90
+
+# Foreground time that is not work, by bundle id. An exclude list rather than
+# an allow list on purpose -- on a work machine nearly everything in the
+# foreground is the job, and an allow list quietly loses a day's work every
+# time a new tool enters the rotation, failing in the direction that looks like
+# an ordinary quiet afternoon.
+FOCUS_EXCLUDE = {
+    "com.apple.TV",
+    "com.apple.Music",
+    "com.apple.Photos",
+    "com.netflix.Netflix",
+    "com.spotify.client",
+    "com.valvesoftware.steam",
+}
+
+
+def focus_rows(day: str) -> list[dict]:
+    """Raw focus samples for one day, in order.
+
+    Written by the menu bar app; see the FocusLog comment in main.swift for why
+    it is sampled rather than driven by activation notifications.
+    """
+    path = os.path.join(FOCUS_DIR, f"{day}.jsonl")
+    if not os.path.exists(path):
+        return []
+    out = []
+    for line in open(path):
+        if not line.strip():
+            continue
+        r = json.loads(line)
+        if r.get("day") == day:
+            out.append(r)
+    return sorted(out, key=lambda r: r["t"])
+
+
+def focus_for(day: str) -> list[datetime]:
+    """Minutes spent attended, at the front of an app that counts as work.
+
+    This is what replaced Slack sends as the evidence that a stretch in Slack
+    was work. Sends were a bad proxy in the one direction that mattered:
+    reading half an hour of a thread and answering nothing produced no evidence
+    whatsoever, so the largest genuinely-working stretches Slack ever generated
+    were exactly the ones it reported as gaps.
+
+    Returned as one datetime per covered minute rather than as spans, because
+    every other input here is a point event and the period machinery is built
+    on chaining point events. A span would need its own path through code that
+    already works.
+
+    Credit runs between consecutive samples, and is decided by the LATER
+    sample's idle reading: idle is measured backwards from the sample, so the
+    row that closes a window is the one that knows whether anybody touched the
+    machine during it. Deciding on the earlier row instead would credit the
+    first two minutes of every absence, every time.
+    """
+    rows = focus_rows(day)
+    base = datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=LOCAL)
+    minutes: set[int] = set()
+    for a, b in zip(rows, rows[1:]):
+        lo, hi = sec_of(a["t"]), sec_of(b["t"])
+        if not (0 < hi - lo <= FOCUS_MAX_GAP_SEC):
+            continue
+        if not a.get("bundle") or a["bundle"] in FOCUS_EXCLUDE:
+            continue
+        if b.get("idle", 0) > FOCUS_IDLE_SEC:
+            continue
+        minutes.update(range(lo // 60, hi // 60 + 1))
+    return [base + timedelta(minutes=m) for m in sorted(minutes)]
+
+
+def focus_apps(day: str, lo: int, hi: int) -> list[str]:
+    """Which apps held the foreground between two seconds-of-day, most first.
+
+    Used to describe a period that has no prompts and no sends in it -- the
+    stretch the old Slack-send signal could not see at all. Naming the app is
+    the only description available for it, and is a better one than silence.
+    """
+    seen: dict[str, int] = {}
+    rows = focus_rows(day)
+    for a, b in zip(rows, rows[1:]):
+        alo, ahi = sec_of(a["t"]), sec_of(b["t"])
+        if not (0 < ahi - alo <= FOCUS_MAX_GAP_SEC):
+            continue
+        if not a.get("bundle") or a["bundle"] in FOCUS_EXCLUDE:
+            continue
+        if b.get("idle", 0) > FOCUS_IDLE_SEC:
+            continue
+        span = min(ahi, hi) - max(alo, lo)
+        if span <= 0:
+            continue
+        name = a.get("app") or a["bundle"]
+        seen[name] = seen.get(name, 0) + span
+    return [k for k, _ in sorted(seen.items(), key=lambda kv: -kv[1])]
+
+
 # The WSL box's activity export -- see the header comment at the top of
 # Dashboard/Vault Dashboard.md for the full inventory of what it writes.
 ACTIVITY_DIR = os.path.expanduser("~/Documents/Main/Dashboard/activity")
@@ -891,10 +1016,23 @@ def desktop_prompts_for(day: str) -> list[datetime]:
 def events_for(day: str) -> list[datetime]:
     """Everything that proves someone was working.
 
-    Prompts, Slack sends, permission approvals, and github.com Chrome visits,
-    merged into one list on purpose. A Slack reply two minutes after a prompt
-    continues that work period; treating the streams separately would put a
-    gap between them and then count the same stretch twice.
+    Prompts, attended foreground minutes, permission approvals, and github.com
+    Chrome visits, merged into one list on purpose. A Slack reply two minutes
+    after a prompt continues that work period; treating the streams separately
+    would put a gap between them and then count the same stretch twice.
+
+    Slack SENDS are deliberately absent, though slack_for() still runs and
+    still fills the tooltip. Every minute a send used to prove is a minute the
+    machine was attended with Slack in front of it, so focus_for() already
+    covers them -- and covers the far larger set of minutes spent reading,
+    which sends never could. Keeping both would not double-count (the union is
+    by minute) but it would leave two definitions of the same evidence to drift
+    apart, and the weaker one is only ever a subset of the stronger.
+
+    It also drops the one thing sends could see that focus cannot: a message
+    sent from the phone. That is the intended trade -- typing on a phone is
+    poor evidence of being at the desk working, and it was previously enough to
+    hold the dot green from a sofa.
     """
     base = datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=LOCAL)
 
@@ -903,7 +1041,7 @@ def events_for(day: str) -> list[datetime]:
         return base.replace(hour=int(h), minute=int(m), second=int(s))
 
     out = list(prompts_for(day))
-    out += [at(r["t"]) for r in slack_for(day)]
+    out += focus_for(day)
     out += [at(t) for t in approvals_for(day)]
     out += github_visits_for(day)
     return sorted(out)
@@ -1628,6 +1766,15 @@ def write_vault_snapshot(day: str, events: list[datetime]) -> None:
                 if n not in names:
                     names.append(n)
             what = "Slack: " + ", ".join(names[:4])
+        # Last, because it is the weakest description available: the channel
+        # names above say what the stretch was ABOUT, while this says only
+        # which window it happened in. It exists for the stretch that has
+        # neither prompts nor sends -- reading rather than writing -- which
+        # nothing could describe at all before focus was recorded.
+        if not what:
+            apps = focus_apps(day, lo, hi)
+            if apps:
+                what = ", ".join(apps[:3])
         worked.append({
             "start": a, "end": b, "len": b - a,
             # Every Slack send inside the period, so the tooltip can show what
@@ -1795,11 +1942,15 @@ def write_vault_snapshot(day: str, events: list[datetime]) -> None:
         # prompting and nothing more. It is a floor on the working day, not the
         # working day: reading a response is real work that leaves no stamp.
         "work_minutes": sum(w["len"] for w in worked),
-        # `events` is prompts and Slack sends together, so it is not the prompt
-        # count and must not be published as one -- the dashboard's "N prompts"
-        # would otherwise silently start counting Slack.
+        # `events` is prompts and attended foreground minutes together, so it is
+        # not the prompt count and must not be published as one -- the
+        # dashboard's "N prompts" would otherwise silently start counting focus.
         "prompts": sum(w["n_prompts"] for w in worked),
         "slack_messages": len(slack_rows),
+        # Attended minutes at the front of a work app. Published beside the
+        # others so a day that reads long can be traced to the signal that made
+        # it long, which for anyone used to the send-only numbers this now is.
+        "focus_minutes": len(focus_for(day)),
         "approvals": len(approvals_for(day)),
         "events": len(events),
         # Newest last, matching the order they were written.
@@ -2179,6 +2330,14 @@ def activity_fingerprint(day: str) -> str:
     fingerprint alone would never notice it and the cache would go stale
     forever. Folding the TTL bucket in forces a genuine recompute every
     SLACK_TTL_SEC, which is the refresh cadence Slack already had.
+
+    Since sends stopped counting as presence that bucket no longer moves the
+    dot -- it now only keeps the tooltip's message list current, which is
+    still worth a recompute every four minutes and nothing like often enough
+    to matter. The focus log is an ordinary file and needs no such trick,
+    though it does mean the fingerprint misses on every heartbeat: a full
+    re-derivation twice a minute, against the six a minute an active Claude
+    session already causes through its transcript.
     """
     parts = []
     for root, _dirs, files in os.walk(os.path.expanduser("~/.claude/projects")):
@@ -2189,6 +2348,7 @@ def activity_fingerprint(day: str) -> str:
                 parts.append(f"{p}:{st.st_mtime_ns}:{st.st_size}")
     for p in (MARKS, APPROVALS, MODEFILE, CAL_FILE,
               os.path.join(SLACK_DIR, f"{day}.json"),
+              os.path.join(FOCUS_DIR, f"{day}.jsonl"),
               os.path.join(ACTIVITY_DIR, f"{day}.md")):
         try:
             st = os.stat(p)
@@ -2238,10 +2398,10 @@ def live_activity(day: str) -> tuple[datetime | None, list[int], list[dict]]:
         return last, c["stamps"], c["acts"]
 
     events = events_for(day)
-    # Prompts and Slack only, matching what marks_for() closes an open mark on.
+    # Prompts and focus only, matching what marks_for() closes an open mark on.
     # Approvals are deliberately excluded there and must stay excluded here.
     stamps = sorted([t.hour * 60 + t.minute for t in prompts_for(day)]
-                    + [sec_of(r["t"]) // 60 for r in slack_for(day)])
+                    + [t.hour * 60 + t.minute for t in focus_for(day)])
     last = events[-1] if events else None
     acts = recent_activities(day)
     # Per-pid, because this is now written by whichever process polls first and

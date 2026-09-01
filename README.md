@@ -38,6 +38,38 @@ of eight hops in two seconds is one interval rather than eight units of work.
 **`activity-export.py`** writes the daily activity table from WhatsApp,
 iMessage, calls, Chrome and Claude Code, with cached LLM period summaries.
 
+## Why foreground time replaced Slack sends
+
+Sends were a bad proxy in the one direction that mattered. Reading half an hour
+of a thread and answering nothing produced no evidence at all, so the Slack
+stretches most likely to be real work were exactly the ones reported as gaps.
+Foreground time sees the reading.
+
+It is a more generous signal, so the day gets longer. Two things keep it
+honest:
+
+**Idle.** `CGEventSource.secondsSinceLastEventType` gives seconds since the
+last mouse or key event. Past `FOCUS_IDLE_SEC` (120) the machine stops counting
+as attended, so an app left frontmost over lunch earns nothing. Two minutes is
+tight for reading, and is only safe because the two long passive stretches have
+evidence of their own -- a meeting is held by the calendar, a code review by
+the GitHub visits.
+
+**A heartbeat.** The sampler writes every 30 seconds, and the probe credits the
+stretch between consecutive samples only while they stay under
+`FOCUS_MAX_GAP_SEC` (90). Sleep, lock or a crash leaves a hole no sample
+vouches for, rather than one row before lunch claiming the afternoon -- the
+same trap `visit_duration` falls into below.
+
+`FOCUS_EXCLUDE` is an exclude list, not an allow list: on a work machine nearly
+everything in the foreground is the job, and an allow list silently loses a
+day's work every time a new tool enters the rotation.
+
+Two things this gave up: a message sent from a phone no longer holds the dot
+green, and focus is app-level only. Window titles -- which channel, which
+document -- would need Accessibility permission, so the tracker stays at app
+granularity rather than asking for it.
+
 ## Two traps worth knowing
 
 **`visit_duration` is not attention.** It measures time until the tab navigated
@@ -104,9 +136,13 @@ draws a coloured dot; it never recomputes state itself.
   including from worktime's own background-job sessions: it walks both the
   normal `~/.claude/projects` and the separate `~/.claude-personal/projects`
   those run under.
-- **Slack messages sent** — fetched from the Slack search API (token in
-  `~/.slack-mcp-token.json`). Messages received say nothing about presence;
-  only sends count.
+- **Attended foreground time** — which app was frontmost and how long since the
+  last mouse or key event, sampled every 5 seconds by the menu bar app into
+  `~/.claude/stats/worktime/focus/<date>.jsonl`. This is what counts Slack
+  time, and it replaced Slack sends as the presence signal (see below).
+- **Slack messages sent** — still fetched from the Slack search API (token in
+  `~/.slack-mcp-token.json`), but no longer evidence of presence. They survive
+  only to name what a stretch was about in the tooltip and the `What` column.
 - **Tool-approval events** — written by `bin/worktime-approval.py`
   (symlinked to `~/.claude/hooks/worktime-approval.py`, the Claude Code
   Notification/PostToolUse hook) to `~/.claude/stats/worktime/approvals.jsonl`.
@@ -134,9 +170,9 @@ so a sparse stream of prompts between meetings doesn't inflate the day.
 
 For the live dot (`status`), the verdict is:
 
-1. **Green** — a prompt or Slack send arrived within the current cutoff, OR a
-   manual mark is active right now, OR a work calendar meeting covers the
-   current minute.
+1. **Green** — a prompt arrived or the machine was attended at the front of a
+   work app within the current cutoff, OR a manual mark is active right now, OR
+   a work calendar meeting covers the current minute.
 2. **Blue** — a manual mark is active (shown distinctly so it's clear the green
    is asserted, not derived).
 3. **Amber** — none of the above.
@@ -158,7 +194,7 @@ something actually changed.
 
 | Colour | Meaning |
 |--------|---------|
-| Green  | Working: recent prompt or Slack activity, or a work meeting is live |
+| Green  | Working: recent prompt or attended foreground time, or a work meeting is live |
 | Blue   | Manually marked as working |
 | Amber  | Idle: no recent activity and no meeting |
 | Red    | Probe failed to run or returned an error |
