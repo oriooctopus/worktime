@@ -13,44 +13,20 @@ so each visit becomes an interval and overlapping intervals are unioned.
 Writes ~/.cache/activity-export/chrome-work-blocks.json. Reads nothing from the
 network. Run it as often as you like; the Chrome History copy is ~0.4s.
 """
-import argparse, json, os, shutil, sqlite3, sys, tempfile
+import argparse, json, os, sys
 from datetime import datetime, timedelta, date as date_cls
-try:
-    from zoneinfo import ZoneInfo
-except ImportError:  # Python < 3.9 (this box: 3.8.10)
-    from backports.zoneinfo import ZoneInfo
 
-TZ = ZoneInfo("America/New_York")
-CHROME_EPOCH = datetime(1601, 1, 1)
-PROFILE_PATH = os.path.expanduser("~/.config/worktime/profile.json")
-# Where Chrome keeps History differs per platform. macOS matters because
-# total_foreground_duration -- the only signal that separates reading from a
-# parked tab -- exists on the machine doing the browsing and is stripped by sync.
-CHROME_HISTORY_DEFAULTS = {
-    "wsl": "/mnt/c/chrome-cdp-profile/Default/History",
-    "macos": os.path.expanduser("~/Library/Application Support/Google/Chrome/Default/History"),
-    "linux": os.path.expanduser("~/.config/google-chrome/Default/History"),
-}
+# realpath, not abspath: this file may be reached through a symlink on PATH,
+# and abspath would look for the shared module beside the symlink.
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import worktime_common as wc  # noqa: E402
 
-
-def chrome_history_path(profile_path=None):
-    path = profile_path if profile_path is not None else PROFILE_PATH
-    if os.path.exists(path):
-        try:
-            with open(path) as f:
-                configured = json.load(f).get("chrome_history_path")
-        except (OSError, ValueError) as e:
-            raise WorkBlocksError(f"profile {path} is unreadable: {e}")
-        if configured:
-            return os.path.expanduser(configured)
-    if sys.platform == "darwin":
-        return CHROME_HISTORY_DEFAULTS["macos"]
-    if "microsoft" in os.uname().release.lower():
-        return CHROME_HISTORY_DEFAULTS["wsl"]
-    return CHROME_HISTORY_DEFAULTS["linux"]
-
-
-CHROME_HISTORY = chrome_history_path()
+# The timezone, the 1601 epoch, and the History location used to be spelled out
+# again here, and the copy differed: it hardcoded the "Default" profile, which
+# does not exist on the Mac, so this script read an empty history there and the
+# result was indistinguishable from a day of no browsing.
+TZ = wc.local_tz()
+CHROME_HISTORY = wc.chrome_history_path()
 CONFIG_PATH = os.path.expanduser("~/.config/activity-export/work-domains.json")
 CACHE_PATH = os.path.expanduser("~/.cache/activity-export/chrome-work-blocks.json")
 
@@ -61,7 +37,10 @@ MIN_DWELL_SEC = 60
 # 214 minutes. visit_duration cannot distinguish reading from parking, so a
 # single visit is capped: past this, it is evidence of an open tab, not work.
 MAX_DWELL_SEC = 10 * 60
-# Same 12-minute threshold the probe uses for Claude prompt bouts.
+# Two browsing stretches closer together than this are one block. Deliberately
+# looser than the probe's own prompt-bout gap, which is 5 minutes and ramps when
+# the screen is unfocused: a prompt is a deliberate act, so silence after one is
+# real, whereas reading a long PR page emits nothing for minutes at a time.
 GAP_SEC = 12 * 60
 # A single stray visit should not manufacture a work block.
 MIN_BLOCK_SEC = 3 * 60
@@ -96,33 +75,20 @@ def classify(url, cfg):
     return "neutral"
 
 
-def chrome_ts(dt):
-    return int((dt.replace(tzinfo=None) - CHROME_EPOCH).total_seconds() * 1e6)
-
-
 def read_visits(history_path, local_date, tz=TZ):
     """Return [(url, start_dt, dwell_sec)] for local_date, as local times."""
+    if not history_path:
+        raise WorkBlocksError("no Chrome profile found to read history from")
     start_local = datetime(local_date.year, local_date.month, local_date.day, tzinfo=tz)
-    lo = chrome_ts(start_local.astimezone(ZoneInfo("UTC")))
-    hi = chrome_ts((start_local + timedelta(days=1)).astimezone(ZoneInfo("UTC")))
-    tmp_dir = tempfile.mkdtemp(prefix="chrome-work-blocks-")
-    tmp = os.path.join(tmp_dir, "History")
-    try:
-        shutil.copy2(history_path, tmp)
-        conn = sqlite3.connect(tmp)
-        rows = list(conn.execute(
-            """SELECT urls.url, visits.visit_time, visits.visit_duration
-               FROM visits JOIN urls ON urls.id = visits.url
-               WHERE visits.visit_time BETWEEN ? AND ?
-               ORDER BY visits.visit_time""", (lo, hi)))
-        conn.close()
-    finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-    out = []
-    for url, t, dur in rows:
-        start_utc = (CHROME_EPOCH + timedelta(microseconds=t)).replace(tzinfo=ZoneInfo("UTC"))
-        out.append((url, start_utc.astimezone(tz), (dur or 0) / 1e6))
-    return out
+    rows = wc.read_history(
+        history_path,
+        """SELECT urls.url, visits.visit_time, visits.visit_duration
+           FROM visits JOIN urls ON urls.id = visits.url
+           WHERE visits.visit_time BETWEEN ? AND ?
+           ORDER BY visits.visit_time""",
+        (wc.chrome_micros(start_local),
+         wc.chrome_micros(start_local + timedelta(days=1))))
+    return [(url, wc.chrome_time(t, tz), (dur or 0) / 1e6) for url, t, dur in rows]
 
 
 def work_intervals(visits, cfg, min_dwell=MIN_DWELL_SEC, max_dwell=MAX_DWELL_SEC):
@@ -191,7 +157,7 @@ def main():
             print(json.dumps(render(blocks, d or datetime.now(TZ).date()), indent=2))
         else:
             print(json.dumps(run(local_date=d), indent=2))
-    except WorkBlocksError as e:
+    except (WorkBlocksError, wc.ProfileError) as e:
         print(f"chrome-work-blocks: {e}", file=sys.stderr)
         sys.exit(1)
 

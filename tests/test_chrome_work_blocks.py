@@ -158,8 +158,7 @@ def _make_history(path, rows):
               "visit_time INTEGER, visit_duration INTEGER)")
     for i, (u, dt, dur) in enumerate(rows, start=1):
         c.execute("INSERT INTO urls VALUES (?,?)", (i, u))
-        micros = int((dt.astimezone(cwb.ZoneInfo("UTC")).replace(tzinfo=None)
-                      - cwb.CHROME_EPOCH).total_seconds() * 1e6)
+        micros = cwb.wc.chrome_micros(dt)
         c.execute("INSERT INTO visits VALUES (?,?,?,?)", (i, i, micros, int(dur * 1e6)))
     c.commit(); c.close()
 
@@ -210,30 +209,50 @@ def test_config_gap_sec_actually_splits_blocks():
 
 
 # --- chrome history location ---
+# Resolved by the shared module now. This script used to hardcode the "Default"
+# profile directory, which does not exist on the Mac, so it read an empty
+# history there and a day of PR review looked like a day of no browsing.
 
 def test_history_path_uses_the_profile_when_set(tmp_path):
     f = tmp_path / "profile.json"
     f.write_text(json.dumps({"chrome_history_path": "/custom/History"}))
-    assert cwb.chrome_history_path(str(f)) == "/custom/History"
+    assert cwb.wc.chrome_history_path(str(f)) == "/custom/History"
 
 
 def test_history_path_expands_a_tilde(tmp_path):
     f = tmp_path / "profile.json"
     f.write_text(json.dumps({"chrome_history_path": "~/Chrome/History"}))
-    assert cwb.chrome_history_path(str(f)).startswith(os.path.expanduser("~"))
+    assert cwb.wc.chrome_history_path(str(f)).startswith(os.path.expanduser("~"))
 
 
-def test_history_path_falls_back_to_a_platform_default(tmp_path):
-    got = cwb.chrome_history_path(str(tmp_path / "nope.json"))
-    assert got in cwb.CHROME_HISTORY_DEFAULTS.values()
+def test_the_profile_directory_is_found_not_assumed(tmp_path):
+    """Chrome's profile directory is not reliably named "Default" -- the only
+    one on this Mac is "Profile 2"."""
+    (tmp_path / "Profile 2").mkdir()
+    (tmp_path / "Profile 2" / "History").write_text("x")
+    got = cwb.wc.chrome_history_path(str(tmp_path / "nope.json"),
+                                     platform="darwin", chrome_dir=str(tmp_path))
+    assert got == str(tmp_path / "Profile 2" / "History")
 
 
-def test_macos_default_points_at_the_real_chrome_location():
-    assert cwb.CHROME_HISTORY_DEFAULTS["macos"].endswith(
-        "Library/Application Support/Google/Chrome/Default/History")
+def test_the_most_recently_written_profile_wins(tmp_path):
+    for name, mtime in (("Profile 1", 1_000_000), ("Profile 2", 2_000_000)):
+        (tmp_path / name).mkdir()
+        h = tmp_path / name / "History"
+        h.write_text("x")
+        os.utime(h, (mtime, mtime))
+    got = cwb.wc.chrome_history_path(str(tmp_path / "nope.json"),
+                                     platform="darwin", chrome_dir=str(tmp_path))
+    assert got == str(tmp_path / "Profile 2" / "History")
+
+
+def test_no_chrome_at_all_is_none_not_a_guess(tmp_path):
+    assert cwb.wc.chrome_history_path(str(tmp_path / "nope.json"),
+                                      platform="darwin",
+                                      chrome_dir=str(tmp_path / "absent")) is None
 
 
 def test_malformed_profile_raises(tmp_path):
     f = tmp_path / "profile.json"; f.write_text("{not json")
-    with pytest.raises(cwb.WorkBlocksError):
-        cwb.chrome_history_path(str(f))
+    with pytest.raises(cwb.wc.ProfileError):
+        cwb.wc.chrome_history_path(str(f))

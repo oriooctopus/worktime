@@ -21,10 +21,17 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HOOK = os.path.join(ROOT, "bin", "worktime-approval.py")
 
-spec = importlib.util.spec_from_file_location(
-    "wp", os.path.join(ROOT, "bin", "worktime-probe.py"))
-wp = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(wp)
+def _load(name, path):
+    """Import a hyphenated script. These are symlinked onto PATH and into
+    ~/.claude/hooks rather than packaged, so their filenames are not importable
+    names and there is no package to import them from."""
+    spec = importlib.util.spec_from_file_location(name, path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+wp = _load("wp", os.path.join(ROOT, "bin", "worktime-probe.py"))
 
 
 def build(stamps, firsts=(), mode="focused"):
@@ -432,14 +439,14 @@ class GithubFilter(unittest.TestCase):
         # CHROME_DIR is redirected at an empty directory as well, or every
         # assertion here would also be reading whatever the person running the
         # suite happened to browse on the test day.
-        old, old_chrome = wp.ACTIVITY_DIR, wp.CHROME_DIR
+        old, old_chrome = wp.ACTIVITY_DIR, wp.wc.CHROME_DIR
         try:
             wp.ACTIVITY_DIR = d
-            wp.CHROME_DIR = os.path.join(d, "no-chrome")
+            wp.wc.CHROME_DIR = os.path.join(d, "no-chrome")
             wp._gh_live_cache.clear()
             return wp.github_visits_for(day)
         finally:
-            wp.ACTIVITY_DIR, wp.CHROME_DIR = old, old_chrome
+            wp.ACTIVITY_DIR, wp.wc.CHROME_DIR = old, old_chrome
             wp._gh_live_cache.clear()
 
     def test_pr_page_matches_though_truncation_ate_the_url(self):
@@ -537,12 +544,16 @@ class ActivityFingerprint(unittest.TestCase):
             wp.PROMPT_ROOTS = old
 
     def test_the_probe_and_the_counter_read_the_same_roots(self):
-        # They are separate files and drift silently: prompt-count.py counts a
-        # prompt the fingerprint never notices, which is exactly the bug above.
-        src = open(os.path.join(ROOT, "bin", "prompt-count.py")).read()
-        for root in wp.PROMPT_ROOTS:
-            leaf = os.path.basename(os.path.dirname(root))
-            self.assertIn(leaf, src, f"{leaf} is not a root in prompt-count.py")
+        # Not "the same values" -- the same object. They used to be two lists
+        # in two files, and prompt-count.py grew a second root that the
+        # fingerprint never learned about, so a prompt typed at a background
+        # job was counted as presence but did not invalidate the memoised
+        # status: the menu bar sat on a reading from minutes earlier with
+        # nothing to show it was stale. Identity is what makes that
+        # unrepeatable; equality could be restored to drifting tomorrow.
+        pc = _load("prompt-count", os.path.join(ROOT, "bin", "prompt-count.py"))
+        self.assertIs(wp.PROMPT_ROOTS, wp.wc.PROJECT_ROOTS)
+        self.assertIs(pc.PROJECT_ROOTS, wp.wc.PROJECT_ROOTS)
 
 
 class GithubLiveHistory(unittest.TestCase):
@@ -571,7 +582,7 @@ class GithubLiveHistory(unittest.TestCase):
             for i, (hh, mm, url, title) in enumerate(rows, start=1):
                 when = datetime.strptime(self.DAY, "%Y-%m-%d").replace(
                     hour=hh, minute=mm, tzinfo=wp.LOCAL)
-                micros = int((when - wp.CHROME_EPOCH).total_seconds() * 1e6)
+                micros = wp.wc.chrome_micros(when)
                 c.execute("INSERT INTO urls VALUES (?,?,?)", (i, url, title))
                 c.execute("INSERT INTO visits VALUES (?,?,?)", (i, i, micros))
             c.commit()
@@ -584,13 +595,13 @@ class GithubLiveHistory(unittest.TestCase):
         with open(os.path.join(act, f"{self.DAY}.md"), "w") as fh:
             fh.write("| time | source | direction | who | detail |\n"
                      "|---|---|---|---|---|\n" + export)
-        old, old_act = wp.CHROME_DIR, wp.ACTIVITY_DIR
+        old, old_act = wp.wc.CHROME_DIR, wp.ACTIVITY_DIR
         try:
-            wp.CHROME_DIR, wp.ACTIVITY_DIR = root, act
+            wp.wc.CHROME_DIR, wp.ACTIVITY_DIR = root, act
             wp._gh_live_cache.clear()
             return wp.github_rows_for(self.DAY)
         finally:
-            wp.CHROME_DIR, wp.ACTIVITY_DIR = old, old_act
+            wp.wc.CHROME_DIR, wp.ACTIVITY_DIR = old, old_act
             wp._gh_live_cache.clear()
 
     def test_a_pr_read_this_morning_is_visible_now(self):
@@ -612,36 +623,36 @@ class GithubLiveHistory(unittest.TestCase):
             "Default": [(9, 0, "https://github.com/a/b/pull/1", "Stale")],
             "Profile 2": [(9, 5, "https://github.com/a/b/pull/2", "Live")]})
         os.utime(os.path.join(root, "Default", "History"), (1, 1))
-        old = wp.CHROME_DIR
+        old = wp.wc.CHROME_DIR
         try:
-            wp.CHROME_DIR = root
+            wp.wc.CHROME_DIR = root
             wp._gh_live_cache.clear()
             self.assertEqual([d for _w, d in wp.github_live_rows(self.DAY)],
                              ["Live"])
         finally:
-            wp.CHROME_DIR = old
+            wp.wc.CHROME_DIR = old
             wp._gh_live_cache.clear()
 
     def test_no_chrome_at_all_is_not_an_error(self):
-        old = wp.CHROME_DIR
+        old = wp.wc.CHROME_DIR
         try:
-            wp.CHROME_DIR = os.path.join(tempfile.mkdtemp(), "absent")
+            wp.wc.CHROME_DIR = os.path.join(tempfile.mkdtemp(), "absent")
             wp._gh_live_cache.clear()
             self.assertEqual(wp.github_live_rows(self.DAY), [])
         finally:
-            wp.CHROME_DIR = old
+            wp.wc.CHROME_DIR = old
             wp._gh_live_cache.clear()
 
     def test_another_days_visits_are_not_todays_evidence(self):
         root = self._chrome({"Profile 2": [
             (9, 5, "https://github.com/a/b/pull/1", "Yesterday")]})
-        old = wp.CHROME_DIR
+        old = wp.wc.CHROME_DIR
         try:
-            wp.CHROME_DIR = root
+            wp.wc.CHROME_DIR = root
             wp._gh_live_cache.clear()
             self.assertEqual(wp.github_live_rows("2026-08-27"), [])
         finally:
-            wp.CHROME_DIR = old
+            wp.wc.CHROME_DIR = old
             wp._gh_live_cache.clear()
 
     def test_signing_in_is_not_reviewing_code(self):
@@ -696,10 +707,10 @@ class GithubLiveHistory(unittest.TestCase):
         # every call is the difference between cheap and not worth having.
         root = self._chrome({"Profile 2": [
             (9, 5, "https://github.com/a/b/pull/1", "A PR")]})
-        old, real_copy = wp.CHROME_DIR, wp.shutil.copy2
+        old, real_copy = wp.wc.CHROME_DIR, wp.shutil.copy2
         copies = []
         try:
-            wp.CHROME_DIR = root
+            wp.wc.CHROME_DIR = root
             wp._gh_live_cache.clear()
             wp.shutil.copy2 = lambda *a, **k: (copies.append(a),
                                                real_copy(*a, **k))[1]
@@ -708,7 +719,7 @@ class GithubLiveHistory(unittest.TestCase):
             self.assertEqual(len(copies), 1)
         finally:
             wp.shutil.copy2 = real_copy
-            wp.CHROME_DIR = old
+            wp.wc.CHROME_DIR = old
             wp._gh_live_cache.clear()
 
 
@@ -1277,20 +1288,20 @@ class RecentActivities(unittest.TestCase):
             fh.write("| time | source | direction | who | detail |\n|---|---|---|---|---|\n"
                      "| 09:00 | claude | prompt | me | build the iOS app |\n"
                      "| 09:05 | chrome | visit | synced | a PR · scaledata/sdmain |\n")
-        saved = (wp.ACTIVITY_DIR, wp.CHROME_DIR, wp.full_day, wp.slack_for,
+        saved = (wp.ACTIVITY_DIR, wp.wc.CHROME_DIR, wp.full_day, wp.slack_for,
                  wp.approval_rows_for)
         try:
             wp.ACTIVITY_DIR = d
             # Without this the live reader adds whatever the person running
             # the suite really browsed on DAY, which is neither fixed nor known.
-            wp.CHROME_DIR = os.path.join(d, "no-chrome")
+            wp.wc.CHROME_DIR = os.path.join(d, "no-chrome")
             wp._gh_live_cache.clear()
             wp.full_day = lambda _d: {"sessions": []}
             wp.slack_for = lambda _d: []
             wp.approval_rows_for = lambda _d: []
             got = wp.recent_activities(DAY)
         finally:
-            (wp.ACTIVITY_DIR, wp.CHROME_DIR, wp.full_day, wp.slack_for,
+            (wp.ACTIVITY_DIR, wp.wc.CHROME_DIR, wp.full_day, wp.slack_for,
              wp.approval_rows_for) = saved
             wp._gh_live_cache.clear()
         self.assertEqual([(a["kind"], a["t"]) for a in got], [("browsing", "09:05")])

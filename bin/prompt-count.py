@@ -32,9 +32,14 @@ import urllib.request
 import urllib.error
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
 
-LOCAL = ZoneInfo("America/New_York")
+# realpath, not abspath: this file is reached through the
+# ~/.claude/hooks/prompt-count.py symlink, and abspath would look for the
+# shared module in ~/.claude/hooks, where it is not.
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import worktime_common as wc  # noqa: E402
+
+LOCAL = wc.local_tz()
 
 SKIP_PREFIXES = (
     "<local-command-stdout>",
@@ -74,10 +79,7 @@ def redact(text: str) -> str:
 # -- entrypoint filtering below already excludes anything non-human-typed --
 # so they must be walked alongside the normal profile or worktime background
 # jobs are invisible to the tracker no matter how long they run.
-PROJECT_ROOTS = [
-    os.path.expanduser("~/.claude/projects"),
-    os.path.expanduser("~/.claude-personal/projects"),
-]
+PROJECT_ROOTS = wc.PROJECT_ROOTS
 
 
 def find_transcript(session_id: str) -> str | None:

@@ -50,7 +50,14 @@ except ImportError:  # the Linux box runs 3.8; the Mac does not need this
 # disagree about the present. ZoneInfo reads the bundled tzdata instead and is
 # unaffected, so every timestamp is resolved through LOCAL explicitly and
 # datetime.now() with no argument is never used.
-LOCAL = ZoneInfo("America/New_York")
+# realpath, not abspath: this file is normally reached through the
+# ~/.claude/bin/worktime-probe.py symlink, and abspath would look for the
+# shared module in ~/.claude/bin, where it is not. Same trap ROOT documents
+# below.
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import worktime_common as wc  # noqa: E402
+
+LOCAL = wc.local_tz()
 
 # Run helpers under THIS interpreter, never a bare "python3" off PATH. The menu
 # bar app is started by launchd, whose PATH is /usr/bin:/bin:/usr/sbin:/sbin,
@@ -78,14 +85,7 @@ STATE = os.path.expanduser("~/.claude/stats/worktime")
 LABELS = os.path.join(STATE, "labels.jsonl")
 CURSOR = os.path.join(STATE, "cursor.json")
 
-# Two Claude Code profiles feed this machine: interactive sessions under
-# ~/.claude, and worktime's own background jobs under ~/.claude-personal.
-# Both hold real prompts from a real person, so both are presence. Kept in
-# step with PROMPT_ROOTS in bin/prompt-count.py, which does the counting.
-PROMPT_ROOTS = [
-    os.path.expanduser("~/.claude/projects"),
-    os.path.expanduser("~/.claude-personal/projects"),
-]
+PROMPT_ROOTS = wc.PROJECT_ROOTS
 
 # More than this many minutes with no prompt and you were not working. Prompts
 # closer together than this chain into one work period; anything further apart
@@ -1006,7 +1006,7 @@ def focus_apps(day: str, lo: int, hi: int) -> list[str]:
 
 # The WSL box's activity export -- see the header comment at the top of
 # Dashboard/Vault Dashboard.md for the full inventory of what it writes.
-ACTIVITY_DIR = os.path.expanduser("~/Documents/Main/Dashboard/activity")
+ACTIVITY_DIR = os.path.join(wc.dashboard_dir(), "activity")
 
 CHROME_ROW = re.compile(
     r"^\|\s*(\d{1,2}:\d{2})\s*\|\s*chrome\s*\|\s*visit\s*\|[^|]*\|\s*(.*?)\s*\|\s*$")
@@ -1052,29 +1052,7 @@ def _work_site_hit(text: str) -> bool:
 # export. The export is written by a nightly job, so on its own it makes today
 # the one day with no browser evidence at all -- a morning of code review shows
 # up tomorrow, which is precisely when it is no longer useful.
-CHROME_DIR = os.path.expanduser("~/Library/Application Support/Google/Chrome")
-
-# Chrome stamps visits in microseconds since 1601, not since 1970.
-CHROME_EPOCH = datetime(1601, 1, 1, tzinfo=timezone.utc)
-
-
-def chrome_history_path() -> str | None:
-    """The History DB of the Chrome profile actually in use, or None.
-
-    Found by scanning rather than hardcoded, because the profile directory is
-    not reliably "Default": this machine's only profile is "Profile 2" and has
-    no Default at all, so a hardcoded path reads an empty history forever while
-    looking like a person who simply did not browse. Most-recently-written wins,
-    which is what "the profile in use" means when several exist.
-    """
-    if not os.path.isdir(CHROME_DIR):
-        return None
-    found = [os.path.join(CHROME_DIR, name, "History")
-             for name in os.listdir(CHROME_DIR)
-             if os.path.exists(os.path.join(CHROME_DIR, name, "History"))]
-    if not found:
-        return None
-    return max(found, key=lambda p: os.stat(p).st_mtime)
+chrome_history_path = wc.chrome_history_path
 
 
 _gh_live_cache: dict[str, tuple] = {}
@@ -1101,30 +1079,22 @@ def github_live_rows(day: str) -> list[tuple[datetime, str]]:
         return _gh_live_cache["rows"]
 
     base = datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=LOCAL)
-    lo = int((base - CHROME_EPOCH).total_seconds() * 1e6)
-    hi = int((base + timedelta(days=1) - CHROME_EPOCH).total_seconds() * 1e6)
-    tmp_dir = tempfile.mkdtemp(prefix="worktime-history-")
-    try:
-        tmp = os.path.join(tmp_dir, "History")
-        shutil.copy2(path, tmp)
-        conn = sqlite3.connect(tmp)
-        raw = list(conn.execute(
-            """SELECT visits.visit_time, urls.url, urls.title
-                 FROM visits JOIN urls ON urls.id = visits.url
-                WHERE visits.visit_time BETWEEN ? AND ?
-                  AND (urls.url LIKE '%github.com%'
-                       OR urls.url LIKE '%rubrik.docebosaas.com%'
-                       OR urls.url LIKE '%sso.rubrik.com%')
-             ORDER BY visits.visit_time""", (lo, hi)))
-        conn.close()
-    finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
+    raw = wc.read_history(
+        path,
+        """SELECT visits.visit_time, urls.url, urls.title
+             FROM visits JOIN urls ON urls.id = visits.url
+            WHERE visits.visit_time BETWEEN ? AND ?
+              AND (urls.url LIKE '%github.com%'
+                   OR urls.url LIKE '%rubrik.docebosaas.com%'
+                   OR urls.url LIKE '%sso.rubrik.com%')
+         ORDER BY visits.visit_time""",
+        (wc.chrome_micros(base), wc.chrome_micros(base + timedelta(days=1))))
 
     rows = []
     for stamp, url, title in raw:
         if not _work_site_hit(url):
             continue
-        when = (CHROME_EPOCH + timedelta(microseconds=stamp)).astimezone(LOCAL)
+        when = wc.chrome_time(stamp, LOCAL)
         # Title only when there is one. The URL is the fallback rather than a
         # suffix because the tooltip truncates at roughly a PR title's length,
         # so appending it buys nothing and costs the end of the title.
@@ -1401,7 +1371,7 @@ def recent_activities(day: str, limit: int = ACTIVITY_LIST_N) -> list[dict]:
 # on, so a .json dump written on another machine silently never arrives -- it
 # is not a transport that can be relied on without that setting. A table in a
 # note syncs, and stays readable in Obsidian besides.
-CAL_FILE = os.path.expanduser("~/Documents/Main/Dashboard/calendar-today.md")
+CAL_FILE = os.path.join(wc.dashboard_dir(), "calendar-today.md")
 CAL_STALE_HOURS = 6
 
 CAL_ROW = re.compile(
@@ -1834,7 +1804,7 @@ def resolve_pending(now: datetime, events: list[datetime]) -> int:
 # One file per day rather than a single rolling "today". At 00:01 the day the
 # human wants to look at is almost always the one that just ended, and a single
 # file cannot serve that -- it has already been overwritten with an empty day.
-VAULT_SNAPSHOT_DIR = os.path.expanduser("~/Documents/Main/Dashboard/worktime")
+VAULT_SNAPSHOT_DIR = os.path.join(wc.dashboard_dir(), "worktime")
 
 
 def snapshot_path(day: str) -> str:

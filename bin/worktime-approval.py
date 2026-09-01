@@ -48,9 +48,14 @@ import re
 import sys
 import time
 from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
 
-LOCAL = ZoneInfo("America/New_York")
+# realpath, not abspath: this file is reached through the
+# ~/.claude/hooks/worktime-approval.py symlink, and abspath would look for the
+# shared module in ~/.claude/hooks, where it is not.
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import worktime_common as wc  # noqa: E402
+
+LOCAL = wc.local_tz()
 STATE = os.path.expanduser("~/.claude/stats/worktime")
 OUT = os.path.join(STATE, "approvals.jsonl")
 PENDING_DIR = os.path.join(STATE, "approval-pending")

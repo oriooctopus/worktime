@@ -3,9 +3,12 @@
 Obsidian vault, so a dashboard on another machine can explain gaps in the
 workday.
 
-Writes ~/obsidian-vault/Dashboard/activity/YYYY-MM-DD.md for today and
-yesterday (America/New_York local days) by default. `backfill N` writes the
-last N days (today back through today-(N-1)).
+Writes <dashboard>/activity/YYYY-MM-DD.md for today and yesterday (local days)
+by default; `backfill N` writes the last N days (today back through
+today-(N-1)). The dashboard directory and the timezone are both resolved by
+worktime_common, because the vault sits at a different path on each machine and
+this used to name the Linux box's one outright -- so on the Mac the export was
+written where nothing reads it.
 
 Timezone math uses `zoneinfo.ZoneInfo` (aware datetimes) throughout, never
 the process's OS timezone (`time.tzset`/`time.localtime`/`time.mktime`) --
@@ -30,15 +33,20 @@ from collections import namedtuple
 from datetime import date, datetime, timedelta, timezone
 from urllib.parse import urlparse
 
+# realpath, not abspath: this file may be reached through a symlink on PATH,
+# and abspath would look for the shared module beside the symlink.
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import worktime_common as wc  # noqa: E402
+
 try:
     from zoneinfo import ZoneInfo
 except ImportError:  # Python < 3.9 (this box: 3.8.10)
     from backports.zoneinfo import ZoneInfo
 
-TZ_NAME = "America/New_York"
+TZ_NAME = wc.tz_name()
 NY_TZ = ZoneInfo(TZ_NAME)
 
-VAULT_DIR = os.path.expanduser("~/obsidian-vault/Dashboard/activity")
+VAULT_DIR = os.path.join(wc.dashboard_dir(), "activity")
 CACHE_PATH = os.path.expanduser("~/.cache/activity-export/summaries.json")
 ASK_HAIKU = os.path.expanduser("~/.claude/bin/ask-haiku.sh")
 LLM_CALL_CAP = 20
@@ -57,7 +65,12 @@ CALLS_JSONL = os.path.expanduser(
 IMESSAGE_DIR = os.path.expanduser("~/inbox/imessage-sync")
 PHONE_CALLS_GLOB = os.path.expanduser("~/inbox/imessage-sync/calls-*.json")
 CHROME_HISTORY = "/mnt/c/chrome-cdp-profile/Default/History"
-CLAUDE_PROJECTS_GLOB = os.path.expanduser("~/.claude/projects/*/*.jsonl")
+# Both Claude profiles, not just the interactive one: background jobs write
+# their transcripts under ~/.claude-personal, and a prompt typed at one of those
+# is a prompt the person typed. Reading only the first is what kept an evening
+# of background-job work out of the activity export entirely.
+CLAUDE_PROJECTS_GLOBS = [os.path.join(root, "*", "*.jsonl")
+                         for root in wc.PROJECT_ROOTS]
 REDACT_CONFIG_PATH = os.path.expanduser("~/.config/activity-export/redact.json")
 CLAUDE_OFFSET_CACHE_PATH = os.path.expanduser("~/.cache/activity-export/claude-offsets.json")
 
@@ -81,7 +94,7 @@ Event = namedtuple(
 
 
 def local_day_time_from_epoch(epoch):
-    """epoch (UTC instant) -> (date, 'HH:MM') in America/New_York local time."""
+    """epoch (UTC instant) -> (date, 'HH:MM') in the configured local time."""
     dt = datetime.fromtimestamp(epoch, tz=NY_TZ)
     return dt.date(), dt.strftime("%H:%M")
 
@@ -461,7 +474,7 @@ def imessage_events(dir_path):
             dt_naive = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
         except (ValueError, TypeError):
             continue
-        # ts has no offset -- it is already America/New_York local wall-clock
+        # ts has no offset -- it is already local wall-clock
         # time. fold=0 (the default) picks the earlier of the two instants
         # on an ambiguous DST fall-back local time.
         dt = dt_naive.replace(tzinfo=NY_TZ)
@@ -1014,7 +1027,7 @@ def save_claude_offset_cache(path, offset_cache):
         raise
 
 
-def claude_events(projects_glob, days_requested, now_epoch, private_config, offset_cache):
+def claude_events(projects_globs, days_requested, now_epoch, private_config, offset_cache):
     """private_config must be a validated config from load_redact_config --
     the caller is responsible for failing the whole source closed (see
     gather()) when it's None; this function assumes redaction is active.
@@ -1022,7 +1035,7 @@ def claude_events(projects_glob, days_requested, now_epoch, private_config, offs
     read_claude_file_cached for each file touched."""
     cutoff = now_epoch - (days_requested + 1) * 86400
     kept = []  # (day, time_str, prompt_dict) across ALL files, pre-day-template-filter
-    for path in sorted(glob.glob(projects_glob)):
+    for path in sorted(p for g in projects_globs for p in glob.glob(g)):
         try:
             mtime = os.path.getmtime(path)
         except OSError:
@@ -1180,7 +1193,7 @@ def phone_call_events(calls_glob, contacts, imessage_names):
             dt_naive = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
         except (ValueError, TypeError):
             continue
-        # ts has no offset -- already America/New_York local wall-clock
+        # ts has no offset -- already local wall-clock
         # time, same handling as imessage_events.
         dt = dt_naive.replace(tzinfo=NY_TZ)
         epoch = dt.timestamp()
@@ -1659,7 +1672,7 @@ def gather(paths, days, now_epoch):
             )
             all_events.extend(
                 claude_events(
-                    paths.get("claude_projects_glob", CLAUDE_PROJECTS_GLOB),
+                    paths.get("claude_projects_globs", CLAUDE_PROJECTS_GLOBS),
                     len(days), now_epoch, redact, offset_cache,
                 )
             )
@@ -1726,7 +1739,7 @@ def default_paths():
         "imessage_dir": IMESSAGE_DIR,
         "chrome_history": CHROME_HISTORY,
         "cache_path": CACHE_PATH,
-        "claude_projects_glob": CLAUDE_PROJECTS_GLOB,
+        "claude_projects_globs": CLAUDE_PROJECTS_GLOBS,
         "redact_path": REDACT_CONFIG_PATH,
         "claude_offset_cache_path": CLAUDE_OFFSET_CACHE_PATH,
         "phone_calls_glob": PHONE_CALLS_GLOB,
