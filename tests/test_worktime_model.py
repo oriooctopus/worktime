@@ -19,7 +19,7 @@ import tempfile
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-HOOK = os.path.expanduser("~/.claude/hooks/worktime-approval.py")
+HOOK = os.path.join(ROOT, "bin", "worktime-approval.py")
 
 spec = importlib.util.spec_from_file_location(
     "wp", os.path.join(ROOT, "bin", "worktime-probe.py"))
