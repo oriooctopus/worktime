@@ -852,12 +852,34 @@ FOCUS_EXCLUDE = {
     "com.spotify.client",
     "com.valvesoftware.steam",
     "com.mitchellh.ghostty",
+    # The browser is excluded for the same reason github_rows_for() refuses to
+    # count every Chrome visit: the front app says a browser is open, not what
+    # is in it, and "shopping and general search" in the foreground is not
+    # work. Chrome already has a better signal than app-level focus could ever
+    # be -- its history is classified by domain, so GitHub reading arrives via
+    # github_visits_for() and other work sites via chrome-work-blocks.py.
+    # Crediting the app on top of that both bypasses the classification and
+    # double-counts the visits that survive it.
+    #
+    # Known cost, worth stating plainly: those streams are NOT live. They come
+    # from the activity export, which writes a day's file that night, so a
+    # morning spent reviewing PRs is invisible to today's dot and only appears
+    # tomorrow. Excluding Chrome does not create that hole -- it was always
+    # there -- but it stops app-level focus from accidentally papering over it.
+    # The root fix is a live read of the Mac's own Chrome history, classified
+    # by the same domain rules; until then, the dot under-reports browser work
+    # during the day, which is the honest direction to be wrong in.
+    "com.google.Chrome",
     # The lock screen and the screensaver are the machine with nobody at it.
     # They need saying explicitly: a locked Mac reports a real frontmost app,
     # not an empty one, and typing a password resets the idle clock to zero --
     # so unlocking looks exactly like attended work unless it is named here.
     "com.apple.loginwindow",
     "com.apple.ScreenSaverEngine",
+    # A notification alert takes the foreground for a moment without anybody
+    # working in it. Same class as the lock screen: real frontmost app, real
+    # zero idle, no work.
+    "com.apple.UserNotificationCenter",
 }
 
 

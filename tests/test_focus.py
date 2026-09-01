@@ -99,6 +99,16 @@ class TestCredit(FocusCase):
         self.write(self.samples(9 * 3600, 11, bundle="", app=""))
         self.assertEqual(self.minutes(), [])
 
+    def test_the_browser_earns_nothing(self):
+        # Excluded for the reason github_rows_for() gives for refusing to count
+        # every Chrome visit: the frontmost app says a browser is open, not
+        # what is in it. Chrome's own history is already classified by domain,
+        # so crediting the app would both bypass that classification and count
+        # personal browsing as work.
+        self.write(self.samples(9 * 3600, 11, bundle="com.google.Chrome",
+                                app="Google Chrome"))
+        self.assertEqual(self.minutes(), [])
+
     def test_the_lock_screen_earns_nothing(self):
         # A locked Mac does NOT report an empty frontmost app -- it reports
         # com.apple.loginwindow, and typing the password resets idle to zero.
