@@ -372,30 +372,41 @@ func singleLineLabel(_ text: NSMutableAttributedString) -> NSTextField {
     return f
 }
 
-final class PeriodRowView: NSView {
-    // `status` is only passed for the current (most recent) period -- it
-    // folds "Nm since last activity" / "quiet Nm" into this same row group
-    // instead of a separate head line above the whole menu, which said the
-    // same thing about the same span twice. It's its own line directly above
-    // the period's time range, not appended onto that line, so only the
-    // little dot carries color -- the rest reads as plain text, same as
-    // everything else in the row.
-    init(_ p: Period, width: CGFloat, status: (symbol: String, text: String, color: NSColor)? = nil) {
-        let statusHeight: CGFloat = status != nil ? 17 : 0
-        super.init(frame: NSRect(x: 0, y: 0, width: width, height: 34 + statusHeight))
+// "Nm since last activity" / "quiet Nm", with the dot in the state's colour.
+//
+// A line of its own since the period rows moved into their submenu. It used to
+// ride on top of the first of them, which is why only the little dot carries
+// colour: it sat directly above that period's time range and had to read as
+// part of the same block rather than as a coloured banner.
+final class StatusRowView: NSView {
+    init(width: CGFloat, symbol: String, text: String, color: NSColor) {
+        super.init(frame: NSRect(x: 0, y: 0, width: width, height: 21))
 
-        var statusField: NSTextField?
-        if let s = status {
-            let attr = NSMutableAttributedString(string: s.symbol + " ", attributes: [
-                .font: NSFont.systemFont(ofSize: 12, weight: .medium),
-                .foregroundColor: s.color,
-            ])
-            attr.append(NSAttributedString(string: s.text, attributes: [
-                .font: NSFont.systemFont(ofSize: 12, weight: .medium),
-                .foregroundColor: NSColor.labelColor,
-            ]))
-            statusField = singleLineLabel(attr)
-        }
+        let attr = NSMutableAttributedString(string: symbol + " ", attributes: [
+            .font: NSFont.systemFont(ofSize: 12, weight: .medium),
+            .foregroundColor: color,
+        ])
+        attr.append(NSAttributedString(string: text, attributes: [
+            .font: NSFont.systemFont(ofSize: 12, weight: .medium),
+            .foregroundColor: NSColor.labelColor,
+        ]))
+        let field = singleLineLabel(attr)
+        field.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(field)
+
+        NSLayoutConstraint.activate([
+            field.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            field.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -14),
+            field.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+}
+
+final class PeriodRowView: NSView {
+    init(_ p: Period, width: CGFloat) {
+        super.init(frame: NSRect(x: 0, y: 0, width: width, height: 34))
 
         let (top, what) = periodStrings(p)
         let topField = NSTextField(labelWithString: top)
@@ -412,31 +423,19 @@ final class PeriodRowView: NSView {
         // vibrancy dimming, so these colors render exactly as set -- unlike
         // NSMenuItem.title/attributedTitle, which AppKit recolors regardless
         // of what's specified there.
-        var fields = [topField, whatField]
-        if let sf = statusField { fields.insert(sf, at: 0) }
-        for f in fields {
+        for f in [topField, whatField] {
             f.translatesAutoresizingMaskIntoConstraints = false
             addSubview(f)
         }
 
-        var constraints: [NSLayoutConstraint] = [
+        NSLayoutConstraint.activate([
             topField.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
             topField.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -14),
+            topField.topAnchor.constraint(equalTo: topAnchor, constant: 4),
             whatField.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
             whatField.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -14),
             whatField.topAnchor.constraint(equalTo: topField.bottomAnchor, constant: 1),
-        ]
-        if let sf = statusField {
-            constraints += [
-                sf.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
-                sf.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -14),
-                sf.topAnchor.constraint(equalTo: topAnchor, constant: 4),
-                topField.topAnchor.constraint(equalTo: sf.bottomAnchor, constant: 2),
-            ]
-        } else {
-            constraints.append(topField.topAnchor.constraint(equalTo: topAnchor, constant: 4))
-        }
-        NSLayoutConstraint.activate(constraints)
+        ])
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
@@ -551,10 +550,9 @@ final class ActivityRowView: NSView {
     required init?(coder: NSCoder) { fatalError("not used") }
 }
 
-func addPeriodItem(_ p: Period, to menu: NSMenu,
-                   status: (symbol: String, text: String, color: NSColor)? = nil) {
+func addPeriodItem(_ p: Period, to menu: NSMenu) {
     let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-    item.view = PeriodRowView(p, width: 300, status: status)
+    item.view = PeriodRowView(p, width: 300)
     menu.addItem(item)
 }
 
@@ -799,13 +797,14 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let color: NSColor = status.state == "marked" ? MARKED
             : (status.state == "working" ? WORKING : AWAY)
 
-        // Last 3 periods, richest state a menu-bar dropdown can show without a
-        // custom NSView: native title/subtitle rows carrying the time range,
-        // duration, activity counts, and the AI summary underneath. Older
-        // periods move to a submenu rather than growing this list unbounded --
-        // past ~5 rows the dropdown stops being a glance and starts being a log.
-        let recent = Array(status.periods.prefix(3))
-        let earlier = Array(status.periods.dropFirst(3))
+        // Every period lives in the submenu, none of them at the top level.
+        // They used to lead the menu -- three two-line rows of time ranges,
+        // counts and summaries -- but the activity list now says what the day
+        // was made of in more detail and in less space, and the two together
+        // read as the same day divided twice. Kept rather than dropped: the
+        // periods are the only place the AI summaries surface, and one
+        // collapsed row is a cheap place to keep them.
+        let periods = status.periods
 
         // Keyed on exactly the strings that get rendered, so a poll that
         // changes nothing visible costs nothing and cannot flicker an open
@@ -817,7 +816,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // keying on the activity alone would hold "1m" on screen indefinitely.
         let ages = status.activities.map { activityAge($0) }
         let key = ([worked, symbol, status.why, status.state, status.mode]
-                   + (recent + earlier).map { p in
+                   + periods.map { p in
                        let s = periodStrings(p)
                        return s.top + "\u{1}" + s.what
                    }
@@ -835,21 +834,21 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate {
         m.addItem(w)
         m.addItem(.separator())
 
-        for (i, p) in recent.enumerated() {
-            let s = i == 0 ? (symbol, status.why, color) : nil
-            addPeriodItem(p, to: m, status: s)
-        }
-        if !recent.isEmpty { m.addItem(.separator()) }
+        let st = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        st.view = StatusRowView(width: 300, symbol: symbol,
+                                text: status.why, color: color)
+        m.addItem(st)
+        m.addItem(.separator())
 
-        // The evidence behind the periods above, above the actions rather than
-        // in a submenu. The period rows say how the day was divided; without
-        // this, the only answer to "why is it green right now" was the one
-        // rounded phrase in the status line, and the only way to check what the
-        // tracker had actually seen was to read the dashboard.
+        // The evidence the verdict was derived from, at the top level rather
+        // than in a submenu: without it, the only answer to "why is it green
+        // right now" was the one rounded phrase in the status line, and the
+        // only way to check what the tracker had actually seen was to read the
+        // dashboard.
         //
         // Ten single-line rows is the one place this menu spends real height,
-        // which is why they are single-line and why the older periods stay in
-        // their submenu: the list is the log, so the periods don't need to be.
+        // which is why they are single-line and why the periods sit in a
+        // submenu: this list is the log, so they don't need to be.
         if !status.activities.isEmpty {
             let head = NSMenuItem(title: "Recent activity", action: nil, keyEquivalent: "")
             head.isEnabled = false
@@ -908,10 +907,10 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         m.addItem(.separator())
 
-        if !earlier.isEmpty {
+        if !periods.isEmpty {
             let sub = NSMenu()
-            for p in earlier { addPeriodItem(p, to: sub) }
-            let host = NSMenuItem(title: "Earlier today (\(earlier.count) period\(earlier.count == 1 ? "" : "s"))",
+            for p in periods { addPeriodItem(p, to: sub) }
+            let host = NSMenuItem(title: "Today's periods (\(periods.count))",
                                   action: nil, keyEquivalent: "")
             host.submenu = sub
             m.addItem(host)
