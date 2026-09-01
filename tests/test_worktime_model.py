@@ -478,6 +478,19 @@ class GithubFilter(unittest.TestCase):
                  "http://127.0.0.1:8213/app/dashboard |\n")]
         self.assertEqual(self._visits(rows), [])
 
+    def test_docebo_visit_is_work(self):
+        row = ("| 11:00 | chrome | visit | synced | Security Awareness Training"
+               " — https://rubrik.docebosaas.com/learn/course/123 |\n")
+        self.assertEqual(len(self._visits([row])), 1)
+
+    def test_sso_visit_is_work_even_though_it_looks_like_a_login_page(self):
+        # sso.rubrik.com's own pages legitimately live under /saml/-shaped
+        # paths -- that pattern only excludes GitHub's login noise, and must
+        # not also swallow real visits to the SSO portal itself.
+        row = ("| 07:58 | chrome | visit | synced | Rubrik SSO — "
+               "https://sso.rubrik.com/app/rubrik/exk1a2b3/sso/saml |\n")
+        self.assertEqual(len(self._visits([row])), 1)
+
 
 class ActivityFingerprint(unittest.TestCase):
     """What the five-second poll uses to decide nothing has changed.
@@ -638,6 +651,12 @@ class GithubLiveHistory(unittest.TestCase):
             (8, 3, "https://github.com/orgs/scaledata/saml/initiate", "Sign In"),
             (19, 2, "https://github.com/login/oauth/authorize?x=1", "Supabase")]})
         self.assertEqual(rows, [])
+
+    def test_docebo_and_sso_visits_are_read_live_too(self):
+        rows = self._rows({"Profile 2": [
+            (10, 0, "https://rubrik.docebosaas.com/learn/course/9", "Training"),
+            (7, 58, "https://sso.rubrik.com/app/rubrik/exk1/sso/saml", "Rubrik SSO")]})
+        self.assertEqual([d for _w, d in rows], ["Rubrik SSO", "Training"])
 
     def test_ordinary_browsing_is_not_picked_up(self):
         rows = self._rows({"Profile 2": [
@@ -1146,7 +1165,7 @@ class RecentActivities(unittest.TestCase):
             github=[("09:03", "Some PR by someone · Pull Re")],
             focus=[("09:01", "Slack")])
         self.assertEqual([a["kind"] for a in got],
-                         ["github", "approval", "slack", "prompt"])
+                         ["browsing", "approval", "slack", "prompt"])
         self.assertEqual([a["t"] for a in got],
                          ["09:03", "09:02", "09:01", "09:00"])
 
@@ -1167,7 +1186,7 @@ class RecentActivities(unittest.TestCase):
         got = self.acts(
             prompts=[("09:00", "hello")],
             github=[(f"09:1{i}", "Add Copy Link action by jackie") for i in range(8)])
-        self.assertEqual([a["kind"] for a in got], ["github", "prompt"])
+        self.assertEqual([a["kind"] for a in got], ["browsing", "prompt"])
         self.assertEqual(got[0]["n"], 8)
         self.assertEqual(got[1]["n"], 1)
 
@@ -1178,7 +1197,7 @@ class RecentActivities(unittest.TestCase):
             prompts=[("09:05", "meanwhile")],
             github=[("09:00", "the same PR"), ("09:10", "the same PR")])
         self.assertEqual([(a["kind"], a["n"]) for a in got],
-                         [("github", 1), ("prompt", 1), ("github", 1)])
+                         [("browsing", 1), ("prompt", 1), ("browsing", 1)])
 
     def test_limit_counts_distinct_rows_not_raw_events(self):
         got = self.acts(
@@ -1274,7 +1293,7 @@ class RecentActivities(unittest.TestCase):
             (wp.ACTIVITY_DIR, wp.CHROME_DIR, wp.full_day, wp.slack_for,
              wp.approval_rows_for) = saved
             wp._gh_live_cache.clear()
-        self.assertEqual([(a["kind"], a["t"]) for a in got], [("github", "09:05")])
+        self.assertEqual([(a["kind"], a["t"]) for a in got], [("browsing", "09:05")])
 
     def test_desktop_prompts_still_reach_the_model_they_belong_to(self):
         # The exclusion above is about this list, not about the signal: the

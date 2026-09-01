@@ -1011,6 +1011,12 @@ ACTIVITY_DIR = os.path.expanduser("~/Documents/Main/Dashboard/activity")
 CHROME_ROW = re.compile(
     r"^\|\s*(\d{1,2}:\d{2})\s*\|\s*chrome\s*\|\s*visit\s*\|[^|]*\|\s*(.*?)\s*\|\s*$")
 
+# Non-GitHub sites whose visits are just as much evidence of work as a PR page
+# -- Docebo is Rubrik's training/compliance LMS, sso.rubrik.com is the IdP
+# login most internal tools sit behind. Unlike GitHub they carry no PR-style
+# noise pattern, so a plain substring match is enough; see _work_site_hit().
+OTHER_WORK_DOMAINS = ("rubrik.docebosaas.com", "sso.rubrik.com")
+
 # The exporter truncates the detail column at 80 characters, and a GitHub page
 # puts its title before the URL. A real PR title -- "Add Plugins section to
 # Agent Details Capabilities tab by adamgee · Pull Re" -- consumes the whole
@@ -1025,8 +1031,21 @@ GITHUB_TITLE = re.compile(r"·\s*Pull Re|·\s*scaledata/|/pull/\d+", re.I)
 # Logging in is not working. The SAML pair fires every weekday morning at the
 # same minute, and the oauth/authorize rows are Supabase and Microsoft sign-ins
 # for personal projects on the other machine -- counted as github.com visits,
-# they manufactured Rubrik work periods out of a personal login.
-GITHUB_AUTH = re.compile(r"/saml/|/login/oauth/|sso\.rubrik\.com", re.I)
+# they manufactured Rubrik work periods out of a personal login. Scoped to
+# GitHub hits only (see _work_site_hit) -- sso.rubrik.com's own login pages
+# legitimately live under paths like this, and excluding them here would
+# defeat the point of tracking that domain at all.
+GITHUB_AUTH = re.compile(r"/saml/|/login/oauth/", re.I)
+
+
+def _work_site_hit(text: str) -> bool:
+    """True if `text` (a URL, or an export detail that may carry one) is
+    evidence of work: a GitHub code page that isn't a login redirect, or a
+    plain visit to one of OTHER_WORK_DOMAINS."""
+    lowered = text.lower()
+    if "github.com" in lowered or GITHUB_TITLE.search(text):
+        return not GITHUB_AUTH.search(text)
+    return any(d in lowered for d in OTHER_WORK_DOMAINS)
 
 
 # Chrome's own History DB, this machine's live counterpart to the activity
@@ -1062,7 +1081,8 @@ _gh_live_cache: dict[str, tuple] = {}
 
 
 def github_live_rows(day: str) -> list[tuple[datetime, str]]:
-    """Today's GitHub visits read straight from this Mac's Chrome history.
+    """Today's work-site visits (GitHub, Docebo, Rubrik SSO) read straight
+    from this Mac's Chrome history.
 
     Chrome holds the DB open, so it is copied before being read -- the copy is
     ~0.04s for 58MB and the result is memoised on the file's mtime and size,
@@ -1092,7 +1112,9 @@ def github_live_rows(day: str) -> list[tuple[datetime, str]]:
             """SELECT visits.visit_time, urls.url, urls.title
                  FROM visits JOIN urls ON urls.id = visits.url
                 WHERE visits.visit_time BETWEEN ? AND ?
-                  AND urls.url LIKE '%github.com%'
+                  AND (urls.url LIKE '%github.com%'
+                       OR urls.url LIKE '%rubrik.docebosaas.com%'
+                       OR urls.url LIKE '%sso.rubrik.com%')
              ORDER BY visits.visit_time""", (lo, hi)))
         conn.close()
     finally:
@@ -1100,7 +1122,7 @@ def github_live_rows(day: str) -> list[tuple[datetime, str]]:
 
     rows = []
     for stamp, url, title in raw:
-        if GITHUB_AUTH.search(url):
+        if not _work_site_hit(url):
             continue
         when = (CHROME_EPOCH + timedelta(microseconds=stamp)).astimezone(LOCAL)
         # Title only when there is one. The URL is the fallback rather than a
@@ -1128,17 +1150,19 @@ def github_rows_for(day: str) -> list[tuple[datetime, str]]:
 
 
 def github_export_rows(day: str) -> list[tuple[datetime, str]]:
-    """Chrome visits to GitHub code pages, with the page each one landed on.
+    """Chrome visits to GitHub, Docebo, or the Rubrik SSO portal, with the
+    page each one landed on.
 
     Reading a PR or a diff is real work and was previously invisible to this
     probe -- prompts and Slack sends were the only evidence of working, so a
     stretch spent entirely in a browser reviewing code read as a gap. It is
     also the only evidence that stretch produces: a review generates no prompt
-    and no Slack message.
+    and no Slack message. The same is true of training in Docebo or signing
+    into an internal tool through SSO.
 
-    Restricted to GitHub rather than all Chrome activity: the export also
-    carries plain browsing (shopping, general search) that is not work, and
-    counting every visit would manufacture "working" out of that.
+    Restricted to these sites rather than all Chrome activity: the export
+    also carries plain browsing (shopping, general search) that is not work,
+    and counting every visit would manufacture "working" out of that.
     """
     path = os.path.join(ACTIVITY_DIR, f"{day}.md")
     if not os.path.exists(path):
@@ -1150,8 +1174,7 @@ def github_export_rows(day: str) -> list[tuple[datetime, str]]:
         if not m:
             continue
         detail = m.group(2)
-        hit = "github.com" in detail.lower() or GITHUB_TITLE.search(detail)
-        if not hit or GITHUB_AUTH.search(detail):
+        if not _work_site_hit(detail):
             continue
         h, mnt = m.group(1).split(":")
         out.append((base.replace(hour=int(h), minute=int(mnt)), detail))
@@ -1328,7 +1351,7 @@ def recent_activities(day: str, limit: int = ACTIVITY_LIST_N) -> list[dict]:
 
     for when, detail in github_rows_for(day):
         rows.append((when.strftime("%H:%M:00"), {
-            "t": when.strftime("%H:%M"), "kind": "github",
+            "t": when.strftime("%H:%M"), "kind": "browsing",
             "what": one_line(detail)}))
 
     spoken = {k[:5] for k, _ in rows}
