@@ -65,6 +65,13 @@ same trap `visit_duration` falls into below.
 everything in the foreground is the job, and an allow list silently loses a
 day's work every time a new tool enters the rotation.
 
+The terminal is on that list for a different reason than the streaming apps.
+It is not leisure, it is ambiguous: the same window is frontmost whether the
+work is on this Mac or on the Linux desktop, and desktop work is subtracted
+from Mac periods elsewhere in the probe. Counting its foreground time would
+re-add the hours that subtraction exists to remove. Little is lost, because
+real terminal work here is Claude Code and the prompts already say so.
+
 Two things this gave up: a message sent from a phone no longer holds the dot
 green, and focus is app-level only. Window titles -- which channel, which
 document -- would need Accessibility permission, so the tracker stays at app

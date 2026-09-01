@@ -836,6 +836,14 @@ FOCUS_MAX_GAP_SEC = 90
 # foreground is the job, and an allow list quietly loses a day's work every
 # time a new tool enters the rotation, failing in the direction that looks like
 # an ordinary quiet afternoon.
+#
+# The terminal is here for a different reason than the rest. It is not leisure;
+# it is ambiguous. The same Ghostty window is the front app whether the work is
+# on this Mac or on the Linux desktop, so its foreground time cannot tell the
+# two apart, and the probe already treats desktop work as absence from Rubrik
+# work rather than as presence. Counting it would quietly re-add the very hours
+# the desktop-prompt subtraction exists to remove. Little is lost: real terminal
+# work here is Claude Code, and prompts already say so precisely.
 FOCUS_EXCLUDE = {
     "com.apple.TV",
     "com.apple.Music",
@@ -843,6 +851,13 @@ FOCUS_EXCLUDE = {
     "com.netflix.Netflix",
     "com.spotify.client",
     "com.valvesoftware.steam",
+    "com.mitchellh.ghostty",
+    # The lock screen and the screensaver are the machine with nobody at it.
+    # They need saying explicitly: a locked Mac reports a real frontmost app,
+    # not an empty one, and typing a password resets the idle clock to zero --
+    # so unlocking looks exactly like attended work unless it is named here.
+    "com.apple.loginwindow",
+    "com.apple.ScreenSaverEngine",
 }
 
 
