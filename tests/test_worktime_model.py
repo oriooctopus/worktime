@@ -479,6 +479,59 @@ class GithubFilter(unittest.TestCase):
         self.assertEqual(self._visits(rows), [])
 
 
+class ActivityFingerprint(unittest.TestCase):
+    """What the five-second poll uses to decide nothing has changed.
+
+    A miss here is invisible in the worst way: the menu keeps showing an
+    earlier reading and gives no sign it is stale, because as far as the cache
+    can tell nothing happened.
+    """
+
+    DAY = "2026-08-26"
+
+    def _prompt_in(self, root_dir, name):
+        d = os.path.join(root_dir, "-Users-someone-project")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, name), "w") as fh:
+            fh.write('{"type":"user"}\n')
+
+    def test_a_prompt_under_either_profile_moves_it(self):
+        # Background jobs run under a second profile. Walking only the first
+        # meant a prompt sent to one of them left the fingerprint identical,
+        # so the verdict was served from cache for as long as nothing else
+        # happened to touch a file.
+        old = wp.PROMPT_ROOTS
+        try:
+            for i in range(len(old)):
+                roots = [tempfile.mkdtemp() for _ in old]
+                wp.PROMPT_ROOTS = roots
+                before = wp.activity_fingerprint(self.DAY)
+                self._prompt_in(roots[i], "session.jsonl")
+                self.assertNotEqual(before, wp.activity_fingerprint(self.DAY),
+                                    f"a prompt under root {i} changed nothing")
+        finally:
+            wp.PROMPT_ROOTS = old
+
+    def test_it_stays_put_when_nothing_happened(self):
+        # The other half: if it moved on its own the memo would never hit and
+        # the 5-second poll would re-derive the whole day every time.
+        old = wp.PROMPT_ROOTS
+        try:
+            wp.PROMPT_ROOTS = [tempfile.mkdtemp() for _ in old]
+            self.assertEqual(wp.activity_fingerprint(self.DAY),
+                             wp.activity_fingerprint(self.DAY))
+        finally:
+            wp.PROMPT_ROOTS = old
+
+    def test_the_probe_and_the_counter_read_the_same_roots(self):
+        # They are separate files and drift silently: prompt-count.py counts a
+        # prompt the fingerprint never notices, which is exactly the bug above.
+        src = open(os.path.join(ROOT, "bin", "prompt-count.py")).read()
+        for root in wp.PROMPT_ROOTS:
+            leaf = os.path.basename(os.path.dirname(root))
+            self.assertIn(leaf, src, f"{leaf} is not a root in prompt-count.py")
+
+
 class GithubLiveHistory(unittest.TestCase):
     """The live read of this Mac's own Chrome history.
 

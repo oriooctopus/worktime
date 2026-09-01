@@ -78,6 +78,15 @@ STATE = os.path.expanduser("~/.claude/stats/worktime")
 LABELS = os.path.join(STATE, "labels.jsonl")
 CURSOR = os.path.join(STATE, "cursor.json")
 
+# Two Claude Code profiles feed this machine: interactive sessions under
+# ~/.claude, and worktime's own background jobs under ~/.claude-personal.
+# Both hold real prompts from a real person, so both are presence. Kept in
+# step with PROMPT_ROOTS in bin/prompt-count.py, which does the counting.
+PROMPT_ROOTS = [
+    os.path.expanduser("~/.claude/projects"),
+    os.path.expanduser("~/.claude-personal/projects"),
+]
+
 # More than this many minutes with no prompt and you were not working. Prompts
 # closer together than this chain into one work period; anything further apart
 # opens a gap. Fifteen minutes of prompting, a fifteen-minute lull, then ten
@@ -2565,6 +2574,12 @@ def activity_fingerprint(day: str) -> str:
     the work entirely. That is what makes a 5-second dot affordable: the
     expensive path runs when something really happened, not on a timer.
 
+    Both profile roots are walked, matching prompt-count.py. Missing the second
+    one did not lose a prompt -- the counting is prompt-count.py's job and it
+    already read both -- but it did mean a prompt to a background job changed
+    nothing this function could see, so the cache held and the menu showed a
+    reading from minutes earlier while insisting it was current.
+
     Slack is the exception and has to be handled by time rather than by file.
     A message sent from the phone changes nothing on this disk, so the
     fingerprint alone would never notice it and the cache would go stale
@@ -2580,12 +2595,13 @@ def activity_fingerprint(day: str) -> str:
     session already causes through its transcript.
     """
     parts = []
-    for root, _dirs, files in os.walk(os.path.expanduser("~/.claude/projects")):
-        for f in files:
-            if f.endswith(".jsonl"):
-                p = os.path.join(root, f)
-                st = os.stat(p)
-                parts.append(f"{p}:{st.st_mtime_ns}:{st.st_size}")
+    for root_dir in PROMPT_ROOTS:
+        for root, _dirs, files in os.walk(root_dir):
+            for f in files:
+                if f.endswith(".jsonl"):
+                    p = os.path.join(root, f)
+                    st = os.stat(p)
+                    parts.append(f"{p}:{st.st_mtime_ns}:{st.st_size}")
     # Chrome's History is in here so a PR opened in the browser moves the dot
     # without waiting for something else to happen. It is the one input that
     # changes on its own while the person is doing nothing this probe can
