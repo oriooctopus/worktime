@@ -10,9 +10,16 @@
 
 import AppKit
 import Carbon.HIToolbox
+import CoreAudio
 import Foundation
 
-let PROBE = ("~/.claude/bin/worktime-probe.py" as NSString).expandingTildeInPath
+// Overridable so the app can be run against a probe that reports a chosen
+// state. The audio watcher only acts while the probe says a meeting is live,
+// and there is no way to make that true on demand with the real probe short of
+// putting a fake meeting in the real calendar and waiting for a real call --
+// which is why this path went unexercised until it could be pointed somewhere.
+let PROBE = ProcessInfo.processInfo.environment["WORKTIME_PROBE"]
+    ?? ("~/.claude/bin/worktime-probe.py" as NSString).expandingTildeInPath
 // 5s is affordable only because the probe's status path is memoised: the
 // transcripts are parsed per-file against size+mtime, and a full re-derivation
 // is floored at MIN_RECOMPUTE_SEC. Raising this back to 60 without those would
@@ -45,6 +52,21 @@ let HOTKEY_MODS = UInt32(cmdKey | optionKey)
 // returned early, and the dot sat on its launch placeholder: a stuck hollow
 // amber that is indistinguishable from a genuine idle reading.
 let PYTHON = "/opt/homebrew/bin/python3"
+
+// How often to ask CoreAudio whether anything is capturing. Cheaper than the
+// probe poll -- it is a couple of HAL property reads and touches no
+// subprocess, no file and no network -- so it can run faster than POLL_SEC
+// without costing anything, and a 2s grid keeps the countdown from appearing
+// up to five seconds after the call actually stopped.
+let AUDIO_POLL_SEC = 2.0
+
+// A run of capture shorter than this was not a meeting; see CallDetector.
+let MIN_CALL_SEC = 60.0
+let SETTLE_SEC = 5.0
+
+// Long enough to read the panel, notice it, and stop it; short enough that
+// waiting it out is not itself an interruption.
+let COUNTDOWN_SEC = 10
 
 // Match the dashboard exactly. A different green here would read as a
 // different state rather than the same state in another place.
@@ -462,6 +484,70 @@ func addPeriodItem(_ p: Period, to menu: NSMenu,
     menu.addItem(item)
 }
 
+// MARK: - Is anything capturing audio right now
+
+// Reads the HAL's own view of which devices are live. It never opens a stream,
+// so it needs no microphone permission, prompts for none, and does not light
+// the orange recording indicator -- this app must be able to notice a meeting
+// without looking like a participant in it.
+//
+// Every input-capable device is checked rather than just the default one: the
+// default input changes when AirPods connect, and a meeting can hold a device
+// that is not the default at all.
+
+func audioDeviceIDs() -> [AudioObjectID] {
+    var addr = AudioObjectPropertyAddress(
+        mSelector: kAudioHardwarePropertyDevices,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain)
+    var size: UInt32 = 0
+    guard AudioObjectGetPropertyDataSize(
+        AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size) == noErr
+    else { return [] }
+    var ids = [AudioObjectID](repeating: 0,
+                              count: Int(size) / MemoryLayout<AudioObjectID>.size)
+    guard AudioObjectGetPropertyData(
+        AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size, &ids) == noErr
+    else { return [] }
+    return ids
+}
+
+// The filter that makes this a microphone test rather than an audio test.
+// DeviceIsRunningSomewhere is true of the speakers whenever anything can play
+// through them -- on this machine "MacBook Pro Speakers" reads 1 at rest, with
+// nothing playing -- so without restricting to devices that actually carry an
+// input stream, every reading would say a call was in progress forever.
+func deviceHasInput(_ id: AudioObjectID) -> Bool {
+    var addr = AudioObjectPropertyAddress(
+        mSelector: kAudioDevicePropertyStreams,
+        mScope: kAudioObjectPropertyScopeInput,
+        mElement: kAudioObjectPropertyElementMain)
+    var size: UInt32 = 0
+    guard AudioObjectGetPropertyDataSize(id, &addr, 0, nil, &size) == noErr else { return false }
+    return size > 0
+}
+
+func deviceIsRunning(_ id: AudioObjectID) -> Bool {
+    var addr = AudioObjectPropertyAddress(
+        mSelector: kAudioDevicePropertyDeviceIsRunningSomewhere,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain)
+    var value: UInt32 = 0
+    var size = UInt32(MemoryLayout<UInt32>.size)
+    guard AudioObjectGetPropertyData(id, &addr, 0, nil, &size, &value) == noErr else { return false }
+    return value != 0
+}
+
+/// True while any process anywhere is capturing audio input. App-agnostic by
+/// construction: it is a property of the device, so a call in a browser tab, a
+/// native client, or something the calendar has never heard of all read the
+/// same.
+func anythingIsCapturing() -> Bool {
+    audioDeviceIDs().contains { deviceHasInput($0) && deviceIsRunning($0) }
+}
+
+// MARK: - The menu bar item
+
 final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // Created in applicationDidFinishLaunching, NOT as a stored-property
     // initializer. Built at property-init time the item came back with
@@ -479,6 +565,10 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var lastActivityAt: Date?
     var hotKeyRef: EventHotKeyRef?
     let focusLog = FocusLog()
+    var audioTimer: Timer?
+    var detector = CallDetector(minCallSec: MIN_CALL_SEC, settleSec: SETTLE_SEC)
+    // Non-nil only while a countdown is on screen.
+    var countdown: CountdownPanel?
     // One menu for the app's lifetime, mutated in place rather than replaced.
     // Assigning a freshly built NSMenu to item.menu does nothing to a menu that
     // is already on screen: AppKit goes on displaying the instance it was handed
@@ -533,6 +623,9 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate {
         blinkTimer = Timer.scheduledTimer(withTimeInterval: BLINK_INTERVAL, repeats: true) { _ in
             self.tickBlink()
         }
+        audioTimer = Timer.scheduledTimer(withTimeInterval: AUDIO_POLL_SEC, repeats: true) { _ in
+            self.tickAudio()
+        }
         // Both timers must run in .common, not the .default mode
         // scheduledTimer gives them. An open menu spins the run loop in
         // .eventTracking, where a .default-mode timer simply does not fire: for
@@ -540,9 +633,55 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // the menu could not have updated even once. That is the other half of
         // why the dot looked live and the menu looked frozen -- the dot's
         // updates all landed in the moments the menu was closed.
-        for t in [timer, blinkTimer] {
+        for t in [timer, blinkTimer, audioTimer] {
             if let t { RunLoop.main.add(t, forMode: .common) }
         }
+    }
+
+    // The calendar says when a meeting was scheduled to end; the microphone
+    // says when the talking actually stopped. Only the second one knows that a
+    // half-hour slot finished in twelve minutes, and it knows it for calls the
+    // calendar has never heard of too.
+    func tickAudio() {
+        let capturing = anythingIsCapturing()
+
+        // The call came back while the countdown was still running -- someone
+        // rejoined, or a device handoff outlasted the settle. Either way this
+        // is not a meeting that ended, so the countdown is withdrawn and
+        // nothing is written.
+        if capturing, let panel = countdown {
+            panel.close()
+            countdown = nil
+            FileHandle.standardError.write("call resumed; countdown withdrawn\n".data(using: .utf8)!)
+        }
+
+        guard detector.update(capturing: capturing, now: Date()) else { return }
+
+        // Only a calendar meeting can be ended early, because only a calendar
+        // meeting holds the dot green on a schedule that can outlive the call.
+        // A manual mark is a human declaration and is not something a
+        // microphone reading gets to revoke; ordinary prompt activity lapses on
+        // its own. So when the probe is not currently leaning on a meeting,
+        // there is nothing for this to stop and no reason to interrupt.
+        guard status.why.hasPrefix("in ") else {
+            FileHandle.standardError.write(
+                "call ended, no meeting to close (\(status.why))\n".data(using: .utf8)!)
+            return
+        }
+        guard countdown == nil else { return }
+
+        let meeting = String(status.why.dropFirst("in ".count))
+        FileHandle.standardError.write("call ended during \(meeting); counting down\n".data(using: .utf8)!)
+        countdown = CountdownPanel(
+            meeting: meeting, seconds: COUNTDOWN_SEC,
+            onExpire: { [weak self] in
+                self?.countdown = nil
+                self?.endMeetingEarly()
+            },
+            onCancel: { [weak self] in
+                self?.countdown = nil
+                FileHandle.standardError.write("countdown cancelled by hand\n".data(using: .utf8)!)
+            })
     }
 
     // Only a working period can lapse, so only "working" ever blinks -- marked

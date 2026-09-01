@@ -641,6 +641,84 @@ updated: {now}
             "a work block stopped explaining a gap")
 
 
+class MeetingCuts(unittest.TestCase):
+    """Ending a meeting early must end that meeting and no other.
+
+    These matter more than they used to. A cut used to be written only when a
+    human clicked "Meeting ended early", a few times a week; the audio watcher
+    writes one at the end of every call, so a cut that reached beyond its own
+    meeting would now blind the tracker to the rest of the day's calendar
+    within one morning.
+    """
+
+    def setUp(self):
+        self.old = wp.MEETING_CUT
+        wp.MEETING_CUT = os.path.join(tempfile.mkdtemp(), "meeting-cut.json")
+        self.morning = {"start": 10 * 60, "end": 11 * 60, "title": "Standup",
+                        "calendar": "work", "counts": True}
+        self.afternoon = {"start": 14 * 60, "end": 15 * 60, "title": "Review",
+                          "calendar": "work", "counts": True}
+
+    def tearDown(self):
+        wp.MEETING_CUT = self.old
+
+    def at(self, hh, mm):
+        return wp.now_local().replace(hour=hh, minute=mm, second=0, microsecond=0)
+
+    def covered(self, when):
+        m = wp.covered_by_meeting(when, [self.morning, self.afternoon])
+        return m["title"] if m else None
+
+    def test_cut_ends_the_meeting_it_landed_in(self):
+        wp.append_meeting_cut(10 * 60 + 30)
+        self.assertIsNone(self.covered(self.at(10, 30)),
+                          "the cut meeting still covered its own scheduled tail")
+        self.assertEqual(self.covered(self.at(10, 15)), "Standup",
+                         "the cut retroactively erased time before it")
+
+    def test_cut_does_not_touch_a_later_meeting(self):
+        # The regression: one `cut_min` compared against every row gave the
+        # afternoon meeting an effective end of 10:30, before its own start,
+        # so it could never cover a minute again.
+        wp.append_meeting_cut(10 * 60 + 30)
+        self.assertEqual(self.covered(self.at(14, 30)), "Review",
+                         "ending the standup early also erased the afternoon")
+
+    def test_each_meeting_can_be_cut_independently(self):
+        wp.append_meeting_cut(10 * 60 + 30)
+        wp.append_meeting_cut(14 * 60 + 20)
+        self.assertIsNone(self.covered(self.at(10, 45)))
+        self.assertEqual(self.covered(self.at(14, 10)), "Review")
+        self.assertIsNone(self.covered(self.at(14, 30)))
+
+    def test_cut_between_meetings_truncates_neither(self):
+        # 12:00 is inside nothing, so it is not an early end for anything.
+        wp.append_meeting_cut(12 * 60)
+        self.assertEqual(self.covered(self.at(10, 30)), "Standup")
+        self.assertEqual(self.covered(self.at(14, 30)), "Review")
+
+    def test_earliest_cut_inside_a_meeting_wins(self):
+        wp.append_meeting_cut(10 * 60 + 50)
+        wp.append_meeting_cut(10 * 60 + 20)
+        self.assertIsNone(self.covered(self.at(10, 30)),
+                          "a later cut in the same meeting undid an earlier one")
+
+    def test_cuts_expire_with_the_day(self):
+        wp.append_meeting_cut(10 * 60 + 30)
+        rec = json.load(open(wp.MEETING_CUT))
+        rec["day"] = "2001-01-01"
+        json.dump(rec, open(wp.MEETING_CUT, "w"))
+        self.assertEqual(wp.read_meeting_cuts(), [],
+                         "yesterday's cut still applied to today")
+
+    def test_cut_shortens_the_day_total_too(self):
+        # The dot and the day total read the same cut, so a meeting that ended
+        # early cannot be amber on the menu bar and a full hour in the total.
+        cuts = [10 * 60 + 30]
+        self.assertEqual(wp.effective_meeting_end(self.morning, cuts), 10 * 60 + 30)
+        self.assertEqual(wp.effective_meeting_end(self.afternoon, cuts), 15 * 60)
+
+
 class ApprovalMatching(unittest.TestCase):
     """The hook must record an approval only when a human answered a prompt."""
 

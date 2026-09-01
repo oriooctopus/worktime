@@ -18,6 +18,7 @@ Usage:
   worktime-probe.py report         -- summarize labels collected so far
   worktime-probe.py backfill [n]   -- rebuild the last n days of snapshots
   worktime-probe.py mode [focused|unfocused]  -- read or set the focus mode
+  worktime-probe.py meeting_end    -- the meeting running now ended at this minute
 """
 
 from __future__ import annotations  # 3.8 can parse the annotations
@@ -1528,32 +1529,48 @@ def calendar_events(day: str) -> list[dict] | None:
     return out
 
 
-def read_meeting_cut() -> int | None:
-    """Minute-of-day the user declared their current meeting ended, or None."""
+def read_meeting_cuts() -> list[int]:
+    """Minutes-of-day at which a meeting was declared over, today."""
     try:
         rec = json.load(open(MEETING_CUT))
-        if rec.get("day") == now_local().strftime("%Y-%m-%d"):
-            return rec["cut_min"]
-    except (OSError, ValueError, KeyError):
-        pass
-    return None
+    except (OSError, ValueError):
+        return []
+    if rec.get("day") != now_local().strftime("%Y-%m-%d"):
+        return []
+    return sorted(rec.get("cuts", []))
 
 
-def write_meeting_cut(cut_min: int) -> None:
+def append_meeting_cut(cut_min: int) -> list[int]:
+    """Record that a meeting ended at cut_min. Returns today's full cut list."""
+    cuts = sorted(set(read_meeting_cuts()) | {cut_min})
     tmp = MEETING_CUT + f".{os.getpid()}.tmp"
     with open(tmp, "w") as fh:
-        json.dump({"day": now_local().strftime("%Y-%m-%d"), "cut_min": cut_min}, fh)
+        json.dump({"day": now_local().strftime("%Y-%m-%d"), "cuts": cuts}, fh)
     os.replace(tmp, MEETING_CUT)
+    return cuts
+
+
+def effective_meeting_end(m: dict, cuts: list[int]) -> int:
+    """When a meeting actually ended: its scheduled end, or a cut inside it.
+
+    A cut only truncates the meeting it landed inside. Applying the day's cut
+    to every meeting -- which is what a single `cut_min` compared against every
+    row did -- meant ending the 10:00 standup at 10:30 also gave the 14:00
+    review an effective end of 10:30, i.e. an end before its own start, so it
+    could never cover a minute again. One early exit erased every later meeting
+    on the calendar. That was survivable while the only way to cut was a human
+    clicking a menu item once in a while; it is not survivable now that the end
+    of any call can write one.
+    """
+    inside = [c for c in cuts if m["start"] <= c < m["end"]]
+    return min(inside) if inside else m["end"]
 
 
 def covered_by_meeting(when: datetime, meetings: list[dict]) -> dict | None:
     mins = when.hour * 60 + when.minute
-    cut = read_meeting_cut()
+    cuts = read_meeting_cuts()
     for m in meetings:
-        # Honour the early-end cut: treat this meeting as over at cut_min if
-        # the user declared it ended before the scheduled end time.
-        effective_end = min(m["end"], cut) if cut is not None else m["end"]
-        if m["start"] <= mins < effective_end:
+        if m["start"] <= mins < effective_meeting_end(m, cuts):
             return m
     return None
 
@@ -1724,7 +1741,13 @@ def write_vault_snapshot(day: str, events: list[datetime]) -> None:
     # explain the silence, which is why they stay on the period for the tooltip
     # to show, but a therapy session is not time on the job: counting them held
     # 2026-08-27 open from 14:30 to 16:30 on a football fixture.
-    present += [[m["start"] * 60, min(m["end"] * 60, now_s)]
+    #
+    # Cuts apply here too, not only to the live dot. Declaring a meeting over
+    # at 10:30 moved the dot to amber but still handed the day the full hour it
+    # was scheduled for, so the total said an hour of work nobody did and the
+    # dot and the total disagreed about the same half hour.
+    cuts = read_meeting_cuts()
+    present += [[m["start"] * 60, min(effective_meeting_end(m, cuts) * 60, now_s)]
                 for m in (meetings or [])
                 if m.get("counts", True) and m["start"] * 60 < now_s]
 
@@ -2650,9 +2673,16 @@ if __name__ == "__main__":
         # when the meeting finished early. Writes a cut record for today; any
         # meeting whose scheduled end is past this minute is treated as having
         # ended here instead.
+        # Rebuilds the snapshot the way `mode` does: the cut changes the day
+        # total as well as the dot, so leaving it until the next 20-minute
+        # check would show a dashboard that still counts the part of the
+        # meeting that did not happen.
         cut = now_local().hour * 60 + now_local().minute
-        write_meeting_cut(cut)
-        print(json.dumps({"cut_min": cut, "at": now_local().strftime("%H:%M")}))
+        cuts = append_meeting_cut(cut)
+        day = now_local().strftime("%Y-%m-%d")
+        write_vault_snapshot(day, events_for(day))
+        print(json.dumps({"cut_min": cut, "cuts": cuts,
+                          "at": now_local().strftime("%H:%M")}))
     elif cmd == "status":
         # One small line for the menu bar: what the tracker thinks right now.
         print(json.dumps(status()))

@@ -158,6 +158,9 @@ draws a coloured dot; it never recomputes state itself.
 - **Calendar events** — from `~/Documents/Main/Dashboard/calendar-today.md`
   (written by `bin/calendar-export.py`). Work-tagged meetings extend presence
   across a quiet stretch.
+- **Meeting cuts** — written by `worktime-probe.py meeting_end`. A meeting that
+  finished early stops counting from that minute on, both for the live dot and
+  for the day's total.
 
 **How it decides working vs not working:**
 
@@ -198,6 +201,50 @@ something actually changed.
 | Blue   | Manually marked as working |
 | Amber  | Idle: no recent activity and no meeting |
 | Red    | Probe failed to run or returned an error |
+
+## Ending a meeting when the call ends
+
+A scheduled meeting keeps the dot green until its scheduled end, so a half-hour
+slot that broke up after ten minutes hands the day twenty minutes nobody
+worked. The menu bar app closes that gap by watching the microphone.
+
+Every two seconds it asks CoreAudio whether any input device is running
+(`kAudioDevicePropertyDeviceIsRunningSomewhere`, filtered to devices that
+actually have input streams — the built-in speakers report *running* at rest,
+and without that filter the answer is permanently yes). This is a property
+read, not a capture: no microphone permission, no orange recording dot, and no
+knowledge of which app is on the call. Zoom, a browser tab, a phone app
+screen-sharing — all the same reading.
+
+The rules around that reading, in `bin/worktime-bar/CallDetector.swift`:
+
+- capture must run **60 seconds** before it counts as a call, so Siri, a
+  notification chime or a two-second mic test never end a meeting;
+- silence must last **5 seconds** before the call is over. Not for the HAL,
+  which clears the flag in about 0.23s, but for device handoff: AirPods dying
+  mid-call hands over to the built-in mic with a gap in between.
+
+When a call ends while a **calendar** meeting is live, a panel appears at the
+top right — the meeting's name, "Ended — stopping tracking in 10s", and a
+**Keep tracking** button. Left alone it runs `worktime-probe.py meeting_end`;
+pressed, it does nothing at all. If capture resumes during those ten seconds
+the panel withdraws itself, so stepping out to a second call is not a
+decision the user has to make.
+
+Only calendar meetings are ever ended this way. A manual mark is a human
+declaration and a microphone reading does not get to revoke it; ordinary prompt
+activity lapses on its own and needs no help.
+
+It is a panel rather than a notification because a banner dismisses itself after
+about five seconds — half the countdown — Focus suppresses delivery and a
+meeting is exactly when Focus is on, and `UNUserNotificationCenter` would put a
+permission prompt in front of a tracker that currently asks for nothing.
+
+## Building the menu bar app
+
+`bin/worktime-bar/build.sh` compiles the sources into the bundle launchd runs
+and re-signs it, then prints the `launchctl kickstart` line to restart it. The
+app is several files now, so `swiftc main.swift` is no longer the whole build.
 
 ## Install
 
