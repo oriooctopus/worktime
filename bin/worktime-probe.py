@@ -27,8 +27,11 @@ import hashlib
 import json
 import os
 import re
+import shutil
+import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -861,14 +864,11 @@ FOCUS_EXCLUDE = {
     # Crediting the app on top of that both bypasses the classification and
     # double-counts the visits that survive it.
     #
-    # Known cost, worth stating plainly: those streams are NOT live. They come
-    # from the activity export, which writes a day's file that night, so a
-    # morning spent reviewing PRs is invisible to today's dot and only appears
-    # tomorrow. Excluding Chrome does not create that hole -- it was always
-    # there -- but it stops app-level focus from accidentally papering over it.
-    # The root fix is a live read of the Mac's own Chrome history, classified
-    # by the same domain rules; until then, the dot under-reports browser work
-    # during the day, which is the honest direction to be wrong in.
+    # This used to cost the whole of today: the classified streams came only
+    # from the activity export, written that night, so a morning of code review
+    # was invisible until tomorrow. github_live_rows() closes that for GitHub by
+    # reading this Mac's own Chrome history directly, about a minute behind the
+    # browser. Other work domains still arrive a day late through the export.
     "com.google.Chrome",
     # The lock screen and the screensaver are the machine with nobody at it.
     # They need saying explicitly: a locked Mac reports a real frontmost app,
@@ -1020,7 +1020,105 @@ GITHUB_TITLE = re.compile(r"·\s*Pull Re|·\s*scaledata/|/pull/\d+", re.I)
 GITHUB_AUTH = re.compile(r"/saml/|/login/oauth/|sso\.rubrik\.com", re.I)
 
 
+# Chrome's own History DB, this machine's live counterpart to the activity
+# export. The export is written by a nightly job, so on its own it makes today
+# the one day with no browser evidence at all -- a morning of code review shows
+# up tomorrow, which is precisely when it is no longer useful.
+CHROME_DIR = os.path.expanduser("~/Library/Application Support/Google/Chrome")
+
+# Chrome stamps visits in microseconds since 1601, not since 1970.
+CHROME_EPOCH = datetime(1601, 1, 1, tzinfo=timezone.utc)
+
+
+def chrome_history_path() -> str | None:
+    """The History DB of the Chrome profile actually in use, or None.
+
+    Found by scanning rather than hardcoded, because the profile directory is
+    not reliably "Default": this machine's only profile is "Profile 2" and has
+    no Default at all, so a hardcoded path reads an empty history forever while
+    looking like a person who simply did not browse. Most-recently-written wins,
+    which is what "the profile in use" means when several exist.
+    """
+    if not os.path.isdir(CHROME_DIR):
+        return None
+    found = [os.path.join(CHROME_DIR, name, "History")
+             for name in os.listdir(CHROME_DIR)
+             if os.path.exists(os.path.join(CHROME_DIR, name, "History"))]
+    if not found:
+        return None
+    return max(found, key=lambda p: os.stat(p).st_mtime)
+
+
+_gh_live_cache: dict[str, tuple] = {}
+
+
+def github_live_rows(day: str) -> list[tuple[datetime, str]]:
+    """Today's GitHub visits read straight from this Mac's Chrome history.
+
+    Chrome holds the DB open, so it is copied before being read -- the copy is
+    ~0.04s for 58MB and the result is memoised on the file's mtime and size,
+    which keeps it off the five-second poll.
+
+    Unlike the export this carries the full URL, so the page can be matched
+    properly instead of through the truncated-title heuristics GITHUB_TITLE
+    needs. Lag is about a minute: Chrome batches writes, but not by much.
+    """
+    path = chrome_history_path()
+    if path is None:
+        return []
+    st = os.stat(path)
+    key = (day, st.st_mtime_ns, st.st_size)
+    if _gh_live_cache.get("key") == key:
+        return _gh_live_cache["rows"]
+
+    base = datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=LOCAL)
+    lo = int((base - CHROME_EPOCH).total_seconds() * 1e6)
+    hi = int((base + timedelta(days=1) - CHROME_EPOCH).total_seconds() * 1e6)
+    tmp_dir = tempfile.mkdtemp(prefix="worktime-history-")
+    try:
+        tmp = os.path.join(tmp_dir, "History")
+        shutil.copy2(path, tmp)
+        conn = sqlite3.connect(tmp)
+        raw = list(conn.execute(
+            """SELECT visits.visit_time, urls.url, urls.title
+                 FROM visits JOIN urls ON urls.id = visits.url
+                WHERE visits.visit_time BETWEEN ? AND ?
+                  AND urls.url LIKE '%github.com%'
+             ORDER BY visits.visit_time""", (lo, hi)))
+        conn.close()
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    rows = []
+    for stamp, url, title in raw:
+        if GITHUB_AUTH.search(url):
+            continue
+        when = (CHROME_EPOCH + timedelta(microseconds=stamp)).astimezone(LOCAL)
+        # Title only when there is one. The URL is the fallback rather than a
+        # suffix because the tooltip truncates at roughly a PR title's length,
+        # so appending it buys nothing and costs the end of the title.
+        rows.append((when, title or url))
+    _gh_live_cache.clear()
+    _gh_live_cache["key"], _gh_live_cache["rows"] = key, rows
+    return rows
+
+
 def github_rows_for(day: str) -> list[tuple[datetime, str]]:
+    """GitHub code pages read, from the live history and the export together.
+
+    Live rows win their minute outright. They are the better record of the same
+    browsing -- full URL, second resolution, available the moment it happens --
+    and the export's value is the days and the machine the live read cannot
+    see: yesterday, and the Linux desktop's synced visits.
+    """
+    live = github_live_rows(day)
+    covered = {when.strftime("%H:%M") for when, _ in live}
+    merged = live + [(when, detail) for when, detail in github_export_rows(day)
+                     if when.strftime("%H:%M") not in covered]
+    return sorted(merged, key=lambda r: r[0])
+
+
+def github_export_rows(day: str) -> list[tuple[datetime, str]]:
     """Chrome visits to GitHub code pages, with the page each one landed on.
 
     Reading a PR or a diff is real work and was previously invisible to this
@@ -2488,9 +2586,14 @@ def activity_fingerprint(day: str) -> str:
                 p = os.path.join(root, f)
                 st = os.stat(p)
                 parts.append(f"{p}:{st.st_mtime_ns}:{st.st_size}")
+    # Chrome's History is in here so a PR opened in the browser moves the dot
+    # without waiting for something else to happen. It is the one input that
+    # changes on its own while the person is doing nothing this probe can
+    # otherwise see, which is the whole reason the live read exists.
     for p in (MARKS, APPROVALS, MODEFILE, CAL_FILE,
               os.path.join(SLACK_DIR, f"{day}.json"),
               os.path.join(FOCUS_DIR, f"{day}.jsonl"),
+              chrome_history_path() or "chrome-history-absent",
               os.path.join(ACTIVITY_DIR, f"{day}.md")):
         try:
             st = os.stat(p)

@@ -154,9 +154,14 @@ draws a coloured dot; it never recomputes state itself.
   (symlinked to `~/.claude/hooks/worktime-approval.py`, the Claude Code
   Notification/PostToolUse hook) to `~/.claude/stats/worktime/approvals.jsonl`.
   Approving a tool use is a human action; unattended agent activity is not.
-- **GitHub Chrome visits** — code-review pages from
-  `~/Documents/Main/Dashboard/activity/<date>.md` (the Linux box's activity
-  export). Reviewing a PR produces no prompts and no Slack messages.
+- **GitHub Chrome visits** — code-review pages, read two ways. This Mac's own
+  Chrome history is queried directly, about a minute behind the browser; the
+  activity export (`~/Documents/Main/Dashboard/activity/<date>.md`) supplies
+  earlier days and the Linux box's synced visits. Where both describe the same
+  minute the live row wins. The live read exists because the export is written
+  nightly, which made today the one day with no browser evidence at all — a
+  morning of code review surfaced tomorrow. Reviewing a PR produces no prompts
+  and no Slack messages, so without this it is invisible.
 - **Linux desktop prompts** — also from the activity export. A Claude prompt
   on the other machine is evidence of *absence* from Rubrik work, and is
   subtracted from Mac work periods.

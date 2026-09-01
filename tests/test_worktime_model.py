@@ -429,12 +429,18 @@ class GithubFilter(unittest.TestCase):
                 "|---|---|---|---|---|\n") + "".join(rows)
         with open(os.path.join(d, f"{day}.md"), "w") as fh:
             fh.write(body)
-        old = wp.ACTIVITY_DIR
+        # CHROME_DIR is redirected at an empty directory as well, or every
+        # assertion here would also be reading whatever the person running the
+        # suite happened to browse on the test day.
+        old, old_chrome = wp.ACTIVITY_DIR, wp.CHROME_DIR
         try:
             wp.ACTIVITY_DIR = d
+            wp.CHROME_DIR = os.path.join(d, "no-chrome")
+            wp._gh_live_cache.clear()
             return wp.github_visits_for(day)
         finally:
-            wp.ACTIVITY_DIR = old
+            wp.ACTIVITY_DIR, wp.CHROME_DIR = old, old_chrome
+            wp._gh_live_cache.clear()
 
     def test_pr_page_matches_though_truncation_ate_the_url(self):
         # The exporter cuts detail at 80 chars and GitHub puts the title first,
@@ -471,6 +477,167 @@ class GithubFilter(unittest.TestCase):
                 ("| 10:01 | chrome | visit | synced | lm-review — "
                  "http://127.0.0.1:8213/app/dashboard |\n")]
         self.assertEqual(self._visits(rows), [])
+
+
+class GithubLiveHistory(unittest.TestCase):
+    """The live read of this Mac's own Chrome history.
+
+    The export it supplements is written by a nightly job, so before this
+    existed today was the one day with no browser evidence at all: a morning
+    spent reviewing pull requests surfaced tomorrow, which is exactly when the
+    dot no longer needs it.
+    """
+
+    DAY = "2026-08-26"
+
+    def _chrome(self, profiles):
+        """A fake Chrome directory. profiles: {name: [(hh, mm, url, title)]}."""
+        import sqlite3
+        from datetime import datetime
+        root = tempfile.mkdtemp()
+        for name, rows in profiles.items():
+            os.makedirs(os.path.join(root, name))
+            c = sqlite3.connect(os.path.join(root, name, "History"))
+            c.execute("CREATE TABLE urls (id INTEGER PRIMARY KEY, url TEXT, "
+                      "title TEXT)")
+            c.execute("CREATE TABLE visits (id INTEGER PRIMARY KEY, "
+                      "url INTEGER, visit_time INTEGER)")
+            for i, (hh, mm, url, title) in enumerate(rows, start=1):
+                when = datetime.strptime(self.DAY, "%Y-%m-%d").replace(
+                    hour=hh, minute=mm, tzinfo=wp.LOCAL)
+                micros = int((when - wp.CHROME_EPOCH).total_seconds() * 1e6)
+                c.execute("INSERT INTO urls VALUES (?,?,?)", (i, url, title))
+                c.execute("INSERT INTO visits VALUES (?,?,?)", (i, i, micros))
+            c.commit()
+            c.close()
+        return root
+
+    def _rows(self, profiles, export=""):
+        root = self._chrome(profiles)
+        act = tempfile.mkdtemp()
+        with open(os.path.join(act, f"{self.DAY}.md"), "w") as fh:
+            fh.write("| time | source | direction | who | detail |\n"
+                     "|---|---|---|---|---|\n" + export)
+        old, old_act = wp.CHROME_DIR, wp.ACTIVITY_DIR
+        try:
+            wp.CHROME_DIR, wp.ACTIVITY_DIR = root, act
+            wp._gh_live_cache.clear()
+            return wp.github_rows_for(self.DAY)
+        finally:
+            wp.CHROME_DIR, wp.ACTIVITY_DIR = old, old_act
+            wp._gh_live_cache.clear()
+
+    def test_a_pr_read_this_morning_is_visible_now(self):
+        rows = self._rows({"Profile 2": [
+            (9, 5, "https://github.com/scaledata/sdmain/pull/1", "Fix the thing")]})
+        self.assertEqual([(w.strftime("%H:%M"), d) for w, d in rows],
+                         [("09:05", "Fix the thing")])
+
+    def test_the_profile_is_found_rather_than_assumed(self):
+        # This machine has no "Default" at all -- its only profile is
+        # "Profile 2". A hardcoded path reads an empty history forever while
+        # looking exactly like somebody who did not browse.
+        rows = self._rows({"Profile 2": [
+            (9, 5, "https://github.com/scaledata/sdmain/pull/1", "A PR")]})
+        self.assertEqual(len(rows), 1)
+
+    def test_the_profile_in_use_wins_when_several_exist(self):
+        root = self._chrome({
+            "Default": [(9, 0, "https://github.com/a/b/pull/1", "Stale")],
+            "Profile 2": [(9, 5, "https://github.com/a/b/pull/2", "Live")]})
+        os.utime(os.path.join(root, "Default", "History"), (1, 1))
+        old = wp.CHROME_DIR
+        try:
+            wp.CHROME_DIR = root
+            wp._gh_live_cache.clear()
+            self.assertEqual([d for _w, d in wp.github_live_rows(self.DAY)],
+                             ["Live"])
+        finally:
+            wp.CHROME_DIR = old
+            wp._gh_live_cache.clear()
+
+    def test_no_chrome_at_all_is_not_an_error(self):
+        old = wp.CHROME_DIR
+        try:
+            wp.CHROME_DIR = os.path.join(tempfile.mkdtemp(), "absent")
+            wp._gh_live_cache.clear()
+            self.assertEqual(wp.github_live_rows(self.DAY), [])
+        finally:
+            wp.CHROME_DIR = old
+            wp._gh_live_cache.clear()
+
+    def test_another_days_visits_are_not_todays_evidence(self):
+        root = self._chrome({"Profile 2": [
+            (9, 5, "https://github.com/a/b/pull/1", "Yesterday")]})
+        old = wp.CHROME_DIR
+        try:
+            wp.CHROME_DIR = root
+            wp._gh_live_cache.clear()
+            self.assertEqual(wp.github_live_rows("2026-08-27"), [])
+        finally:
+            wp.CHROME_DIR = old
+            wp._gh_live_cache.clear()
+
+    def test_signing_in_is_not_reviewing_code(self):
+        # Same rule the export path applies: the SAML pair fires every weekday
+        # morning at the same minute and is not a minute of work.
+        rows = self._rows({"Profile 2": [
+            (8, 3, "https://github.com/orgs/scaledata/saml/initiate", "Sign In"),
+            (19, 2, "https://github.com/login/oauth/authorize?x=1", "Supabase")]})
+        self.assertEqual(rows, [])
+
+    def test_ordinary_browsing_is_not_picked_up(self):
+        rows = self._rows({"Profile 2": [
+            (10, 0, "https://www.amazon.com/dp/B08", "Amazon.com")]})
+        self.assertEqual(rows, [])
+
+    def test_the_live_row_wins_its_minute_over_the_export(self):
+        # Both records describe the same browsing. Counting them both would
+        # double the evidence for one visit; the live one is kept because it
+        # carries the full URL and second resolution.
+        export = ("| 09:05 | chrome | visit | synced | Fix the thing by "
+                  "someone · Pull Re |\n")
+        rows = self._rows({"Profile 2": [
+            (9, 5, "https://github.com/a/b/pull/1", "Fix the thing")]},
+            export=export)
+        self.assertEqual([d for _w, d in rows], ["Fix the thing"])
+
+    def test_the_export_still_supplies_minutes_the_live_read_missed(self):
+        # The export's value is the machine the live read cannot see: GitHub
+        # visits synced from the Linux desktop.
+        export = ("| 14:20 | chrome | visit | synced | Some other PR by "
+                  "someone · Pull Re |\n")
+        rows = self._rows({"Profile 2": [
+            (9, 5, "https://github.com/a/b/pull/1", "Fix the thing")]},
+            export=export)
+        self.assertEqual([w.strftime("%H:%M") for w, _d in rows],
+                         ["09:05", "14:20"])
+
+    def test_a_titleless_page_falls_back_to_its_url(self):
+        rows = self._rows({"Profile 2": [
+            (9, 5, "https://github.com/a/b/pull/1", "")]})
+        self.assertEqual([d for _w, d in rows],
+                         ["https://github.com/a/b/pull/1"])
+
+    def test_the_read_is_memoised_until_chrome_writes_again(self):
+        # It sits behind a five-second poll, so re-copying a 58MB database on
+        # every call is the difference between cheap and not worth having.
+        root = self._chrome({"Profile 2": [
+            (9, 5, "https://github.com/a/b/pull/1", "A PR")]})
+        old, real_copy = wp.CHROME_DIR, wp.shutil.copy2
+        copies = []
+        try:
+            wp.CHROME_DIR = root
+            wp._gh_live_cache.clear()
+            wp.shutil.copy2 = lambda *a, **k: (copies.append(a),
+                                               real_copy(*a, **k))[1]
+            wp.github_live_rows(self.DAY)
+            wp.github_live_rows(self.DAY)
+            self.assertEqual(len(copies), 1)
+        finally:
+            wp.shutil.copy2 = real_copy
+            wp.CHROME_DIR = old
+            wp._gh_live_cache.clear()
 
 
 class CalendarParsing(unittest.TestCase):
@@ -1038,16 +1205,22 @@ class RecentActivities(unittest.TestCase):
             fh.write("| time | source | direction | who | detail |\n|---|---|---|---|---|\n"
                      "| 09:00 | claude | prompt | me | build the iOS app |\n"
                      "| 09:05 | chrome | visit | synced | a PR · scaledata/sdmain |\n")
-        saved = (wp.ACTIVITY_DIR, wp.full_day, wp.slack_for, wp.approval_rows_for)
+        saved = (wp.ACTIVITY_DIR, wp.CHROME_DIR, wp.full_day, wp.slack_for,
+                 wp.approval_rows_for)
         try:
             wp.ACTIVITY_DIR = d
+            # Without this the live reader adds whatever the person running
+            # the suite really browsed on DAY, which is neither fixed nor known.
+            wp.CHROME_DIR = os.path.join(d, "no-chrome")
+            wp._gh_live_cache.clear()
             wp.full_day = lambda _d: {"sessions": []}
             wp.slack_for = lambda _d: []
             wp.approval_rows_for = lambda _d: []
             got = wp.recent_activities(DAY)
         finally:
-            (wp.ACTIVITY_DIR, wp.full_day, wp.slack_for,
+            (wp.ACTIVITY_DIR, wp.CHROME_DIR, wp.full_day, wp.slack_for,
              wp.approval_rows_for) = saved
+            wp._gh_live_cache.clear()
         self.assertEqual([(a["kind"], a["t"]) for a in got], [("github", "09:05")])
 
     def test_desktop_prompts_still_reach_the_model_they_belong_to(self):
