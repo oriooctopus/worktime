@@ -11,7 +11,8 @@ prompt-only probe both look identical to lunch.
 ## Layout
 
 ```
-bin/    exporters plus the probe and menu bar app
+bin/    exporters plus the probe, menu bar app, and the two Claude Code hooks
+        (prompt-count.py, worktime-approval.py) it depends on
 skills/ worktime-setup (guided config), indicator-dot (current status)
 tests/  pytest suites; run with `python3 -m pytest tests`
 deploy/ systemd units (Linux) and launchd plists (macOS)
@@ -96,14 +97,20 @@ draws a coloured dot; it never recomputes state itself.
 
 **Inputs the probe reads:**
 
-- **Claude prompts** — timestamps from `~/.claude/hooks/prompt-count.py`.
-  Every prompt sent to Claude Code is evidence of presence.
+- **Claude prompts** — timestamps from `bin/prompt-count.py`, symlinked to
+  `~/.claude/hooks/prompt-count.py` (it also feeds the Claude Code statusline,
+  which is why it lives at that fixed path rather than being called from
+  `bin/` directly). Every prompt sent to Claude Code is evidence of presence,
+  including from worktime's own background-job sessions: it walks both the
+  normal `~/.claude/projects` and the separate `~/.claude-personal/projects`
+  those run under.
 - **Slack messages sent** — fetched from the Slack search API (token in
   `~/.slack-mcp-token.json`). Messages received say nothing about presence;
   only sends count.
-- **Tool-approval events** — written by the Claude Code Notification hook to
-  `~/.claude/stats/worktime/approvals.jsonl`. Approving a tool use is a human
-  action; unattended agent activity is not.
+- **Tool-approval events** — written by `bin/worktime-approval.py`
+  (symlinked to `~/.claude/hooks/worktime-approval.py`, the Claude Code
+  Notification/PostToolUse hook) to `~/.claude/stats/worktime/approvals.jsonl`.
+  Approving a tool use is a human action; unattended agent activity is not.
 - **GitHub Chrome visits** — code-review pages from
   `~/Documents/Main/Dashboard/activity/<date>.md` (the Linux box's activity
   export). Reviewing a PR produces no prompts and no Slack messages.
@@ -161,3 +168,13 @@ something actually changed.
 Copy `config/*.example.json` to `~/.config/`, symlink `bin/*.py` onto your
 PATH, and install the units in `deploy/systemd` (or `deploy/launchd`).
 Credentials are read from `~/.claude/tokens.env` and are never stored here.
+
+Two of the `bin/` scripts are Claude Code hooks and must additionally be
+symlinked into `~/.claude/hooks/` under their own names, since that fixed
+path is hardcoded into `settings.json`'s hook config and (for
+`prompt-count.py`) the global statusline:
+
+```
+ln -sf "$PWD/bin/prompt-count.py"     ~/.claude/hooks/prompt-count.py
+ln -sf "$PWD/bin/worktime-approval.py" ~/.claude/hooks/worktime-approval.py
+```

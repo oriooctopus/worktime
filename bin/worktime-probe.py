@@ -56,6 +56,11 @@ LOCAL = ZoneInfo("America/New_York")
 # confident "idle" while the same command run from a shell said "working".
 PYTHON = sys.executable
 
+# This file itself is usually reached via the ~/.claude/bin/worktime-probe.py
+# symlink (see README), so __file__ resolves through it correctly either way.
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PROMPT_COUNT = os.path.join(ROOT, "bin", "prompt-count.py")
+
 
 def now_local() -> datetime:
     return datetime.now(timezone.utc).astimezone(LOCAL)
@@ -435,7 +440,7 @@ def prompts_for(day: str) -> list[datetime]:
     double-count it and invent gaps that never happened.
     """
     r = subprocess.run(
-        [PYTHON, os.path.expanduser("~/.claude/hooks/prompt-count.py"), "--day", day],
+        [PYTHON, PROMPT_COUNT, "--day", day],
         capture_output=True, text=True,
     )
     # A crashed counter is NOT a day with no prompts. Treating the two alike is
@@ -1059,7 +1064,7 @@ def full_day(day: str) -> dict:
     """
     if day not in _FULL_CACHE:
         r = subprocess.run(
-            [PYTHON, os.path.expanduser("~/.claude/hooks/prompt-count.py"),
+            [PYTHON, PROMPT_COUNT,
              "--day", day, "--full"],
             capture_output=True, text=True)
         if r.returncode != 0:

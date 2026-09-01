@@ -39,11 +39,13 @@ sessions don't collide.
 
 ## Repo-specific gotchas
 
-- **The prompt-count hook lives outside this repo.** `bin/worktime-probe.py`
-  shells out to `~/.claude/hooks/prompt-count.py`, which is *not* tracked in
-  this git history (`~/.claude` isn't a git repo). Edits there are direct
-  filesystem changes with no commit/push step — don't go looking for them in
-  `git log`.
+- **The two Claude Code hooks this project depends on live in `bin/`, not
+  `~/.claude/hooks/`.** `bin/prompt-count.py` and `bin/worktime-approval.py`
+  are the real, git-tracked files; `~/.claude/hooks/prompt-count.py` and
+  `~/.claude/hooks/worktime-approval.py` are symlinks into this repo (same
+  pattern as `~/.claude/bin/worktime-probe.py`). Edit them here, not through
+  the symlink target — and if a symlink is ever missing after a fresh
+  machine setup, see the Install section in README.md.
 - **Two separate Claude Code profiles feed this project.** Interactive
   sessions run under the normal `~/.claude` profile; worktime's own
   background jobs run under a second, separate profile at
