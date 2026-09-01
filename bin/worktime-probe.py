@@ -57,9 +57,14 @@ LOCAL = ZoneInfo("America/New_York")
 # confident "idle" while the same command run from a shell said "working".
 PYTHON = sys.executable
 
-# This file itself is usually reached via the ~/.claude/bin/worktime-probe.py
-# symlink (see README), so __file__ resolves through it correctly either way.
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# realpath, not abspath. This file is usually reached through the
+# ~/.claude/bin/worktime-probe.py symlink, and abspath does not follow symlinks
+# -- it returned the symlink's own path, so ROOT became ~/.claude and every
+# sibling script was looked for in ~/.claude/bin, where none of them are. The
+# probe then failed on every poll with "can't open file
+# ~/.claude/bin/prompt-count.py", and the menu bar dot sat on its launch
+# placeholder, which is indistinguishable from a genuine idle reading.
+ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 PROMPT_COUNT = os.path.join(ROOT, "bin", "prompt-count.py")
 
 
