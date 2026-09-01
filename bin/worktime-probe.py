@@ -890,8 +890,41 @@ def focus_for(day: str) -> list[datetime]:
             continue
         if b.get("idle", 0) > FOCUS_IDLE_SEC:
             continue
-        minutes.update(range(lo // 60, hi // 60 + 1))
+        # hi is exclusive: a window ending exactly at 09:05:00 covers no part
+        # of 09:05, and crediting it would add a phantom minute to the end of
+        # every contiguous run.
+        minutes.update(range(lo // 60, (hi - 1) // 60 + 1))
     return [base + timedelta(minutes=m) for m in sorted(minutes)]
+
+
+def focus_app_by_minute(day: str) -> dict[int, str]:
+    """The app that held most of each attended minute, in one pass.
+
+    focus_apps() answers the same question for an arbitrary range, which is the
+    right shape for labelling a period (a handful of calls a day) and the wrong
+    one for labelling every minute: called in a loop it rescans the whole log
+    each time, and the log is ~2,900 rows against ~1,400 minutes. That is four
+    million row-visits on a path the menu bar polls every five seconds.
+    """
+    per: dict[int, dict[str, int]] = {}
+    rows = focus_rows(day)
+    for a, b in zip(rows, rows[1:]):
+        lo, hi = sec_of(a["t"]), sec_of(b["t"])
+        if not (0 < hi - lo <= FOCUS_MAX_GAP_SEC):
+            continue
+        if not a.get("bundle") or a["bundle"] in FOCUS_EXCLUDE:
+            continue
+        if b.get("idle", 0) > FOCUS_IDLE_SEC:
+            continue
+        name = a.get("app") or a["bundle"]
+        # A window can straddle a minute boundary, so its seconds are split
+        # across the minutes it actually covers rather than all landing on the
+        # minute it started in.
+        for m in range(lo // 60, hi // 60 + 1):
+            span = min(hi, (m + 1) * 60) - max(lo, m * 60)
+            if span > 0:
+                per.setdefault(m, {})[name] = per.setdefault(m, {}).get(name, 0) + span
+    return {m: max(apps.items(), key=lambda kv: kv[1])[0] for m, apps in per.items()}
 
 
 def focus_apps(day: str, lo: int, hi: int) -> list[str]:
@@ -1077,10 +1110,23 @@ def one_line(text: str, unescape: bool = False) -> str:
 def recent_activities(day: str, limit: int = ACTIVITY_LIST_N) -> list[dict]:
     """The most recent work events, newest first, each with what it was.
 
-    The same four streams events_for() merges, deliberately: this is meant to
-    be the readable form of exactly what the dot's verdict was derived from, so
-    a stream that moves the dot but is missing here -- or the reverse -- would
+    The same streams events_for() merges, deliberately: this is meant to be the
+    readable form of exactly what the dot's verdict was derived from, so a
+    stream that moves the dot but is missing here -- or the reverse -- would
     make the list a second opinion on the day rather than an explanation of it.
+
+    Slack is the one entry that is no longer evidence in its own right, since
+    sends stopped counting as presence. It stays because it is not a separate
+    claim about the day: a message was typed with Slack in front of you on an
+    attended machine, so the minute it names is a minute focus already counted.
+    It says what that minute was ABOUT, which is the one thing focus cannot.
+
+    Focus fills in last, and only for minutes nothing else explains. Emitting
+    it for every attended minute would satisfy the invariant and destroy the
+    list: focus covers nearly every minute at the keyboard, so it would
+    interleave with the prompts and push all ten slots onto "Ghostty". What is
+    worth showing is the stretch that has no other evidence -- which is exactly
+    the stretch this signal was added to see.
 
     Desktop prompts stay out for the same reason. They do reach the model, but
     with the opposite polarity: a prompt on the other machine is evidence of
@@ -1121,6 +1167,15 @@ def recent_activities(day: str, limit: int = ACTIVITY_LIST_N) -> list[dict]:
         rows.append((when.strftime("%H:%M:00"), {
             "t": when.strftime("%H:%M"), "kind": "github",
             "what": one_line(detail)}))
+
+    spoken = {k[:5] for k, _ in rows}
+    by_minute = focus_app_by_minute(day)
+    for when in focus_for(day):
+        hm = when.strftime("%H:%M")
+        app = by_minute.get(when.hour * 60 + when.minute)
+        if hm in spoken or not app:
+            continue
+        rows.append((f"{hm}:00", {"t": hm, "kind": "focus", "what": app}))
 
     rows.sort(key=lambda r: r[0], reverse=True)
 

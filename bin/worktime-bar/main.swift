@@ -64,8 +64,13 @@ struct Period {
 }
 
 // One piece of evidence the probe's verdict was derived from: a prompt, a
-// Slack message sent, a permission approval, or a GitHub page read. `n` is
-// how many identical consecutive events the probe folded into this one.
+// permission approval, a GitHub page read, or a stretch of attended time in an
+// app that nothing else explains. `n` is how many identical consecutive events
+// the probe folded into this one.
+//
+// A Slack row is the exception and is not evidence in its own right -- sends
+// stopped counting as presence when focus started counting the reading too. It
+// rides along to say what an already-counted minute was about.
 struct Activity {
     var t = ""
     var kind = ""

@@ -66,8 +66,10 @@ class FocusCase(unittest.TestCase):
 class TestCredit(FocusCase):
     def test_attended_run_credits_every_minute_it_covers(self):
         # 09:00:00 to 09:05:00, heartbeating every 30s with input throughout.
+        # Five minutes of presence earn five minutes, not six: the run ends on
+        # the 09:05 boundary and covers no part of that minute.
         self.write(self.samples(9 * 3600, 11))
-        self.assertEqual(self.minutes(), list(range(540, 546)))
+        self.assertEqual(self.minutes(), list(range(540, 545)))
 
     def test_a_single_sample_credits_nothing(self):
         # One row has no successor, so there is no interval to vouch for. The
@@ -102,7 +104,7 @@ class TestIdle(FocusCase):
                  "bundle": SLACK, "idle": i * 30} for i in range(11)]
         self.write(rows)
         # Credited through the sample at idle=120 (09:02:00), not past it.
-        self.assertEqual(self.minutes(), [540, 541, 542])
+        self.assertEqual(self.minutes(), [540, 541])
 
     def test_the_closing_sample_decides_not_the_opening_one(self):
         # The whole window was unattended, but the row that OPENS it still
@@ -149,7 +151,7 @@ class TestTruncation(FocusCase):
         self.write(self.samples(9 * 3600, 11))
         self.write([{"day": "2026-03-05", "t": "09:00:00", "app": "Slack",
                      "bundle": SLACK, "idle": 0}])
-        self.assertEqual(self.minutes(), list(range(540, 546)))
+        self.assertEqual(self.minutes(), list(range(540, 545)))
 
     def test_missing_log_is_not_an_error(self):
         # A machine that has never run the bar has no log. That is a day with
@@ -157,12 +159,12 @@ class TestTruncation(FocusCase):
         self.assertEqual(self.minutes("2026-01-01"), [])
 
     def test_out_of_order_rows_are_sorted_before_pairing(self):
-        # Five heartbeats 30s apart run 09:00:00 to 09:02:00, touching three
-        # minutes. Written backwards, they must still pair up as neighbours --
-        # unsorted, every pair would have a negative span and earn nothing.
+        # Five heartbeats 30s apart run 09:00:00 to 09:02:00. Written
+        # backwards, they must still pair up as neighbours -- unsorted, every
+        # pair would have a negative span and earn nothing.
         rows = self.samples(9 * 3600, 5)
         self.write(list(reversed(rows)))
-        self.assertEqual(self.minutes(), [540, 541, 542])
+        self.assertEqual(self.minutes(), [540, 541])
 
 
 class TestApps(FocusCase):
@@ -176,6 +178,49 @@ class TestApps(FocusCase):
     def test_apps_outside_the_window_are_excluded(self):
         self.write(self.samples(9 * 3600, 11))
         self.assertEqual(wp.focus_apps(DAY, 14 * 3600, 15 * 3600), [])
+
+
+class TestAppByMinute(FocusCase):
+    def test_covers_exactly_the_credited_minutes(self):
+        self.write(self.samples(9 * 3600, 11))
+        self.assertEqual(sorted(wp.focus_app_by_minute(DAY)), self.minutes())
+
+    def test_a_minute_goes_to_whichever_app_held_most_of_it(self):
+        # Safari holds 09:00:00-09:00:20, Slack holds 09:00:20-09:01:00.
+        self.write([
+            {"day": DAY, "t": "09:00:00", "app": "Safari",
+             "bundle": "com.apple.Safari", "idle": 0},
+            {"day": DAY, "t": "09:00:20", "app": "Slack", "bundle": SLACK,
+             "idle": 0},
+            {"day": DAY, "t": "09:01:00", "app": "Slack", "bundle": SLACK,
+             "idle": 0},
+        ])
+        self.assertEqual(wp.focus_app_by_minute(DAY)[540], "Slack")
+
+    def test_a_window_straddling_a_boundary_splits_across_both_minutes(self):
+        # 09:00:50 to 09:01:20 is 10s in one minute and 20s in the next.
+        # Charging the whole window to the minute it started in would hand
+        # 09:00 more seconds than the window spent there, and would let a
+        # brief app win a minute it barely touched.
+        self.write([
+            {"day": DAY, "t": "09:00:00", "app": "Safari",
+             "bundle": "com.apple.Safari", "idle": 0},
+            {"day": DAY, "t": "09:00:50", "app": "Slack", "bundle": SLACK,
+             "idle": 0},
+            {"day": DAY, "t": "09:01:20", "app": "Slack", "bundle": SLACK,
+             "idle": 0},
+        ])
+        by_min = wp.focus_app_by_minute(DAY)
+        self.assertEqual(by_min[540], "Safari")   # 50s Safari vs 10s Slack
+        self.assertEqual(by_min[541], "Slack")
+
+    def test_agrees_with_focus_apps_over_the_same_minute(self):
+        self.write(self.samples(9 * 3600, 3, bundle="com.apple.Safari",
+                                app="Safari"))
+        self.write(self.samples(9 * 3600 + 60, 3))
+        for minute, app in wp.focus_app_by_minute(DAY).items():
+            ranked = wp.focus_apps(DAY, minute * 60, minute * 60 + 60)
+            self.assertEqual(app, ranked[0])
 
 
 class TestReadsRealWriterFormat(FocusCase):
