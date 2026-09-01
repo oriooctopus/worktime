@@ -83,9 +83,30 @@ class TestCredit(FocusCase):
                                 app="Netflix"))
         self.assertEqual(self.minutes(), [])
 
+    def test_the_terminal_earns_nothing(self):
+        # Excluded for a different reason than the rest of the list: not
+        # leisure, but ambiguity. The same terminal is frontmost for work on
+        # this machine and for work on the Linux desktop, and desktop work is
+        # counted as absence elsewhere in the probe -- so crediting it here
+        # would re-add exactly the hours that subtraction removes.
+        self.write(self.samples(9 * 3600, 11, bundle="com.mitchellh.ghostty",
+                                app="Ghostty"))
+        self.assertEqual(self.minutes(), [])
+
     def test_empty_bundle_earns_nothing(self):
-        # No frontmost app at all -- the login window, or a fast user switch.
+        # No frontmost app at all. Rare, but it is what a sample taken during
+        # a fast user switch can look like.
         self.write(self.samples(9 * 3600, 11, bundle="", app=""))
+        self.assertEqual(self.minutes(), [])
+
+    def test_the_lock_screen_earns_nothing(self):
+        # A locked Mac does NOT report an empty frontmost app -- it reports
+        # com.apple.loginwindow, and typing the password resets idle to zero.
+        # So the lock screen passes both of the other honesty checks, and
+        # naming it is the only thing that stops unlocking the machine from
+        # reading as attended work.
+        self.write(self.samples(9 * 3600, 11, bundle="com.apple.loginwindow",
+                                app="loginwindow"))
         self.assertEqual(self.minutes(), [])
 
 
