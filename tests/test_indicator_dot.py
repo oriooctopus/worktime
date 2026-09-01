@@ -230,16 +230,21 @@ def test_falls_back_to_whichever_location_exists(tmp_path, monkeypatch):
     ~/obsidian-vault. Hardcoding either one breaks the other machine."""
     real = tmp_path / "obsidian-vault" / "Dashboard"
     real.mkdir(parents=True)
-    monkeypatch.setattr(ind, "VAULT_DASHBOARDS",
+    monkeypatch.setattr(ind.wc, "VAULT_DASHBOARDS",
                         ["/definitely/not/here", str(real)])
     assert ind.dashboard_dir(env={}, profile_path=str(tmp_path / "none.json")) == str(real)
 
 
-def test_broken_profile_does_not_stop_resolution(tmp_path):
+def test_a_broken_profile_is_raised_not_swallowed(tmp_path):
+    """A profile that exists and does not parse means somebody configured a
+    dashboard_dir that is being ignored. Falling back quietly renders a
+    confident status read from the wrong directory -- the failure that hides
+    itself. Absence is different, and stays fine."""
     prof = tmp_path / "profile.json"; prof.write_text("{not json")
-    assert ind.dashboard_dir(env={}, profile_path=str(prof))
+    with pytest.raises(ind.wc.ProfileError):
+        ind.dashboard_dir(env={}, profile_path=str(prof))
 
 
 def test_returns_a_named_path_even_when_nothing_exists(tmp_path, monkeypatch):
-    monkeypatch.setattr(ind, "VAULT_DASHBOARDS", ["/nope/a", "/nope/b"])
+    monkeypatch.setattr(ind.wc, "VAULT_DASHBOARDS", ["/nope/a", "/nope/b"])
     assert ind.dashboard_dir(env={}, profile_path=str(tmp_path / "none.json")) == "/nope/a"

@@ -186,7 +186,7 @@ def paths(tmp_path):
         # paths["redact"] or writes its own jsonl fixtures -- tests must
         # NEVER touch the real ~/.claude/projects or ~/.config/activity-export.
         "claude_dir": str(claude_dir),
-        "claude_projects_glob": str(claude_dir / "*" / "*.jsonl"),
+        "claude_projects_globs": [str(claude_dir / "*" / "*.jsonl")],
         "redact_path": str(tmp_path / "redact-missing.json"),
         # Always a per-test tmp path, never the real cache file, whether or
         # not a given test also injects paths["claude_offset_cache"] directly.

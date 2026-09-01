@@ -24,38 +24,22 @@ try:
 except ImportError:  # Python < 3.9
     from backports.zoneinfo import ZoneInfo
 
+# realpath, not abspath: this file is normally reached through a symlink, and
+# abspath would look for the shared module beside the symlink.
+sys.path.insert(0, os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__)))),
+    "bin"))
+import worktime_common as wc  # noqa: E402
+
 # The probe that owns the working/not-working decision.
 PROBE = os.path.expanduser("~/.claude/bin/worktime-probe.py")
-# The same vault has a different path on each machine: the Mac (where the probe
-# runs) keeps it under Documents/Main, the Linux box under ~/obsidian-vault.
-# Hardcoding either one breaks the other, so resolve at import.
-VAULT_DASHBOARDS = ["~/Documents/Main/Dashboard", "~/obsidian-vault/Dashboard"]
 
-
-def dashboard_dir(env=None, profile_path=None):
-    """First dashboard directory that actually exists on this machine.
-
-    Order: WORKTIME_DASHBOARD env, profile config, then the known locations.
-    Falls back to the first candidate so error messages name a real path.
-    """
-    env = os.environ if env is None else env
-    if env.get("WORKTIME_DASHBOARD"):
-        return os.path.expanduser(env["WORKTIME_DASHBOARD"])
-    path = profile_path if profile_path is not None else os.path.expanduser(
-        "~/.config/worktime/profile.json")
-    if os.path.exists(path):
-        try:
-            with open(path) as f:
-                configured = json.load(f).get("dashboard_dir")
-            if configured:
-                return os.path.expanduser(configured)
-        except (OSError, ValueError):
-            pass  # a broken profile must not stop the status from rendering
-    for candidate in VAULT_DASHBOARDS:
-        expanded = os.path.expanduser(candidate)
-        if os.path.isdir(expanded):
-            return expanded
-    return os.path.expanduser(VAULT_DASHBOARDS[0])
+# Where the vault lives is a fact about the machine, not about this script: it
+# is under Documents/Main on the Mac and ~/obsidian-vault on the Linux box.
+# This used to resolve it independently, and swallowed an unreadable profile so
+# a mis-configured dashboard_dir rendered a confident status from the wrong
+# directory rather than saying so.
+dashboard_dir = wc.dashboard_dir
 
 
 DASHBOARD = dashboard_dir()
@@ -267,7 +251,7 @@ def main():
                    help="Skip the probe and use the calendar-only path.")
     a = p.parse_args()
 
-    tz = ZoneInfo("America/New_York")
+    tz = wc.local_tz()
     now = datetime.now(tz)
 
     if a.at:

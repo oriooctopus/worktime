@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Export today's calendar to ~/obsidian-vault/Dashboard/calendar-today.md,
-in the format specified by Dashboard/calendar-export-brief.md, which a probe
-on Oliver's Mac reads to decide whether a quiet stretch of the day was a
-meeting rather than idle time.
+"""Export today's calendar to <dashboard>/calendar-today.md, in the format
+specified by Dashboard/calendar-export-brief.md, which a probe on Oliver's Mac
+reads to decide whether a quiet stretch of the day was a meeting rather than
+idle time. The dashboard directory differs per machine and is resolved by
+worktime_common; this file used to name the Linux box's path outright, so on
+the Mac it wrote where nothing reads.
 
 Two kinds of row, tagged in the Calendar column so the probe never has to
 guess from the title:
@@ -49,6 +51,11 @@ import urllib.parse
 import urllib.request
 from datetime import date, datetime, timedelta
 
+# realpath, not abspath: this file may be reached through a symlink on PATH,
+# and abspath would look for the shared module beside the symlink.
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import worktime_common as wc  # noqa: E402
+
 try:
     from zoneinfo import ZoneInfo
 except ImportError:  # Python < 3.9 (this box: 3.8.10)
@@ -64,7 +71,7 @@ def load_profile(path=None):
     original author's values so an existing install does not break on upgrade.
     """
     path = path if path is not None else PROFILE_PATH
-    defaults = {"timezone": "America/New_York",
+    defaults = {"timezone": wc.DEFAULT_TZ_NAME,
                 "personal_account": "oliverullman@gmail.com",
                 "work_calendar_id": "oliver.ullman@rubrik.com"}
     if not os.path.exists(path):
@@ -81,7 +88,7 @@ def load_profile(path=None):
 
 
 _PROFILE = None
-TZ_NAME = "America/New_York"
+TZ_NAME = wc.DEFAULT_TZ_NAME
 try:
     _PROFILE = load_profile()
     TZ_NAME = _PROFILE["timezone"]
@@ -90,7 +97,7 @@ except Exception:  # a broken profile must not stop the module importing; run() 
 NY_TZ = ZoneInfo(TZ_NAME)
 
 TOKENS_PATH = os.path.expanduser("~/.claude/tokens.env")
-OUTPUT_PATH = os.path.expanduser("~/obsidian-vault/Dashboard/calendar-today.md")
+OUTPUT_PATH = os.path.join(wc.dashboard_dir(), "calendar-today.md")
 OVERRIDES_PATH = os.path.expanduser("~/.config/calendar-export/overrides.json")
 WORK_BLOCKS_PATH = os.path.expanduser("~/.cache/activity-export/chrome-work-blocks.json")
 BROWSING_LABEL = "Working (browsing)"
