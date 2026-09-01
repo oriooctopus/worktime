@@ -182,6 +182,28 @@ func periodStrings(_ p: Period) -> (top: String, what: String) {
 // exactly the pixels its NSTextFields are told to, with no vibrancy pass in
 // between. This is what it takes to get real full-contrast text in a row
 // that isn't itself a clickable action.
+// One row of mixed-styling text that truncates instead of wrapping.
+//
+// Every label in this menu is one line inside a fixed-height row, so a wrap is
+// always a bug: the second line draws outside the row and straight over its
+// neighbour. `lineBreakMode` on the field is not enough to prevent it -- an
+// attributed value carries its own paragraph style, which wins, and the
+// default one word-wraps. The style has to go on the string. Going through
+// this helper is what keeps the next mixed-styling row from rediscovering
+// that.
+func singleLineLabel(_ text: NSMutableAttributedString) -> NSTextField {
+    let style = NSMutableParagraphStyle()
+    style.lineBreakMode = .byTruncatingTail
+    text.addAttribute(.paragraphStyle, value: style,
+                      range: NSRange(location: 0, length: text.length))
+
+    let f = NSTextField(labelWithString: "")
+    f.attributedStringValue = text
+    f.maximumNumberOfLines = 1
+    f.lineBreakMode = .byTruncatingTail
+    return f
+}
+
 final class PeriodRowView: NSView {
     // `status` is only passed for the current (most recent) period -- it
     // folds "Nm since last activity" / "quiet Nm" into this same row group
@@ -204,10 +226,7 @@ final class PeriodRowView: NSView {
                 .font: NSFont.systemFont(ofSize: 12, weight: .medium),
                 .foregroundColor: NSColor.labelColor,
             ]))
-            let f = NSTextField(labelWithString: "")
-            f.attributedStringValue = attr
-            f.lineBreakMode = .byTruncatingTail
-            statusField = f
+            statusField = singleLineLabel(attr)
         }
 
         let (top, what) = periodStrings(p)
@@ -291,11 +310,9 @@ final class ActivityRowView: NSView {
             ]))
         }
 
-        let f = NSTextField(labelWithString: "")
-        f.attributedStringValue = line
         // Truncated here rather than by the probe: the widget is the only
         // party that knows its own width, and the payload is capped already.
-        f.lineBreakMode = .byTruncatingTail
+        let f = singleLineLabel(line)
         f.translatesAutoresizingMaskIntoConstraints = false
         addSubview(f)
         NSLayoutConstraint.activate([
