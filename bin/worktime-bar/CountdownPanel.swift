@@ -2,6 +2,11 @@ import AppKit
 
 // MARK: - The countdown panel
 
+// Shared by the two prompts that need an answer inside a few seconds: a call
+// ending during a meeting, and the machine going untouched mid-session. Both
+// ask the same shape of question -- "this is about to stop counting, unless
+// you say otherwise" -- so they share the panel and differ only in wording.
+//
 // A panel rather than a real notification, for three reasons that all showed up
 // before anything was built. A notification banner dismisses itself after about
 // five seconds, which is half the countdown -- the button would leave the
@@ -9,7 +14,11 @@ import AppKit
 // is also suppressed by Focus, and a meeting is exactly when Focus is on, so
 // the one prompt that must not be swallowed is the one most likely to be. And
 // UNUserNotificationCenter would put a permission prompt in front of a tracker
-// that currently asks for nothing at all.
+// that currently asks for nothing at all. The first reason is the decisive one
+// for the idle prompt too: its window is ten seconds and a banner is gone in
+// about five, so the button would disappear while the clock it belongs to was
+// still running, and somebody reaching for it would be recorded as not having
+// replied.
 //
 // Non-activating and accessory-level, so it never takes focus or interrupts
 // typing: it appears where a notification appears, and the app behind it keeps
@@ -25,12 +34,18 @@ final class CountdownPanel {
     private let message = NSTextField(labelWithString: "")
     private var remaining: Int
     private var timer: Timer?
+    private let messageFor: (Int) -> String
     private let onExpire: () -> Void
     private let onCancel: () -> Void
 
     init(meeting: String, seconds: Int,
+         buttonTitle: String = "Keep tracking",
+         messageFor: @escaping (Int) -> String = {
+             "Ended — stopping tracking in \($0)s"
+         },
          onExpire: @escaping () -> Void, onCancel: @escaping () -> Void) {
         self.remaining = seconds
+        self.messageFor = messageFor
         self.onExpire = onExpire
         self.onCancel = onCancel
 
@@ -57,7 +72,7 @@ final class CountdownPanel {
         message.textColor = .secondaryLabelColor
         message.lineBreakMode = .byTruncatingTail
 
-        let keep = NSButton(title: "Keep tracking", target: self,
+        let keep = NSButton(title: buttonTitle, target: self,
                             action: #selector(cancelTapped))
         keep.bezelStyle = .rounded
         keep.keyEquivalent = "\r"
@@ -112,7 +127,7 @@ final class CountdownPanel {
     }
 
     private func redraw() {
-        message.stringValue = "Ended — stopping tracking in \(remaining)s"
+        message.stringValue = messageFor(remaining)
     }
 
     private func tick() {

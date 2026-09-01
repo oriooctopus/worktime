@@ -364,6 +364,128 @@ class DesktopSubtraction(unittest.TestCase):
                              sum(e - s for s, e in plain))
 
 
+class IdleExclusion(unittest.TestCase):
+    """Silence inside a working period, taken back out of it.
+
+    A period is built from its first and last event, so before this a two
+    minute absence between two prompts was counted in full: nothing in between
+    was ever asked whether anybody was there for it.
+    """
+
+    DAY = "2026-08-26"
+
+    def _focus(self, samples):
+        """A focus log. samples: [(hh, mm, ss, idle_sec)], app always Ghostty."""
+        d = tempfile.mkdtemp()
+        with open(os.path.join(d, f"{self.DAY}.jsonl"), "w") as fh:
+            for hh, mm, ss, idle in samples:
+                fh.write(json.dumps({
+                    "day": self.DAY, "t": f"{hh:02d}:{mm:02d}:{ss:02d}",
+                    "app": "Ghostty", "bundle": "com.mitchellh.ghostty",
+                    "idle": idle}) + "\n")
+        return d
+
+    def _with(self, samples, claims=(), fn=None):
+        d = self._focus(samples)
+        claim_path = os.path.join(tempfile.mkdtemp(), "idle-claims.jsonl")
+        with open(claim_path, "w") as fh:
+            for lo, hi in claims:
+                fh.write(json.dumps({"day": self.DAY, "from": lo,
+                                     "until": hi}) + "\n")
+        old = (wp.FOCUS_DIR, wp.IDLE_CLAIMS)
+        try:
+            wp.FOCUS_DIR, wp.IDLE_CLAIMS = d, claim_path
+            return fn()
+        finally:
+            wp.FOCUS_DIR, wp.IDLE_CLAIMS = old
+
+    # --- recovering the stretch from the samples ---
+
+    def test_the_stretch_runs_back_to_the_last_real_input(self):
+        # The sample at 10:05 reporting 300s idle says nobody touched the
+        # machine since 10:00. Starting the exclusion where the threshold
+        # tripped instead would leave two minutes of phantom work on the end
+        # of every absence.
+        got = self._with([(10, 5, 0, 300)],
+                         fn=lambda: wp.idle_stretches(self.DAY))
+        self.assertEqual(got, [[HH(10, 0), HH(10, 5)]])
+
+    def test_a_run_of_samples_is_one_stretch_not_sixty(self):
+        # Every 30s sample while away reports a longer idle covering the same
+        # silence, so the raw readings are nested spans of one absence.
+        samples = [(10, m // 60 % 60, m % 60, 120 + m)
+                   for m in range(0, 600, 30)]
+        got = self._with(samples, fn=lambda: wp.idle_stretches(self.DAY))
+        self.assertEqual(len(got), 1)
+
+    def test_input_inside_the_threshold_is_not_a_stretch(self):
+        got = self._with([(10, 5, 0, wp.FOCUS_IDLE_SEC)],
+                         fn=lambda: wp.idle_stretches(self.DAY))
+        self.assertEqual(got, [])
+
+    # --- what it does to the period ---
+
+    def test_an_absence_between_two_prompts_stops_being_counted(self):
+        # The whole point. Prompts at 10:00 and 10:04 form one period; the
+        # machine was untouched for the middle of it.
+        stamps = [HH(10, 0), HH(10, 4)]
+        tl = [(0, "focused")]
+        merged = wp.merge_spans(wp.build_bouts(stamps, set(), tl), tl)
+        before = sum(e - s for s, e in merged)
+        # The absence sits strictly inside, so both remnants survive and the
+        # only thing removed is the silence itself -- no interaction with the
+        # separate rule that drops a remnant too short to publish a minute.
+        holes = self._with([(10, 3, 0, 150)],
+                           fn=lambda: wp.idle_stretches(self.DAY))
+        after = sum(e - s for s, e in wp.subtract_spans(merged, holes))
+        self.assertLess(after, before)
+        self.assertEqual(before - after, 150)
+
+    def test_a_claim_protects_the_silence_it_answered(self):
+        stamps = [HH(10, 0), HH(10, 4)]
+        tl = [(0, "focused")]
+        merged = wp.merge_spans(wp.build_bouts(stamps, set(), tl), tl)
+        kept = self._with(
+            [(10, 4, 0, 210)], claims=[(HH(10, 0), HH(10, 24))],
+            fn=lambda: wp.subtract_spans(
+                merged, wp.subtract_spans(wp.idle_stretches(self.DAY),
+                                          wp.idle_claims_for(self.DAY))))
+        self.assertEqual(kept, merged)
+
+    def test_the_grace_window_covers_a_later_silence_too(self):
+        # Answering "I am here" while reading a long diff should not have to
+        # be answered again two minutes later.
+        claims = [(HH(10, 0), HH(10, 0) + wp.IDLE_GRACE_SEC)]
+        left = self._with(
+            [(10, 4, 0, 210), (10, 18, 0, 300)], claims=claims,
+            fn=lambda: wp.subtract_spans(wp.idle_stretches(self.DAY),
+                                         wp.idle_claims_for(self.DAY)))
+        self.assertEqual(left, [])
+
+    # --- which ones are worth showing ---
+
+    def test_a_bridged_absence_is_an_activity(self):
+        # Three minutes away, then input again: the period survived and its
+        # arithmetic changed, so there is something to see.
+        got = self._with([(10, 4, 0, 190), (10, 5, 0, 10)],
+                         fn=lambda: wp.bridged_idle(self.DAY, [(0, "focused")]))
+        self.assertEqual(got, [[HH(10, 0) + 50, HH(10, 4)]])
+
+    def test_an_absence_that_ended_the_period_is_not_an_activity(self):
+        # Six minutes is past the cutoff, so the period ended on its own. The
+        # ended period already says that; a row repeating it is noise.
+        got = self._with([(10, 6, 0, 360), (10, 7, 0, 10)],
+                         fn=lambda: wp.bridged_idle(self.DAY, [(0, "focused")]))
+        self.assertEqual(got, [])
+
+    def test_an_absence_still_running_is_not_yet_an_activity(self):
+        # Nothing has closed it, so reporting it as a completed event would
+        # announce it while it was still happening.
+        got = self._with([(10, 4, 0, 190)],
+                         fn=lambda: wp.bridged_idle(self.DAY, [(0, "focused")]))
+        self.assertEqual(got, [])
+
+
 class SnapshotMeetingRecovery(unittest.TestCase):
     """A rebuild must not drop a source it merely failed to read.
 

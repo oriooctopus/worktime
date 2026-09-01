@@ -1004,6 +1004,101 @@ def focus_apps(day: str, lo: int, hi: int) -> list[str]:
     return [k for k, _ in sorted(seen.items(), key=lambda kv: -kv[1])]
 
 
+# Where the bar records that a person answered an idle prompt. Only the claims
+# are written: the idle stretches themselves are already in the focus log, and
+# deriving them here rather than having the app report them keeps one account
+# of when the machine was untouched instead of two that can disagree.
+IDLE_CLAIMS = os.path.join(STATE, "idle-claims.jsonl")
+
+# How long a claim keeps counting after the click. Answering "yes I am here"
+# while reading a long diff should not have to be answered again two minutes
+# later; the cost of the window is that a claim made on the way out banks it.
+IDLE_GRACE_SEC = 20 * 60
+
+
+def idle_stretches(day: str) -> list[list[int]]:
+    """Stretches the machine went untouched, as [start, end] seconds of day.
+
+    Each sample's `idle` is measured backwards from the sample, so a row
+    reporting 300s at 10:05:00 says nobody touched the machine since 10:00:00 --
+    the stretch is recovered by subtracting, not by pairing rows. That is what
+    makes the exclusion retroactive to the last real input rather than to the
+    moment the threshold tripped, which would leave a two-minute tail of
+    phantom work on the end of every absence.
+
+    Overlapping readings are unioned: while away, every 30s sample reports a
+    longer idle covering the same silence, so the raw list is ~60 nested spans
+    for a half-hour absence and exactly one stretch is the truth.
+
+    Returned unprotected. Meetings, marks and claims are cut out by the caller,
+    which is the same order desktop_holes is applied in -- the exemption list
+    belongs with the subtraction, not with the evidence.
+    """
+    raw = []
+    for r in focus_rows(day):
+        idle = r.get("idle", 0)
+        if idle <= FOCUS_IDLE_SEC:
+            continue
+        end = sec_of(r["t"])
+        raw.append([max(0, end - idle), end])
+    if not raw:
+        return []
+    raw.sort()
+    out = [raw[0]]
+    for lo, hi in raw[1:]:
+        if lo <= out[-1][1]:
+            out[-1][1] = max(out[-1][1], hi)
+        else:
+            out.append([lo, hi])
+    return out
+
+
+def idle_claims_for(day: str) -> list[list[int]]:
+    """Spans a person claimed by answering the idle prompt, in seconds of day.
+
+    A claim covers the silence it was asked about AND the grace window after
+    it, so the two are one span rather than a point plus a rule applied later.
+    """
+    if not os.path.exists(IDLE_CLAIMS):
+        return []
+    out = []
+    for line in open(IDLE_CLAIMS):
+        if not line.strip():
+            continue
+        r = json.loads(line)
+        if r.get("day") == day:
+            out.append([r["from"], r["until"]])
+    return sorted(out)
+
+
+def bridged_idle(day: str, timeline: list[tuple[int, str]]) -> list[list[int]]:
+    """Idle stretches that a working session closed over, newest last.
+
+    A stretch only shows up in the activity list if work resumed before the
+    cutoff that would have ended the period -- three minutes away between two
+    bouts changed the day's arithmetic and is worth seeing, where six minutes
+    away simply ended the period, and the period ending already says that
+    without a second row repeating it.
+
+    "Resumed" is read off the log rather than assumed: the stretch must be
+    closed by a later sample showing the machine touched again. An absence
+    still running is not yet a bridged one, and would otherwise appear as a
+    completed event while it was still happening.
+    """
+    rows = focus_rows(day)
+    if not rows:
+        return []
+    touched = [sec_of(r["t"]) for r in rows if r.get("idle", 0) <= FOCUS_IDLE_SEC]
+    out = []
+    for lo, hi in idle_stretches(day):
+        if not any(t > hi for t in touched):
+            continue
+        if hi - lo >= gap_sec_for(mode_at(timeline, lo), hi - lo):
+            continue
+        out.append([lo, hi])
+    return out
+
+
 # The WSL box's activity export -- see the header comment at the top of
 # Dashboard/Vault Dashboard.md for the full inventory of what it writes.
 ACTIVITY_DIR = os.path.join(wc.dashboard_dir(), "activity")
@@ -1345,6 +1440,17 @@ def recent_activities(day: str, limit: int = ACTIVITY_LIST_N) -> list[dict]:
         rows.append((when.strftime("%H:%M:00"), {
             "t": when.strftime("%H:%M"), "kind": "browsing",
             "what": one_line(detail)}))
+
+    # Time that was taken away, listed alongside the time that was added. It
+    # earns a row because it changed the day's arithmetic: the minutes either
+    # side are credited and these are not, and without a row saying so the
+    # total silently disagrees with the period it sits inside. Shown at the
+    # moment the machine went quiet, which is when the thing being reported
+    # started, and only once it is over -- see bridged_idle.
+    for lo, hi in bridged_idle(day, mode_timeline(day)):
+        rows.append((f"{lo // 3600:02d}:{lo // 60 % 60:02d}:{lo % 60:02d}", {
+            "t": f"{lo // 3600:02d}:{lo // 60 % 60:02d}", "kind": "idle",
+            "what": f"away {round((hi - lo) / 60)}m, not counted"}))
 
     spoken = {k[:5] for k, _ in rows}
     by_minute = focus_app_by_minute(day)
@@ -1982,6 +2088,20 @@ def write_vault_snapshot(day: str, events: list[datetime]) -> None:
                           {s // 60 for s in stamps}, tl),
             protected))
 
+    # Cut out the stretches nobody touched the machine, on the same terms and
+    # for the same reason: silence with positive evidence behind it is not a
+    # gap to be absorbed. Without this a two-minute absence between two prompts
+    # sat inside the period they formed and was counted in full -- the period
+    # is built from its first and last event, and nothing in between was ever
+    # asked whether somebody was there for it.
+    #
+    # A claim is protected exactly like a mark, because it is one: the same
+    # declaration that this silence was work, made in answer to a question
+    # rather than unprompted.
+    merged = subtract_spans(
+        merged,
+        subtract_spans(idle_stretches(day), protected + idle_claims_for(day)))
+
     # Back to minutes for publication. Rounding the boundaries rather than the
     # durations keeps work and gaps tiling exactly: every gap still starts where
     # the period before it ends.
@@ -2578,7 +2698,7 @@ MIN_RECOMPUTE_SEC = 10
 # versioning is a .get() default on every read -- which would quietly serve an
 # empty activity list as though the day had none. A version mismatch is simply
 # a miss, handled by the path that already exists for a stale day.
-STATUS_CACHE_V = 3
+STATUS_CACHE_V = 4
 
 
 def activity_fingerprint(day: str) -> str:
@@ -2621,7 +2741,7 @@ def activity_fingerprint(day: str) -> str:
     # without waiting for something else to happen. It is the one input that
     # changes on its own while the person is doing nothing this probe can
     # otherwise see, which is the whole reason the live read exists.
-    for p in (MARKS, APPROVALS, MODEFILE, CAL_FILE,
+    for p in (MARKS, APPROVALS, MODEFILE, CAL_FILE, IDLE_CLAIMS,
               os.path.join(SLACK_DIR, f"{day}.json"),
               os.path.join(FOCUS_DIR, f"{day}.jsonl"),
               chrome_history_path() or "chrome-history-absent",

@@ -200,6 +200,29 @@ after its last one, floored at one minute total. In unfocused mode the gap
 threshold ramps from 1 minute up to 5 over the first 10 minutes of the bout,
 so a sparse stream of prompts between meetings doesn't inflate the day.
 
+**Idle time is then taken back out.** A period is built from its first and last
+event, so anything in the middle used to be counted whether or not anybody was
+there for it — two minutes away between two prompts was credited in full. Any
+stretch the machine went untouched for longer than 2 minutes is now subtracted
+from the periods that span it, back to the last real key or mouse event rather
+than to the moment the threshold tripped. Meetings and manual marks are exempt,
+exactly as they are for the desktop subtraction: a scheduled commitment is not
+contradicted by nobody touching the trackpad.
+
+When it happens, the menu bar raises a small panel in the top right (the same
+`CountdownPanel` the meeting-end prompt uses) with 10 seconds to answer. Saying
+nothing is the answer — exclusion is the default and needs no record written.
+Pressing **I am here** writes a claim to
+`~/.claude/stats/worktime/idle-claims.jsonl` covering the silence plus a
+20-minute grace window, so reading a long diff isn't asked about every two
+minutes. Only claims are stored: the focus log already says when the machine
+was untouched, and a second file listing absences could disagree with it.
+
+An absence that a session closed over — 3 minutes away, then typing again —
+also appears in Recent activity as `away 3m, not counted`, because it changed
+the day's arithmetic. One that ran past the cutoff doesn't: the period simply
+ended, and the ended period already says that.
+
 For the live dot (`status`), the verdict is:
 
 1. **Green** — a prompt arrived or the machine was attended at the front of a

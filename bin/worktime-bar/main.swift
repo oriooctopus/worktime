@@ -177,6 +177,7 @@ let FOCUS_DIR = ("~/.claude/stats/worktime/focus" as NSString).expandingTildeInP
 // same trap `visit_duration` falls into in the Chrome exporter.
 let FOCUS_HEARTBEAT_SEC = 30.0
 
+
 final class FocusLog {
     private var lastBundle: String?
     private var lastWrite = Date.distantPast
@@ -641,6 +642,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var detector = CallDetector(minCallSec: MIN_CALL_SEC, settleSec: SETTLE_SEC)
     // Non-nil only while a countdown is on screen.
     var countdown: CountdownPanel?
+    let idleWatcher = IdleWatcher()
     // One menu for the app's lifetime, mutated in place rather than replaced.
     // Assigning a freshly built NSMenu to item.menu does nothing to a menu that
     // is already on screen: AppKit goes on displaying the instance it was handed
@@ -690,6 +692,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // sample and make "how often was this app frontmost" partly a
             // measure of how often the dropdown was opened.
             self.focusLog.sample()
+            self.idleWatcher.tick(idle: FocusLog.idleSeconds())
             self.refresh()
         }
         blinkTimer = Timer.scheduledTimer(withTimeInterval: BLINK_INTERVAL, repeats: true) { _ in
