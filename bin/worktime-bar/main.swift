@@ -94,7 +94,11 @@ struct Period {
 // stopped counting as presence when focus started counting the reading too. It
 // rides along to say what an already-counted minute was about.
 struct Activity {
+    // `t` is the clock time it happened, `at` the same instant as an absolute
+    // one. The row shows an age derived from `at`; `t` is what its tooltip
+    // says, and what the exact minute is recoverable from.
     var t = ""
+    var at: TimeInterval = 0
     var kind = ""
     var what = ""
     var n = 1
@@ -434,43 +438,95 @@ final class PeriodRowView: NSView {
 // Same custom-NSView reason as PeriodRowView: an NSMenuItem's own title is
 // recolored by the menu's vibrancy pass no matter what is set on it, and these
 // rows would come out dimmed to the point of being hard to read.
+let ACTIVITY_FONT = NSFont.systemFont(ofSize: 11)
+
+// How long ago, not when. A list of ten things read in one glance is answering
+// "how recently was I working", and "4m" answers that directly where "12:36"
+// makes the reader subtract. Computed here rather than in the probe because
+// the probe's answer is memoised until the underlying files change: an age
+// baked in there would be frozen at whatever it was when it was written.
+//
+// Whole minutes below an hour and whole hours above it. The rows are recorded
+// to the minute, so there is no finer truth to show, and a second unit ("2h
+// 40m") would widen the column for a list whose top rows are the point.
+func activityAge(_ a: Activity, now: Date = Date()) -> String {
+    let mins = Int((now.timeIntervalSince1970 - a.at) / 60)
+    if mins < 1 { return "now" }
+    if mins < 60 { return "\(mins)m" }
+    return "\(mins / 60)h"
+}
+
+// Widest of the strings actually being shown, measured rather than guessed at.
+// Taken over the whole list once and handed to every row, which is what makes
+// the columns line up -- a per-row width just reproduces the ragged edge that
+// a proportional face gives "focus" against "approval", or "9m" against "45m".
+// Measuring beats a constant because both sets grow: a new stream with a
+// longer name, or a day long enough to reach three digits of minutes, would
+// silently clip against a hardcoded width.
+func columnWidth(_ labels: [String]) -> CGFloat {
+    ceil(labels.map {
+        ($0 as NSString).size(withAttributes: [.font: ACTIVITY_FONT]).width
+    }.max() ?? 0)
+}
+
 final class ActivityRowView: NSView {
-    init(_ a: Activity, width: CGFloat) {
+    init(_ a: Activity, width: CGFloat, age: String,
+         ageWidth: CGFloat, kindWidth: CGFloat) {
         super.init(frame: NSRect(x: 0, y: 0, width: width, height: 17))
 
-        let line = NSMutableAttributedString(string: a.t + "  ", attributes: [
-            // Monospaced digits so the times form a straight column. The
-            // proportional face renders 1 narrower than 8, which is enough to
-            // visibly ragged the left edge of a ten-row list.
-            .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular),
-            .foregroundColor: NSColor.secondaryLabelColor,
-        ])
-        line.append(NSAttributedString(string: a.kind + "  ", attributes: [
-            .font: NSFont.systemFont(ofSize: 11),
-            .foregroundColor: NSColor.tertiaryLabelColor,
-        ]))
-        line.append(NSAttributedString(string: a.what, attributes: [
-            .font: NSFont.systemFont(ofSize: 11),
+        // Right-aligned, so the unit letters line up under each other and the
+        // number grows leftward into the column's own slack instead of pushing
+        // the kind beside it out of true.
+        let ageField = NSTextField(labelWithString: age)
+        ageField.font = ACTIVITY_FONT
+        ageField.textColor = .secondaryLabelColor
+        ageField.alignment = .right
+        // The age is the rounded version; this is where the exact minute it
+        // was rounded from stays reachable.
+        toolTip = a.t
+
+        let kindField = NSTextField(labelWithString: a.kind)
+        kindField.font = ACTIVITY_FONT
+        kindField.textColor = .tertiaryLabelColor
+
+        let line = NSMutableAttributedString(string: a.what, attributes: [
+            .font: ACTIVITY_FONT,
             .foregroundColor: NSColor.labelColor,
-        ]))
+        ])
         // Only when it collapsed something. A "×1" on every other row would be
         // noise standing in for the ordinary case.
         if a.n > 1 {
             line.append(NSAttributedString(string: "  ×\(a.n)", attributes: [
-                .font: NSFont.systemFont(ofSize: 11),
+                .font: ACTIVITY_FONT,
                 .foregroundColor: NSColor.secondaryLabelColor,
             ]))
         }
-
         // Truncated here rather than by the probe: the widget is the only
         // party that knows its own width, and the payload is capped already.
-        let f = singleLineLabel(line)
-        f.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(f)
+        let whatField = singleLineLabel(line)
+
+        for f in [ageField, kindField, whatField] {
+            f.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(f)
+        }
+        // Only the text column gives way when the menu is too narrow for the
+        // row; the two fixed columns are what the alignment is made of, so
+        // they must never be the ones that shrink or truncate.
+        for f in [ageField, kindField] {
+            f.setContentCompressionResistancePriority(.required, for: .horizontal)
+        }
+        whatField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
         NSLayoutConstraint.activate([
-            f.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
-            f.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
-            f.centerYAnchor.constraint(equalTo: centerYAnchor),
+            ageField.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            ageField.widthAnchor.constraint(equalToConstant: ageWidth),
+            kindField.leadingAnchor.constraint(equalTo: ageField.trailingAnchor, constant: 8),
+            kindField.widthAnchor.constraint(equalToConstant: kindWidth),
+            whatField.leadingAnchor.constraint(equalTo: kindField.trailingAnchor, constant: 8),
+            whatField.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
+            ageField.centerYAnchor.constraint(equalTo: centerYAnchor),
+            kindField.firstBaselineAnchor.constraint(equalTo: ageField.firstBaselineAnchor),
+            whatField.firstBaselineAnchor.constraint(equalTo: ageField.firstBaselineAnchor),
         ])
     }
 
@@ -738,12 +794,18 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // menu. quiet_sec ticking every 5s is deliberately not in here -- the
         // menu shows it rounded to minutes, so it earns a rebuild once a
         // minute, not twelve times.
+        // Ages go in the key, not just the rows. They are the one part of the
+        // menu that changes without the probe's answer changing at all, so
+        // keying on the activity alone would hold "1m" on screen indefinitely.
+        let ages = status.activities.map { activityAge($0) }
         let key = ([worked, symbol, status.why, status.state, status.mode]
                    + (recent + earlier).map { p in
                        let s = periodStrings(p)
                        return s.top + "\u{1}" + s.what
                    }
-                   + status.activities.map { "\($0.t)\u{1}\($0.kind)\u{1}\($0.what)\u{1}\($0.n)" }
+                   + zip(status.activities, ages).map { a, age in
+                       "\(age)\u{1}\(a.kind)\u{1}\(a.what)\u{1}\(a.n)"
+                   }
                   ).joined(separator: "\u{2}")
         if key == lastMenuKey { return }
         lastMenuKey = key
@@ -774,9 +836,12 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let head = NSMenuItem(title: "Recent activity", action: nil, keyEquivalent: "")
             head.isEnabled = false
             m.addItem(head)
-            for a in status.activities {
+            let ageWidth = columnWidth(ages)
+            let kindWidth = columnWidth(status.activities.map(\.kind))
+            for (a, age) in zip(status.activities, ages) {
                 let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-                item.view = ActivityRowView(a, width: 300)
+                item.view = ActivityRowView(a, width: 300, age: age,
+                                            ageWidth: ageWidth, kindWidth: kindWidth)
                 m.addItem(item)
             }
             m.addItem(.separator())
@@ -891,6 +956,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             s.activities = (j["activities"] as? [[String: Any]] ?? []).map { a in
                 Activity(t: a["t"] as? String ?? "",
+                         at: a["at"] as? TimeInterval ?? 0,
                          kind: a["kind"] as? String ?? "",
                          what: a["what"] as? String ?? "",
                          n: a["n"] as? Int ?? 1)

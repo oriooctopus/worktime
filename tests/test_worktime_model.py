@@ -917,6 +917,16 @@ class RecentActivities(unittest.TestCase):
         self.assertEqual([a["t"] for a in got],
                          ["09:03", "09:02", "09:01", "09:00"])
 
+    def test_each_row_carries_the_absolute_instant_it_happened(self):
+        # The widget renders these as ages ("4m", "2h"), which it can only do
+        # against the current time -- and it cannot recover one from "09:00"
+        # without knowing which day that was. The age is deliberately NOT
+        # computed here: this result is memoised behind a file fingerprint, so
+        # a "4m" written at this point would still read "4m" an hour later.
+        got = self.acts(prompts=[("09:00", "fix the dot")])
+        want = wp.datetime.strptime(f"{DAY} 09:00", "%Y-%m-%d %H:%M").timestamp()
+        self.assertEqual(got[0]["at"], want)
+
     def test_repeated_page_collapses_into_one_counted_row(self):
         # The redirect-chain trap: one PR reloaded eight times is one thing
         # that happened. Uncollapsed it filled the entire list on a real day,

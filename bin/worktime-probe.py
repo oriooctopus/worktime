@@ -1204,7 +1204,16 @@ def recent_activities(day: str, limit: int = ACTIVITY_LIST_N) -> list[dict]:
             out[-1]["n"] += 1
             continue
         out.append(dict(a, n=1))
-    return out[:limit]
+    out = out[:limit]
+
+    # An absolute instant alongside the clock time, because the widget shows
+    # these as ages ("4m", "2h") and an age has to be recomputed against the
+    # current time, not baked in here. This result is memoised behind a
+    # fingerprint that only changes when the underlying files do, so a "4m"
+    # written at write time would still say "4m" an hour later.
+    for a in out:
+        a["at"] = datetime.strptime(f"{day} {a['t']}", "%Y-%m-%d %H:%M").timestamp()
+    return out
 
 
 # Markdown, not JSON. Obsidian Sync ships .md between devices by default but
@@ -2397,7 +2406,7 @@ MIN_RECOMPUTE_SEC = 10
 # versioning is a .get() default on every read -- which would quietly serve an
 # empty activity list as though the day had none. A version mismatch is simply
 # a miss, handled by the path that already exists for a stale day.
-STATUS_CACHE_V = 2
+STATUS_CACHE_V = 3
 
 
 def activity_fingerprint(day: str) -> str:
