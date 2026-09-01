@@ -1011,11 +1011,13 @@ ACTIVITY_DIR = os.path.join(wc.dashboard_dir(), "activity")
 CHROME_ROW = re.compile(
     r"^\|\s*(\d{1,2}:\d{2})\s*\|\s*chrome\s*\|\s*visit\s*\|[^|]*\|\s*(.*?)\s*\|\s*$")
 
-# Non-GitHub sites whose visits are just as much evidence of work as a PR page
-# -- Docebo is Rubrik's training/compliance LMS, sso.rubrik.com is the IdP
-# login most internal tools sit behind. Unlike GitHub they carry no PR-style
-# noise pattern, so a plain substring match is enough; see _work_site_hit().
-OTHER_WORK_DOMAINS = ("rubrik.docebosaas.com", "sso.rubrik.com")
+# Non-GitHub evidence of work: any address naming a work keyword (the
+# employer's name, which covers the LMS, the IdP and every internal tool that
+# would otherwise have to be listed one domain at a time), and any Google page
+# signed in as the work account. Both are configured in the profile and read
+# once here rather than per visit -- see worktime_common.is_work_url.
+WORK_URL_KEYWORDS = wc.work_url_keywords()
+GOOGLE_WORK_ACCOUNT = wc.google_work_account()
 
 # The exporter truncates the detail column at 80 characters, and a GitHub page
 # puts its title before the URL. A real PR title -- "Add Plugins section to
@@ -1032,7 +1034,7 @@ GITHUB_TITLE = re.compile(r"·\s*Pull Re|·\s*scaledata/|/pull/\d+", re.I)
 # same minute, and the oauth/authorize rows are Supabase and Microsoft sign-ins
 # for personal projects on the other machine -- counted as github.com visits,
 # they manufactured Rubrik work periods out of a personal login. Scoped to
-# GitHub hits only (see _work_site_hit) -- sso.rubrik.com's own login pages
+# GitHub hits only (see _work_site_hit) -- the work SSO's own login pages
 # legitimately live under paths like this, and excluding them here would
 # defeat the point of tracking that domain at all.
 GITHUB_AUTH = re.compile(r"/saml/|/login/oauth/", re.I)
@@ -1041,11 +1043,11 @@ GITHUB_AUTH = re.compile(r"/saml/|/login/oauth/", re.I)
 def _work_site_hit(text: str) -> bool:
     """True if `text` (a URL, or an export detail that may carry one) is
     evidence of work: a GitHub code page that isn't a login redirect, or a
-    plain visit to one of OTHER_WORK_DOMAINS."""
+    visit that is work in its own right (see worktime_common.is_work_url)."""
     lowered = text.lower()
     if "github.com" in lowered or GITHUB_TITLE.search(text):
         return not GITHUB_AUTH.search(text)
-    return any(d in lowered for d in OTHER_WORK_DOMAINS)
+    return wc.is_work_url(text, WORK_URL_KEYWORDS, GOOGLE_WORK_ACCOUNT)
 
 
 # Chrome's own History DB, this machine's live counterpart to the activity
@@ -1058,9 +1060,29 @@ chrome_history_path = wc.chrome_history_path
 _gh_live_cache: dict[str, tuple] = {}
 
 
+def _live_url_filter() -> tuple[str, list]:
+    """The SQL that narrows Chrome's history to candidate work pages.
+
+    A prefilter only -- every row it returns is still put through
+    _work_site_hit, which is what rejects a search for the company name or a
+    Google page signed in as the personal account. Its job is to keep the
+    query off the other 99% of a 58MB history, so it is deliberately looser
+    than the real test, never tighter: anything it drops here can never be
+    recovered downstream.
+    """
+    clauses = ["urls.url LIKE '%github.com%'"]
+    params = []
+    for keyword in WORK_URL_KEYWORDS:
+        clauses.append("urls.url LIKE ?")
+        params.append("%{}%".format(keyword))
+    if GOOGLE_WORK_ACCOUNT is not None:
+        clauses.append("urls.url LIKE '%.google.com/%'")
+    return " OR ".join(clauses), params
+
+
 def github_live_rows(day: str) -> list[tuple[datetime, str]]:
-    """Today's work-site visits (GitHub, Docebo, Rubrik SSO) read straight
-    from this Mac's Chrome history.
+    """Today's work-site visits (GitHub, and whatever else the profile counts
+    as work) read straight from this Mac's Chrome history.
 
     Chrome holds the DB open, so it is copied before being read -- the copy is
     ~0.04s for 58MB and the result is memoised on the file's mtime and size,
@@ -1079,16 +1101,16 @@ def github_live_rows(day: str) -> list[tuple[datetime, str]]:
         return _gh_live_cache["rows"]
 
     base = datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=LOCAL)
+    url_filter, url_params = _live_url_filter()
     raw = wc.read_history(
         path,
         """SELECT visits.visit_time, urls.url, urls.title
              FROM visits JOIN urls ON urls.id = visits.url
             WHERE visits.visit_time BETWEEN ? AND ?
-              AND (urls.url LIKE '%github.com%'
-                   OR urls.url LIKE '%rubrik.docebosaas.com%'
-                   OR urls.url LIKE '%sso.rubrik.com%')
-         ORDER BY visits.visit_time""",
-        (wc.chrome_micros(base), wc.chrome_micros(base + timedelta(days=1))))
+              AND ({})
+         ORDER BY visits.visit_time""".format(url_filter),
+        [wc.chrome_micros(base), wc.chrome_micros(base + timedelta(days=1))]
+        + url_params)
 
     rows = []
     for stamp, url, title in raw:
@@ -1120,15 +1142,15 @@ def github_rows_for(day: str) -> list[tuple[datetime, str]]:
 
 
 def github_export_rows(day: str) -> list[tuple[datetime, str]]:
-    """Chrome visits to GitHub, Docebo, or the Rubrik SSO portal, with the
-    page each one landed on.
+    """Chrome visits to GitHub and the other work sites, with the page each
+    one landed on.
 
     Reading a PR or a diff is real work and was previously invisible to this
     probe -- prompts and Slack sends were the only evidence of working, so a
     stretch spent entirely in a browser reviewing code read as a gap. It is
     also the only evidence that stretch produces: a review generates no prompt
-    and no Slack message. The same is true of training in Docebo or signing
-    into an internal tool through SSO.
+    and no Slack message. The same is true of a training course, an internal
+    tool reached through SSO, or an hour in the work Google account.
 
     Restricted to these sites rather than all Chrome activity: the export
     also carries plain browsing (shopping, general search) that is not work,

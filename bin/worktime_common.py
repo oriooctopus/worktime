@@ -27,6 +27,7 @@ compatible: chrome-work-blocks.py runs on the Linux box, which is 3.8, so no
 
 import json
 import os
+import re
 import shutil
 import sqlite3
 import sys
@@ -153,6 +154,90 @@ def dashboard_dir(env=None, profile_path=None):
         if os.path.isdir(expanded):
             return expanded
     return os.path.expanduser(VAULT_DASHBOARDS[0])
+
+
+# Words that make a URL work by themselves, wherever they appear in it. The
+# employer's name is the one that earns its keep: "rubrik" catches the LMS, the
+# IdP, the wiki, the ticket tracker and every internal tool nobody has thought
+# to enumerate, which is the whole set that used to be listed two domains at a
+# time and go stale the moment a new tool appeared.
+DEFAULT_WORK_URL_KEYWORDS = ("rubrik",)
+
+# Google serves every signed-in account from the same hostnames and separates
+# them only by the account index in the path: the second account you added is
+# /u/1, and Gmail, Calendar, Drive and Docs all carry it. So a work Google
+# account is not a domain -- drive.google.com is personal and work at once --
+# it is an index, and the index is the only thing that tells the two apart.
+#
+# Both spellings occur: "drive.google.com/drive/u/1/home" and the older
+# "groups.google.com/u/1/...", plus the "?authuser=1" form that Cloud Console
+# and several Workspace apps redirect through.
+GOOGLE_ACCOUNT_IN_PATH = re.compile(r"\.google\.com/(?:[^/?#]+/)?u/(\d+)")
+GOOGLE_ACCOUNT_IN_QUERY = re.compile(r"\.google\.com/[^?#]*[?&]authuser=(\d+)")
+
+# A results page is never work, whoever is signed in. Searching the employer's
+# name is the thing a keyword rule gets wrong most often, and it arrives in two
+# shapes: the raw URL, where the name sits in ?q= and the address rule already
+# handles it, and the exported row, which leads with the page title -- "rubrik
+# stock price - Google Search" -- and puts the name in front of any query
+# string at all. Only naming the results page itself catches both.
+SEARCH_RESULTS = re.compile(
+    r"(?:google|bing|duckduckgo|search\.brave)\.com/(?:search|url)\b"
+    r"|\b-\s*google search\b|\bat duckduckgo\b", re.I)
+
+
+def work_url_keywords(profile=None):
+    profile = load_profile() if profile is None else profile
+    configured = profile.get("work_url_keywords")
+    if configured is None:
+        return list(DEFAULT_WORK_URL_KEYWORDS)
+    return [str(k).lower() for k in configured]
+
+
+def google_work_account(profile=None):
+    """The Google account index that belongs to work, or None.
+
+    None is the honest answer for somebody with one Google account: there is
+    no index that distinguishes work from personal, and guessing one would
+    file every visit to their own calendar as work.
+    """
+    profile = load_profile() if profile is None else profile
+    index = profile.get("google_work_account")
+    return None if index is None else int(index)
+
+
+def google_account_index(url):
+    """The /u/<n> (or ?authuser=<n>) account index in a Google URL, or None."""
+    lowered = (url or "").lower()
+    match = (GOOGLE_ACCOUNT_IN_PATH.search(lowered)
+             or GOOGLE_ACCOUNT_IN_QUERY.search(lowered))
+    return int(match.group(1)) if match else None
+
+
+def is_work_url(url, keywords=None, work_account=None):
+    """True if `url` is work on its own: it names a work keyword, or it is a
+    Google page signed in as the work account.
+
+    Keywords are matched against the address only, never the query string.
+    Googling "rubrik stock price" puts the employer's name in ?q= and nowhere
+    else, and counting that as work would file idle curiosity about the share
+    price -- or any search that merely mentions the company -- as a stretch at
+    the job. Somewhere the name is in the host or the path, you were on their
+    system; in ?q= you were only typing about them.
+
+    `keywords` and `work_account` are passed in by callers that already hold
+    the config, so a per-visit call does not re-read the profile from disk.
+    """
+    lowered = (url or "").lower()
+    if SEARCH_RESULTS.search(lowered):
+        return False
+    address = lowered.split("?")[0].split("#")[0]
+    keywords = work_url_keywords() if keywords is None else keywords
+    if any(k in address for k in keywords):
+        return True
+    if work_account is None:
+        return False
+    return google_account_index(lowered) == work_account
 
 
 def chrome_history_path(profile_path=None, platform=None, chrome_dir=None):

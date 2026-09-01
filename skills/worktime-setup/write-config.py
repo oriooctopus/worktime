@@ -8,6 +8,7 @@ loudly here instead of silently producing a config that tracks nothing.
 Reads JSON on stdin:
   {"timezone": "...", "personal_account": "...", "work_calendar_id": "..."|null,
    "chrome_history_path": "..."|null,
+   "google_work_account": 1|null, "work_url_keywords": [...]|null,
    "work": [...], "ignore": [...],
    "break_minutes": 3, "walked_away_minutes": 10, "shortest_stretch_minutes": 3}
 """
@@ -52,6 +53,16 @@ def main():
         profile["work_calendar_id"] = a["work_calendar_id"]
     if a.get("chrome_history_path"):
         profile["chrome_history_path"] = a["chrome_history_path"]
+    if a.get("google_work_account") is not None:
+        index = a["google_work_account"]
+        if not isinstance(index, int) or isinstance(index, bool) or index < 0:
+            fail(f"google_work_account must be an account number like 1, got {index!r}")
+        profile["google_work_account"] = index
+    if a.get("work_url_keywords") is not None:
+        keywords = a["work_url_keywords"]
+        if not isinstance(keywords, list) or any(not str(k).strip() for k in keywords):
+            fail(f"work_url_keywords must be a list of non-empty words, got {keywords!r}")
+        profile["work_url_keywords"] = [str(k).strip().lower() for k in keywords]
 
     domains = {
         "_comment": "Written by the worktime-setup skill. 'ignore' wins over 'work'.",

@@ -1,0 +1,12 @@
+{
+  "_comment": "Facts about this person and this machine, shared by every worktime script. Copy to ~/.config/worktime/profile.json. Written by the worktime-setup skill; safe to edit by hand.",
+  "timezone": "America/New_York",
+  "personal_account": "you@example.com",
+  "work_calendar_id": "you@your-company.com",
+
+  "_work_url_keywords": "Any address containing one of these words is work -- the wiki, the ticket tracker, the training site and the SSO portal, without naming each one. Matched against the address only, so searching the word is not work. Omit the key to keep the default.",
+  "work_url_keywords": ["your-company"],
+
+  "_google_work_account": "The account number in Google URLs: drive.google.com/drive/u/1/home is account 1. Set it only when a separate work Google account exists -- then that account's Gmail, Calendar, Drive and Docs count as work and the personal account's do not. With one Google account there is nothing to tell apart; omit the key.",
+  "google_work_account": 1
+}

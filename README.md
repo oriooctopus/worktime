@@ -89,6 +89,23 @@ all 52,871 synced visits carry `-1` while the 9,741 local ones are populated.
 Across local visits only 35% of recorded dwell was ever the focused tab. To use
 it, the exporter has to run on the machine doing the browsing.
 
+## Work sites beyond the list
+
+Two rules in `profile.json` classify sites the `work` list would have to
+enumerate one at a time:
+
+- **`work_url_keywords`** (default `["rubrik"]`) — any address containing one
+  of these words is work, which covers the wiki, the ticket tracker, the
+  training site and the SSO portal without naming them. Matched against the
+  address only, never the query string, so googling the company's name is not
+  work.
+- **`google_work_account`** (default unset) — the account number in Google
+  URLs (`drive.google.com/drive/u/1/home` is account `1`). Set it when there is
+  a separate work Google account: Gmail, Calendar, Drive and Docs under that
+  number count as work, while the same sites under the personal account do
+  not. With one Google account there is nothing to tell apart, so leave it
+  unset.
+
 ## Thresholds
 
 In `work-domains.json`. Defaults: `gap_sec` 180 (browsing breaks run 4-7

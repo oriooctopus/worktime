@@ -1,10 +1,8 @@
 {
-  "_comment": "URL substrings deciding which browsing counts as work. 'ignore' wins over 'work', so a longer ignore rule carves an exception out of a broad work domain. Anything matching neither is neutral: it will not start a block, but it will not break one either. Copy to ~/.config/activity-export/work-domains.json.",
+  "_comment": "URL substrings deciding which browsing counts as work. 'ignore' wins over 'work', so a longer ignore rule carves an exception out of a broad work domain. Anything matching neither is neutral: it will not start a block, but it will not break one either. Two further rules live in ~/.config/worktime/profile.json: 'work_url_keywords' catches any address naming the company, and 'google_work_account' separates the work Google account from the personal one -- do not try to list Google here, both accounts share the same hostnames. Copy to ~/.config/activity-export/work-domains.json.",
   "work": [
     "github.com/your-org",
     "your-company.com",
-    "mail.google.com/mail/u/1",
-    "docs.google.com",
     "jira",
     "confluence"
   ],

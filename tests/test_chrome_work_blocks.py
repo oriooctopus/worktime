@@ -16,7 +16,12 @@ cwb = importlib.util.module_from_spec(spec)
 sys.modules["chrome_work_blocks"] = cwb
 spec.loader.exec_module(cwb)
 
-CFG = {"work": ["github.com/scaledata", "rubrik.com"], "ignore": ["instagram.com"]}
+# classify() takes a fully-resolved config: load_config() fills the two
+# profile-backed rules in, so a dict missing them is not a config it can be
+# handed. Spelled out here rather than defaulted inside classify(), which
+# would let a real caller silently classify with rules nobody configured.
+CFG = {"work": ["github.com/scaledata", "rubrik.com"], "ignore": ["instagram.com"],
+       "work_url_keywords": [], "google_work_account": None}
 D = date(2026, 8, 31)
 
 
@@ -43,7 +48,7 @@ def test_classify_is_case_insensitive():
 
 
 def test_ignore_beats_work_so_exceptions_can_be_carved_out():
-    cfg = {"work": ["rubrik.com"], "ignore": ["rubrik.com/cafeteria"]}
+    cfg = dict(CFG, work=["rubrik.com"], ignore=["rubrik.com/cafeteria"])
     assert cwb.classify("https://rubrik.com/cafeteria/menu", cfg) == "ignore"
     assert cwb.classify("https://rubrik.com/eng", cfg) == "work"
 

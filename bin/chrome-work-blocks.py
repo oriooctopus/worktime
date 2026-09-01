@@ -61,16 +61,34 @@ def load_config(path=CONFIG_PATH):
     for key in ("max_dwell_sec", "min_dwell_sec", "gap_sec", "min_block_sec"):
         if key in cfg and not isinstance(cfg[key], int):
             raise WorkBlocksError(f"config {path}: '{key}' must be an integer")
+    # The work keyword and the Google work account live in the profile beside
+    # the timezone -- they are facts about the person, not about this
+    # exporter, and the probe classifies the same visits from the same two
+    # answers. Resolved once here so classify() never reads a file.
+    profile = wc.load_profile()
+    cfg.setdefault("work_url_keywords", wc.work_url_keywords(profile))
+    cfg.setdefault("google_work_account", wc.google_work_account(profile))
     return cfg
 
 
 def classify(url, cfg):
     """'ignore' wins over 'work': a longer, more specific ignore rule is how you
-    carve an exception out of a broad work domain."""
+    carve an exception out of a broad work domain.
+
+    Beyond the listed sites, two rules come from the profile: a URL naming a
+    work keyword, and a Google page signed in as the work account. They are
+    here rather than expanded into cfg["work"] because neither is a substring
+    -- the keyword rule ignores the query string so that searching the
+    company's name is not work, and the account rule reads an index out of the
+    path, which is the only thing separating the work Drive from the personal
+    one on the same hostname.
+    """
     u = (url or "").lower()
     if any(s.lower() in u for s in cfg["ignore"]):
         return "ignore"
     if any(s.lower() in u for s in cfg["work"]):
+        return "work"
+    if wc.is_work_url(u, cfg["work_url_keywords"], cfg["google_work_account"]):
         return "work"
     return "neutral"
 

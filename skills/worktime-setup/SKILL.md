@@ -57,6 +57,34 @@ Do not talk her into it.
 2. **Work calendar** — "Do you have a separate work calendar? If so, what's its
    address?" Accept "no".
 3. **Timezone** — offer her likely one as the default, confirm it.
+3a. **A separate work email** — "Do you have a separate email address you use
+   for work?" If no, skip the rest of this question.
+
+   If yes: Gmail, Calendar and Drive all serve every signed-in account from the
+   same web addresses, and tell them apart only by an account number in the
+   address bar. The first account she added is 0, the second is 1, and so on.
+   Don't ask her for a number — she has no reason to know it. Find it:
+
+   ```
+   python3 suggest-sites.py 14 --google-accounts
+   ```
+
+   It lists each account number she actually uses, with the sites she used it
+   for. Chrome does not record which address is which, so have her open
+   `https://mail.google.com/mail/u/<number>/` for each candidate and tell you
+   which is the work one. Pass that number as `google_work_account`.
+
+   What this buys her: time in her work inbox, work calendar and work Drive
+   counts as working, while the same sites under her personal account do not.
+   Without it neither counts, because there is no way to tell them apart.
+3b. **The company's name** — "What's the company called? I'll count any web
+   address with that word in it as work." Default it to the domain of her work
+   email if she gave one. This is what catches the internal tools nobody thinks
+   to list: the wiki, the ticket tracker, the training site, the login portal.
+   Pass it as `work_url_keywords` (a list — she may name more than one).
+
+   Say explicitly that this is the address only: *searching* for the company's
+   name does not count as working.
 4. **What counts as work** — first run `suggest-sites.py 14` and show her her own
    most-visited sites as a list. Ask which of these mean she's working, and
    whether anything is missing. Never make her invent a list from memory.
@@ -80,8 +108,10 @@ echo '{...}' | python3 write-config.py
 ```
 
 Keys: `timezone`, `personal_account`, `work_calendar_id` (or null),
-`chrome_history_path` (or null), `work`, `ignore`, `break_minutes`,
-`walked_away_minutes`, `shortest_stretch_minutes`.
+`chrome_history_path` (or null), `google_work_account` (a number, or null when
+she has no separate work email), `work_url_keywords` (or null to keep the
+default), `work`, `ignore`, `break_minutes`, `walked_away_minutes`,
+`shortest_stretch_minutes`.
 
 If it exits non-zero, tell her what was wrong in plain words and re-ask only
 that question.
