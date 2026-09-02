@@ -1111,6 +1111,28 @@ FOCUS_INCLUDE = {
     "com.granola.app",            # Granola
 }
 
+# Apps on the list above that put THEMSELVES in front. For everything else,
+# being frontmost is the residue of a person having chosen it, which is what
+# makes the allow list mean anything; Granola opens its own window when a
+# meeting starts and again when one ends, so "Granola is frontmost" can equally
+# mean nobody has been at the machine for a quarter of an hour.
+#
+# That is not hypothetical. On 2026-09-02 the front app flipped from the
+# terminal to Granola at 13:07:52 with the idle reading already at 783s, held
+# it until the human came back at 13:12, and the day gained six minutes and a
+# whole session row named after an app nobody had touched.
+#
+# Neither of the global idle switches catches this: FOCUS_IDLE_GATES is off on
+# purpose, and IDLE_SUBTRACTS is off because HID idle cannot tell reading from
+# leaving. Both of those readings are about time a PERSON chose an app and then
+# stopped typing in it -- the ambiguity they refuse to spend minutes on. A
+# window that raised itself was never chosen, so there is no ambiguity to
+# protect and the narrow rule is safe where the global one is not: these
+# bundles earn only on samples that also show recent input.
+FOCUS_SELF_RAISING = {
+    "com.granola.app",            # Granola
+}
+
 # Chrome is not on that list and cannot be, because the question it answers is
 # the wrong one: "is Chrome in front" says a browser is open, not what is in
 # it, and shopping in the foreground is not work.
@@ -1143,6 +1165,8 @@ def focus_counts(sample: dict) -> bool:
     """
     bundle = sample.get("bundle")
     if bundle != CHROME_BUNDLE:
+        if bundle in FOCUS_SELF_RAISING:
+            return sample.get("idle", 0) <= FOCUS_IDLE_SEC
         return bundle in FOCUS_INCLUDE
     return (_work_site_hit(sample.get("tab", ""))
             or _work_site_hit(sample.get("url", "")))
@@ -1159,6 +1183,28 @@ def focus_name(sample: dict) -> str:
     if sample.get("bundle") == CHROME_BUNDLE and sample.get("tab"):
         return sample["tab"]
     return sample.get("app") or sample["bundle"]
+
+
+def self_raised(prev: dict | None, sample: dict) -> bool:
+    """Whether this sample is the moment a self-raising app put itself in front.
+
+    The idle gate in focus_counts() catches the long absence, and misses the
+    short one it is the same bug as: Granola flashing to the front for a single
+    heartbeat between two Chrome samples while somebody types somewhere else.
+    The idle reading there is one second, because a person really is at the
+    machine -- just not in that window. Fifteen seconds of flash then paints two
+    whole minutes with Granola's name, and on a minute where nothing else was
+    counting it wins them outright.
+
+    So a self-raising app has to hold the foreground through a heartbeat before
+    any of it counts: the first sample of the run is dropped and the rest are
+    kept. The cost is the opening thirty seconds of a Granola session somebody
+    really did open, which is the right thing to spend to stop naming minutes
+    after a notification.
+    """
+    if sample.get("bundle") not in FOCUS_SELF_RAISING:
+        return False
+    return prev is None or prev.get("bundle") != sample.get("bundle")
 
 
 def focus_rows(day: str) -> list[dict]:
@@ -1195,15 +1241,15 @@ def focus_windows(day: str):
     is why both are needed and why a caller cannot simply walk the rows.
     """
     rows = focus_rows(day)
+    prev = None
     for a, b in zip(rows, rows[1:]):
         lo, hi = sec_of(a["t"]), sec_of(b["t"])
-        if not (0 < hi - lo <= FOCUS_MAX_GAP_SEC):
-            continue
-        if not focus_counts(a):
-            continue
-        if idle_blocks(b):
-            continue
-        yield lo, hi, a
+        if (0 < hi - lo <= FOCUS_MAX_GAP_SEC
+                and focus_counts(a)
+                and not idle_blocks(b)
+                and not self_raised(prev, a)):
+            yield lo, hi, a
+        prev = a
 
 
 def focus_for(day: str) -> list[datetime]:
