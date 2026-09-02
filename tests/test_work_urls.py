@@ -50,6 +50,18 @@ def test_a_search_result_row_from_the_export_is_not_work():
     assert not is_work("rubrik stock price - Google Search | google.com/search?q=x")
 
 
+def test_a_search_title_on_its_own_is_not_work():
+    # Without the URL beside it -- which is how the focus log sees a tab, since
+    # title and address are classified separately. This is the case the missing
+    # word boundary in SEARCH_RESULTS used to let through: the assertion above
+    # passed on the "google.com/search" half and never exercised the title.
+    assert not is_work("rubrik stock price - Google Search")
+
+
+def test_a_search_title_without_the_space_is_still_not_work():
+    assert not is_work("rubrik stock price- Google Search")
+
+
 def test_keyword_in_a_query_string_is_not_work():
     assert not is_work("https://news.ycombinator.com/item?id=1&ref=rubrik")
 

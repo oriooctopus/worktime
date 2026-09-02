@@ -1094,15 +1094,7 @@ FOCUS_MAX_GAP_SEC = 90
 # bounded, and wrong in the direction of undercounting, where the exclude
 # list's failure invented work that never happened.
 #
-# Two large absences, both deliberate, both for reasons older than this list:
-#
-# Chrome, for the same reason github_rows_for() refuses to count every visit:
-# the front app says a browser is open, not what is in it, and "shopping and
-# general search" in the foreground is not work. Chrome already has a better
-# signal than app-level focus could ever be -- its history is classified by
-# domain, so GitHub reading arrives through github_visits_for() and other work
-# sites through chrome-work-blocks.py. Crediting the app on top of that would
-# both bypass the classification and double-count the visits that survive it.
+# One large absence, deliberate, for a reason older than this list:
 #
 # The terminal, because it is ambiguous rather than because it is leisure. The
 # same Ghostty window is the front app whether the work is on this Mac or on
@@ -1118,6 +1110,55 @@ FOCUS_INCLUDE = {
     "md.obsidian",                # Obsidian
     "com.granola.app",            # Granola
 }
+
+# Chrome is not on that list and cannot be, because the question it answers is
+# the wrong one: "is Chrome in front" says a browser is open, not what is in
+# it, and shopping in the foreground is not work.
+#
+# It used to be excluded outright on those grounds, with its work routed
+# through the history instead -- GitHub via github_visits_for(), everything
+# else via chrome-work-blocks.py. The flaw in that was the flaw in history
+# itself: it records NAVIGATIONS. A doc opened yesterday, left in a tab and
+# read all morning produces no visit row at all, so the morning simply did not
+# exist. That is not a rare shape; it is how a long document actually gets
+# read.
+#
+# The bar now writes the active tab beside the app (see chromeActiveTab in
+# main.swift), which makes the right question askable for the first time: not
+# "is Chrome in front" but "is Chrome in front with a work page in it". So
+# Chrome earns credit per SAMPLE and per PAGE rather than per app, which is
+# strictly narrower than the allow list -- an hour of Hacker News in the
+# foreground still earns nothing.
+CHROME_BUNDLE = "com.google.Chrome"
+
+
+def focus_counts(sample: dict) -> bool:
+    """Whether the app in this sample earns foreground credit at all.
+
+    Title and URL are tested separately rather than as one string because
+    is_work_url() reads everything before the first "?" as the address, and
+    either half can carry a "?" that would swallow the other: a title ending
+    in a question mark truncates the URL behind it, and a URL with a query
+    string truncates a title placed after it. Two calls have neither problem.
+    """
+    bundle = sample.get("bundle")
+    if bundle != CHROME_BUNDLE:
+        return bundle in FOCUS_INCLUDE
+    return (_work_site_hit(sample.get("tab", ""))
+            or _work_site_hit(sample.get("url", "")))
+
+
+def focus_name(sample: dict) -> str:
+    """What to call the app in this sample, for a row somebody reads.
+
+    A browser is named by its page rather than by itself. "Google Chrome"
+    describes a minute spent on a design doc and a minute spent on a PR
+    identically, and the tab title is the only part of either that anybody
+    would recognise as the thing they were doing.
+    """
+    if sample.get("bundle") == CHROME_BUNDLE and sample.get("tab"):
+        return sample["tab"]
+    return sample.get("app") or sample["bundle"]
 
 
 def focus_rows(day: str) -> list[dict]:
@@ -1158,7 +1199,7 @@ def focus_windows(day: str):
         lo, hi = sec_of(a["t"]), sec_of(b["t"])
         if not (0 < hi - lo <= FOCUS_MAX_GAP_SEC):
             continue
-        if a.get("bundle") not in FOCUS_INCLUDE:
+        if not focus_counts(a):
             continue
         if idle_blocks(b):
             continue
@@ -1206,7 +1247,7 @@ def focus_app_by_minute(day: str) -> dict[int, str]:
     """
     per: dict[int, dict[str, int]] = {}
     for lo, hi, a in focus_windows(day):
-        name = a.get("app") or a["bundle"]
+        name = focus_name(a)
         # A window can straddle a minute boundary, so its seconds are split
         # across the minutes it actually covers rather than all landing on the
         # minute it started in.
@@ -1229,7 +1270,7 @@ def focus_apps(day: str, lo: int, hi: int) -> list[str]:
         span = min(ahi, hi) - max(alo, lo)
         if span <= 0:
             continue
-        name = a.get("app") or a["bundle"]
+        name = focus_name(a)
         seen[name] = seen.get(name, 0) + span
     return [k for k, _ in sorted(seen.items(), key=lambda kv: -kv[1])]
 
@@ -1262,7 +1303,7 @@ def last_focus_input(day: str) -> datetime | None:
     base = datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=LOCAL)
     best = None
     for r in focus_rows(day):
-        if r.get("bundle") not in FOCUS_INCLUDE:
+        if not focus_counts(r):
             continue
         # Clamped at the day boundary: an idle reading spans midnight after a
         # night with the machine left on, and the day's own log is the wrong
