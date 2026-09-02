@@ -626,6 +626,90 @@ def shift_day(day: str, n: int) -> str:
     d = datetime.strptime(day, "%Y-%m-%d") + timedelta(days=n)
     return d.strftime("%Y-%m-%d")
 
+# The desktop client's own console log, and the line it writes the instant a
+# message leaves the compose box. Reading it is the same move github_live_rows()
+# makes against Chrome's history: the authoritative source is remote and slow,
+# the app already keeps a local record, so the local one carries the live
+# verdict and the remote one stays the record.
+#
+# What it buys is the whole of SLACK_TTL_SEC. search.messages is cached for
+# four minutes because a network round trip cannot sit on a five-second poll,
+# so a send could be four minutes old before anything here could see it -- and
+# the live dot is exactly the consumer that cannot wait. Measured against a
+# day of real sends the log line lands about a second BEFORE the API's own
+# timestamp, since it is written at call time rather than at server receipt.
+#
+# It sees strictly less than the API, and every omission is one this wants:
+# only messages typed in this Mac's client appear, so a send from the phone or
+# from a script holding the same token -- both of which held the dot green
+# without anybody at this desk -- leaves no line here.
+#
+# Undocumented and unversioned, so it is a freshness accelerator and never the
+# record: if Slack renames the line tomorrow this goes quiet and slack_for()
+# carries on unaffected.
+SLACK_LOG_DIR = os.path.expanduser(
+    "~/Library/Application Support/Slack/logs/default")
+SLACK_LOG = os.path.join(SLACK_LOG_DIR, "webapp-console.log")
+
+# `[09/02/26, 12:37:23:833] info: [API-Q] (T...) <id> chat.postMessage called
+#  with reason: webapp_message_send`
+SLACK_SEND_LINE = re.compile(
+    r"^\[(\d\d)/(\d\d)/(\d\d), (\d\d):(\d\d):(\d\d):\d+\].*webapp_message_send")
+
+# Where the last read of the live log stopped, so a poll costs the bytes Slack
+# has written since rather than the whole file. The log grows continuously --
+# RTM events land every few seconds whether or not anybody is typing -- so
+# memoising on (mtime, size) the way github_live_rows() does would miss on
+# nearly every poll and re-read megabytes each time.
+_slack_log_state: dict = {}
+
+
+def last_slack_send(day: str) -> datetime | None:
+    """When a message was last sent from this Mac's Slack client, or None.
+
+    Tails the console log rather than re-reading it: the offset and the answer
+    so far are kept between calls, and a shrunken file means Slack rotated the
+    log, which restarts the read from the top of the new one.
+    """
+    try:
+        size = os.stat(SLACK_LOG).st_size
+    except OSError:
+        return None
+
+    st = _slack_log_state
+    if st.get("day") != day:
+        st.clear()
+        st["day"] = day
+    # Rotation truncates the active log, so an offset past the end is stale
+    # rather than merely behind.
+    if size < st.get("offset", 0):
+        st["offset"] = 0
+        st["at"] = None
+    if size == st.get("offset") and "at" in st:
+        return st["at"]
+
+    stamp = day[5:7] + "/" + day[8:10] + "/" + day[2:4]
+    best = st.get("at")
+    try:
+        with open(SLACK_LOG, errors="replace") as fh:
+            fh.seek(st.get("offset", 0))
+            for line in fh:
+                m = SLACK_SEND_LINE.match(line)
+                if not m or f"{m.group(1)}/{m.group(2)}/{m.group(3)}" != stamp:
+                    continue
+                base = datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=LOCAL)
+                when = base + timedelta(hours=int(m.group(4)),
+                                        minutes=int(m.group(5)),
+                                        seconds=int(m.group(6)))
+                if best is None or when > best:
+                    best = when
+            st["offset"] = fh.tell()
+    except OSError:
+        return best
+    st["at"] = best
+    return best
+
+
 
 def sec_of(hms: str) -> int:
     h, m, s = hms.split(":")
@@ -928,6 +1012,32 @@ def focus_rows(day: str) -> list[dict]:
     return sorted(out, key=lambda r: r["t"])
 
 
+def focus_windows(day: str):
+    """Credited windows in the focus log, as (start_sec, end_sec, sample).
+
+    The log is a series of point samples and every duration question asked of
+    it -- which minutes were attended, which app held a minute, which apps held
+    a range -- is answered by pairing adjacent rows and reading the span
+    between them. That pairing, and the three tests that decide whether a span
+    counts at all, were written out three times; a rule added to one copy and
+    not the others is the failure this exists to make impossible.
+
+    The sample yielded is the EARLIER row: it names the app that held the
+    window. Whether the window counts is decided partly by the later row, which
+    is why both are needed and why a caller cannot simply walk the rows.
+    """
+    rows = focus_rows(day)
+    for a, b in zip(rows, rows[1:]):
+        lo, hi = sec_of(a["t"]), sec_of(b["t"])
+        if not (0 < hi - lo <= FOCUS_MAX_GAP_SEC):
+            continue
+        if a.get("bundle") not in FOCUS_INCLUDE:
+            continue
+        if idle_blocks(b):
+            continue
+        yield lo, hi, a
+
+
 def focus_for(day: str) -> list[datetime]:
     """Minutes spent attended, at the front of an app that counts as work.
 
@@ -948,17 +1058,9 @@ def focus_for(day: str) -> list[datetime]:
     machine during it. Deciding on the earlier row instead would credit the
     first two minutes of every absence, every time.
     """
-    rows = focus_rows(day)
     base = datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=LOCAL)
     minutes: set[int] = set()
-    for a, b in zip(rows, rows[1:]):
-        lo, hi = sec_of(a["t"]), sec_of(b["t"])
-        if not (0 < hi - lo <= FOCUS_MAX_GAP_SEC):
-            continue
-        if a.get("bundle") not in FOCUS_INCLUDE:
-            continue
-        if idle_blocks(b):
-            continue
+    for lo, hi, _a in focus_windows(day):
         # hi is exclusive: a window ending exactly at 09:05:00 covers no part
         # of 09:05, and crediting it would add a phantom minute to the end of
         # every contiguous run.
@@ -976,15 +1078,7 @@ def focus_app_by_minute(day: str) -> dict[int, str]:
     million row-visits on a path the menu bar polls every five seconds.
     """
     per: dict[int, dict[str, int]] = {}
-    rows = focus_rows(day)
-    for a, b in zip(rows, rows[1:]):
-        lo, hi = sec_of(a["t"]), sec_of(b["t"])
-        if not (0 < hi - lo <= FOCUS_MAX_GAP_SEC):
-            continue
-        if a.get("bundle") not in FOCUS_INCLUDE:
-            continue
-        if idle_blocks(b):
-            continue
+    for lo, hi, a in focus_windows(day):
         name = a.get("app") or a["bundle"]
         # A window can straddle a minute boundary, so its seconds are split
         # across the minutes it actually covers rather than all landing on the
@@ -1004,15 +1098,7 @@ def focus_apps(day: str, lo: int, hi: int) -> list[str]:
     the only description available for it, and is a better one than silence.
     """
     seen: dict[str, int] = {}
-    rows = focus_rows(day)
-    for a, b in zip(rows, rows[1:]):
-        alo, ahi = sec_of(a["t"]), sec_of(b["t"])
-        if not (0 < ahi - alo <= FOCUS_MAX_GAP_SEC):
-            continue
-        if a.get("bundle") not in FOCUS_INCLUDE:
-            continue
-        if idle_blocks(b):
-            continue
+    for alo, ahi, a in focus_windows(day):
         span = min(ahi, hi) - max(alo, lo)
         if span <= 0:
             continue
@@ -1020,6 +1106,44 @@ def focus_apps(day: str, lo: int, hi: int) -> list[str]:
         seen[name] = seen.get(name, 0) + span
     return [k for k, _ in sorted(seen.items(), key=lambda kv: -kv[1])]
 
+
+def last_focus_input(day: str) -> datetime | None:
+    """The most recent moment somebody touched this Mac with a work app in front.
+
+    Exists because focus_for() cannot answer the live question, and the two
+    reasons are both structural rather than bugs in it. It credits whole
+    MINUTES, so a sample at 09:01:47 becomes the point 09:01:00 and up to 59
+    seconds of silence is invented; and it credits the span BETWEEN two rows,
+    so the newest row is always uncredited until the next heartbeat lands, for
+    up to another FOCUS_HEARTBEAT_SEC. Together that is up to ~90s of phantom
+    quiet while somebody is sitting right there, which is invisible against a
+    five-minute cutoff and fatal against the one-minute unfocused one: switch
+    to Slack, type, and the dot goes idle a few seconds later.
+
+    A row's `idle` is measured backwards from it, so a sample at 09:05:00
+    reading 45 makes the claim "somebody was at this machine at 09:04:15" --
+    a point in time, at second resolution, true on its own without a
+    neighbouring row to bound it. That is the same shape as a prompt, and it is
+    the same arithmetic idle_stretches() already uses to place the START of an
+    absence.
+
+    Deliberately NOT folded into focus_for() or events_for(). The day's
+    arithmetic is settled by the span model and by the idle subtraction, and
+    those are decided in one place on purpose; this can only ever make the live
+    dot fresher, never a period longer or a total larger.
+    """
+    base = datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=LOCAL)
+    best = None
+    for r in focus_rows(day):
+        if r.get("bundle") not in FOCUS_INCLUDE:
+            continue
+        # Clamped at the day boundary: an idle reading spans midnight after a
+        # night with the machine left on, and the day's own log is the wrong
+        # place to record that the input happened yesterday.
+        at = max(0, sec_of(r["t"]) - r.get("idle", 0))
+        if best is None or at > best:
+            best = at
+    return base + timedelta(seconds=best) if best is not None else None
 
 # Where the bar records that a person answered an idle prompt. Only the claims
 # are written: the idle stretches themselves are already in the focus log, and
@@ -2968,6 +3092,30 @@ def status() -> dict:
     day = now.strftime("%Y-%m-%d")
     now_m = now.hour * 60 + now.minute
     last, stamps, all_acts = live_activity(day)
+
+    # Folded in here and nowhere else, for the reason given on
+    # last_focus_input(): live_activity()'s `last` comes from focus_for(),
+    # which floors to the minute and needs a closing sample, so it can report
+    # ~90s of quiet while somebody is actively typing in Slack. This is the
+    # same shape as the raw prompt timestamps it sits beside -- a point act at
+    # second resolution -- and like them it moves only the dot.
+    touched = last_focus_input(day)
+
+    # Sends are not in events_for() -- focus superseded them -- but the live
+    # dot is the one consumer focus cannot fully serve: a message typed into a
+    # window that has been frontmost for a while is a keystroke like any other,
+    # while a send made in the seconds after switching apps can land between
+    # focus samples. Live only, for the same reason as everything else here.
+    sent = last_slack_send(day)
+    if sent and (touched is None or sent > touched):
+        touched = sent
+
+    if touched and (last is None or touched > last):
+        last = touched
+        t_m = touched.hour * 60 + touched.minute
+        if t_m not in stamps:
+            stamps = sorted(stamps + [t_m])
+
     quiet_sec = (now - last).total_seconds() if last else None
     quiet = quiet_sec / 60 if quiet_sec is not None else None
 
