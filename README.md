@@ -107,10 +107,13 @@ enumerate one at a time:
   work.
 - **`google_work_account`** (default unset) — the account number in Google
   URLs (`drive.google.com/drive/u/1/home` is account `1`). Set it when there is
-  a separate work Google account: Gmail, Calendar, Drive and Docs under that
-  number count as work, while the same sites under the personal account do
-  not. With one Google account there is nothing to tell apart, so leave it
-  unset.
+  a separate work Google account: Gmail, Calendar and Drive under that number
+  count as work, while the same sites under the personal account do not. With
+  one Google account there is nothing to tell apart, so leave it unset.
+- **`docs.google.com`** is work under every account, and needs no setting. The
+  account a doc opens under is chosen by whoever shared the link, so half the
+  work docs arrive under the personal account; keying Docs on the index dropped
+  those, and little enough personal writing happens there to be worth it.
 
 ## Thresholds
 

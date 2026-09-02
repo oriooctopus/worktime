@@ -175,6 +175,14 @@ DEFAULT_WORK_URL_KEYWORDS = ("rubrik",)
 GOOGLE_ACCOUNT_IN_PATH = re.compile(r"\.google\.com/(?:[^/?#]+/)?u/(\d+)")
 GOOGLE_ACCOUNT_IN_QUERY = re.compile(r"\.google\.com/[^?#]*[?&]authuser=(\d+)")
 
+# Docs is the exception to the account rule: a doc, sheet or slide deck is a
+# document you were working on whichever account happens to be signed in, and
+# the account you open one under is decided by whoever shared it, not by whose
+# work it is. Half the work docs arrive as links opened under the personal
+# account, so keying Docs on the index dropped real work every time; nothing
+# personal is written on docs.google.com often enough to be worth the loss.
+ALWAYS_WORK_GOOGLE_HOSTS = ("docs.google.com",)
+
 # A results page is never work, whoever is signed in. Searching the employer's
 # name is the thing a keyword rule gets wrong most often, and it arrives in two
 # shapes: the raw URL, where the name sits in ?q= and the address rule already
@@ -215,8 +223,8 @@ def google_account_index(url):
 
 
 def is_work_url(url, keywords=None, work_account=None):
-    """True if `url` is work on its own: it names a work keyword, or it is a
-    Google page signed in as the work account.
+    """True if `url` is work on its own: it names a work keyword, it is a
+    Google Docs page, or it is a Google page signed in as the work account.
 
     Keywords are matched against the address only, never the query string.
     Googling "rubrik stock price" puts the employer's name in ?q= and nowhere
@@ -234,6 +242,8 @@ def is_work_url(url, keywords=None, work_account=None):
     address = lowered.split("?")[0].split("#")[0]
     keywords = work_url_keywords() if keywords is None else keywords
     if any(k in address for k in keywords):
+        return True
+    if any(host in address for host in ALWAYS_WORK_GOOGLE_HOSTS):
         return True
     if work_account is None:
         return False

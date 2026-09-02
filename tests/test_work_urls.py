@@ -72,6 +72,22 @@ def test_work_account_drive_calendar_and_mail_are_work():
     assert is_work("https://docs.google.com/document/u/1/d/abc/edit")
 
 
+def test_docs_is_work_under_any_account():
+    # A shared link opens under whichever account the sharer had in mind, so
+    # keying Docs on the index dropped work docs opened as the personal account.
+    assert is_work("https://docs.google.com/document/d/abc/edit")
+    assert is_work("https://docs.google.com/spreadsheets/u/0/d/abc/edit")
+    assert is_work("https://docs.google.com/presentation/u/3/d/abc/edit")
+
+
+def test_docs_is_work_with_no_google_account_configured():
+    assert is_work("https://docs.google.com/document/u/0/d/abc/edit", account=None)
+
+
+def test_searching_for_a_doc_is_still_not_work():
+    assert not is_work("https://www.google.com/search?q=docs.google.com+budget")
+
+
 def test_personal_account_on_the_same_sites_is_not_work():
     # Same hostnames, same person, different account: the index is the only
     # thing separating the work Drive from the personal one.
