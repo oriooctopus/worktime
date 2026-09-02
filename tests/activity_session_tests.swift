@@ -79,55 +79,56 @@ check(wordy.what.hasSuffix("…"), "a truncated line did not end in an ellipsis"
 // `kinds` is never empty, and a branch here for the case that cannot happen
 // would only make a broken payload draw as though it were fine.
 
-// -- the hover ------------------------------------------------------------
+// -- the submenu ----------------------------------------------------------
 
-// The tooltip opens with the row's own top line, so what is being read is
-// anchored to the session it came from rather than floating free of it.
-let tip = sessionTip(session(
-    n: 3, kinds: [("prompt", 2), ("approval", 1)],
-    rows: [SessionRow(t: "09:03", kind: "prompt", what: "run the tests", n: 1),
-           SessionRow(t: "09:01", kind: "approval", what: "approved Bash", n: 1),
-           SessionRow(t: "09:00", kind: "prompt", what: "hello", n: 1)]))
-let tipLines = tip.split(separator: "\n", omittingEmptySubsequences: false)
-check(String(tipLines[0]) == sessionStrings(session(n: 3, kinds: [("prompt", 2), ("approval", 1)])).top,
-      "the hover did not open with the row's own line: \"\(tipLines[0])\"")
-check(tipLines.count == 4, "the hover drew \(tipLines.count) lines for 3 events")
-check(tipLines[1] == "09:03  prompt · run the tests",
-      "an event line read as \"\(tipLines[1])\"")
+// What the probe's cap left out is said out loud. Silently showing twenty
+// events of a hundred would contradict the count on the row the submenu hangs
+// off, which is the number it is read against.
+let capped = session(n: 30, rows: [
+    SessionRow(t: "09:03", kind: "prompt", what: "one", n: 1)])
+check(sessionMoreLine(capped) == "\u{2026} and 29 more",
+      "a capped submenu said \"\(sessionMoreLine(capped) ?? "nothing")\"")
 
-// A collapsed row carries its count, and an uncollapsed one does not -- the
-// same rule the raw list follows, since this is that list scoped to one
-// session.
-let counted = sessionTip(session(n: 5, rows: [
+// A collapsed row stands for several events, so what is missing is counted in
+// events too -- counting rows would report a session of eight as a session of
+// two, and the row above says eight.
+let collapsed = session(n: 8, rows: [
     SessionRow(t: "09:03", kind: "browsing", what: "the same PR", n: 4),
-    SessionRow(t: "09:01", kind: "prompt", what: "go", n: 1)]))
-check(counted.contains("09:03  browsing · the same PR  ×4"),
-      "a collapsed row lost its count: \"\(counted)\"")
-check(counted.contains("09:01  prompt · go\n") || counted.hasSuffix("09:01  prompt · go"),
-      "a single event was given a ×1: \"\(counted)\"")
+    SessionRow(t: "09:01", kind: "prompt", what: "go", n: 2)])
+check(sessionMoreLine(collapsed) == "\u{2026} and 2 more",
+      "a collapsed row was counted as one: \"\(sessionMoreLine(collapsed) ?? "nothing")\"")
 
-// What the probe's cap left out is said out loud. Silently showing twelve of a
-// hundred would contradict the event count on the row being hovered, which is
-// the number this is read against.
-let capped = sessionTip(session(n: 30, rows: [
-    SessionRow(t: "09:03", kind: "prompt", what: "one", n: 1)]))
-check(capped.hasSuffix("… and 29 more"),
-      "a capped hover did not say what it left out: \"\(capped)\"")
+// A session whose events all travelled says nothing, rather than "and 0 more".
+let whole = session(n: 1, rows: [
+    SessionRow(t: "09:03", kind: "prompt", what: "one", n: 1)])
+check(sessionMoreLine(whole) == nil,
+      "a complete submenu claimed there was more: \"\(sessionMoreLine(whole) ?? "")\"")
 
-// A session whose rows all fit says nothing about more, rather than "and 0
-// more".
-let whole = sessionTip(session(n: 1, rows: [
-    SessionRow(t: "09:03", kind: "prompt", what: "one", n: 1)]))
-check(!whole.contains("more"), "a complete hover claimed there was more: \"\(whole)\"")
+// -- the menu key ---------------------------------------------------------
 
-// A pasted stack trace as a prompt must not set the width of every other line.
-let wide = sessionTip(session(n: 1, rows: [
-    SessionRow(t: "09:03", kind: "prompt",
-               what: String(repeating: "x", count: 300), n: 1)]))
-for line in wide.split(separator: "\n") {
-    check(line.count <= SESSION_TIP_CHARS + 20,
-          "a hover line ran to \(line.count) characters")
-}
+// The key has to cover what the submenu draws, not just the two visible lines:
+// these two sessions are identical on screen until you hover one, and a key
+// that could not tell them apart would leave the wrong events behind the
+// arrow.
+let a = session(n: 1, rows: [SessionRow(t: "09:03", kind: "prompt", what: "one", n: 1)])
+let b = session(n: 1, rows: [SessionRow(t: "09:03", kind: "prompt", what: "two", n: 1)])
+check(sessionStrings(a).top == sessionStrings(b).top,
+      "the fixtures were meant to be identical on the row itself")
+check(sessionKey(a) != sessionKey(b),
+      "the menu key could not tell two different submenus apart")
+
+// And it covers the row itself, so a session that changed length still
+// rebuilds.
+check(sessionKey(a) != sessionKey(session(
+    len: 45, n: 1,
+    rows: [SessionRow(t: "09:03", kind: "prompt", what: "one", n: 1)])),
+      "the menu key ignored the session's own line")
+
+// The same session twice is the same key -- the point of it is that a poll
+// which changed nothing costs no rebuild and cannot flicker an open menu.
+check(sessionKey(a) == sessionKey(session(
+    n: 1, rows: [SessionRow(t: "09:03", kind: "prompt", what: "one", n: 1)])),
+      "an unchanged session produced a different key")
 
 if failures.isEmpty {
     print("activity session strings: all checks passed")
