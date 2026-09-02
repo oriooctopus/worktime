@@ -1607,6 +1607,11 @@ def sessions_in(day: str, lo: int, hi: int) -> list[dict]:
     return sorted(out, key=lambda s: s["prompts"][0]["ts"])
 
 
+# Temporarily disabled: these calls were billing tokens from this laptop.
+# Once summaries route through a desktop-side relay, flip this back on.
+SUMMARIZE_SPANS_ENABLED = False
+
+
 def summarize_span(day: str, lo: int, hi: int) -> str:
     """A <=10-word description of one work period, cached on disk.
 
@@ -1616,6 +1621,8 @@ def summarize_span(day: str, lo: int, hi: int) -> str:
     NOT cached: its content grows as the day does, so a cached line would
     freeze at whatever the first prompt happened to be about.
     """
+    if not SUMMARIZE_SPANS_ENABLED:
+        return ""
     key = f"{day}:{lo}-{hi}"
     try:
         cache = json.load(open(SUMMARIES))
