@@ -181,9 +181,18 @@ GOOGLE_ACCOUNT_IN_QUERY = re.compile(r"\.google\.com/[^?#]*[?&]authuser=(\d+)")
 # handles it, and the exported row, which leads with the page title -- "rubrik
 # stock price - Google Search" -- and puts the name in front of any query
 # string at all. Only naming the results page itself catches both.
+#
+# No \b before the hyphen. There is no word boundary between a space and a
+# hyphen -- both are non-word characters -- so "\b-\s*google search" matched
+# "price- Google Search" and never the spaced form anybody actually has. The
+# title half of this pattern was dead from the day it was written, and the one
+# test covering it passed on the URL half of the same string. It went unnoticed
+# while titles reached here only through the nightly export; the focus log now
+# classifies the live tab title on every sample, where a stock-price search
+# sitting in the foreground would have earned the afternoon.
 SEARCH_RESULTS = re.compile(
     r"(?:google|bing|duckduckgo|search\.brave)\.com/(?:search|url)\b"
-    r"|\b-\s*google search\b|\bat duckduckgo\b", re.I)
+    r"|-\s*google search\b|\bat duckduckgo\b", re.I)
 
 
 def work_url_keywords(profile=None):

@@ -231,6 +231,73 @@ let FOCUS_DIR = ("~/.claude/stats/worktime/focus" as NSString).expandingTildeInP
 // same trap `visit_duration` falls into in the Chrome exporter.
 let FOCUS_HEARTBEAT_SEC = 30.0
 
+// Chrome's active tab, as (title, url).
+//
+// The frontmost app alone says a browser is open, not what is in it, which is
+// why Chrome earned no foreground credit at all: half of it is the job and
+// half is shopping, and the app name cannot tell the two apart. The tab can,
+// and nothing else can. History records navigations, so a doc opened yesterday
+// and read all morning leaves no row anywhere -- that case, a parked tab with
+// the day's work in it, is the whole reason this exists.
+//
+// Asked only on the samples where Chrome is already frontmost, so it costs one
+// osascript per heartbeat at most and nothing at all while the browser sits
+// behind something else.
+//
+// Title as well as URL because the classifier needs both and neither is
+// sufficient: a Google Doc URL is an opaque id with no hint of the employer in
+// it, and the title -- "Rubrik AI / RAC Policy -- OTEL Integration Test Cases"
+// -- is the only place the work keyword appears. The reverse holds for a PR
+// page whose title is somebody else's branch name.
+//
+// Requires the Automation permission for Chrome, which macOS prompts for once.
+// Refusing it returns nil, and a sample with no tab on it earns nothing --
+// precisely what every Chrome sample earned before this existed, so the
+// declined case degrades to the old behaviour rather than to a wrong one.
+let CHROME_BUNDLE = "com.google.Chrome"
+
+// Chrome answers in single-digit milliseconds when it is healthy. This is not
+// tuned for the healthy case: it is the wall against a browser wedged behind a
+// modal, where the script never returns and would otherwise hang the poll
+// timer -- and with it the menu, the countdown and the dot -- indefinitely.
+let CHROME_TAB_TIMEOUT_SEC = 2.0
+
+func chromeActiveTab() -> (title: String, url: String)? {
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+    // Tab-separated so the two halves survive a title containing any
+    // punctuation a separator might otherwise be mistaken for; a tab is the
+    // one character a page title reliably does not carry.
+    p.arguments = ["-e", "tell application \"Google Chrome\" to get "
+        + "(title of active tab of front window) & tab & "
+        + "(URL of active tab of front window)"]
+    let out = Pipe()
+    p.standardOutput = out
+    p.standardError = FileHandle.nullDevice
+    do { try p.run() } catch { return nil }
+
+    let killer = DispatchWorkItem { if p.isRunning { p.terminate() } }
+    DispatchQueue.global().asyncAfter(deadline: .now() + CHROME_TAB_TIMEOUT_SEC,
+                                      execute: killer)
+    // Read before waiting: readDataToEndOfFile returns at EOF, which is the
+    // child exiting, so this is the wait. Terminating the child closes the
+    // pipe, so the timeout unblocks it too.
+    let data = out.fileHandleForReading.readDataToEndOfFile()
+    p.waitUntilExit()
+    killer.cancel()
+
+    // A non-zero exit is the ordinary answer to "what is the front window?"
+    // when Chrome has no windows open, and to the permission being declined.
+    // Both mean the same thing here -- no tab to name -- so neither is worth
+    // distinguishing.
+    guard p.terminationStatus == 0,
+          let text = String(data: data, encoding: .utf8) else { return nil }
+    let parts = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        .components(separatedBy: "\t")
+    guard parts.count == 2, !parts[1].isEmpty else { return nil }
+    return (parts[0], parts[1])
+}
+
 
 final class FocusLog {
     private var lastBundle: String?
@@ -269,7 +336,7 @@ final class FocusLog {
         guard changed || due else { return }
 
         let day = Self.dayfmt.string(from: now)
-        let row: [String: Any] = [
+        var row: [String: Any] = [
             "day": day,
             "t": Self.stamp.string(from: now),
             "app": app?.localizedName ?? "",
@@ -280,6 +347,15 @@ final class FocusLog {
             // drift apart without either one looking wrong.
             "idle": Int(Self.idleSeconds().rounded()),
         ]
+        // Only Chrome carries these, and only when the tab could be read. The
+        // probe treats their absence as "not a page worth counting", which is
+        // the same verdict it reaches for a tab that is genuinely not work --
+        // so a sample written before this field existed, or by a machine that
+        // declined the permission, needs no special handling anywhere.
+        if bundle == CHROME_BUNDLE, let tab = chromeActiveTab() {
+            row["tab"] = tab.title
+            row["url"] = tab.url
+        }
         guard let data = try? JSONSerialization.data(withJSONObject: row),
               var line = String(data: data, encoding: .utf8)
         else { return }

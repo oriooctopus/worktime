@@ -480,5 +480,87 @@ class TestFocusWindows(FocusCase):
                          ["Slack"])
 
 
+class TestChromeTab(FocusCase):
+    """Chrome earns per PAGE, not per app.
+
+    Every other bundle answers "does this count" once, for good; Chrome answers
+    it again on every sample, and the answer is allowed to differ between two
+    rows thirty seconds apart. The tests below are the ones that would fail if
+    that ever collapsed back to an app-level decision in either direction --
+    crediting the browser wholesale, or refusing it wholesale.
+    """
+
+    def chrome(self, start, n, tab, url, **kw):
+        rows = self.samples(start, n, bundle=wp.CHROME_BUNDLE,
+                            app="Google Chrome", **kw)
+        for r in rows:
+            r["tab"], r["url"] = tab, url
+        return rows
+
+    def test_a_work_page_in_the_foreground_counts(self):
+        self.write(self.chrome(9 * 3600, 3, "Rubrik AI / RAC Policy",
+                               "https://docs.google.com/document/d/1BgD"))
+        self.assertEqual(len(wp.focus_for(DAY)), 1)
+
+    def test_a_personal_page_in_the_foreground_earns_nothing(self):
+        self.write(self.chrome(9 * 3600, 20, "Hacker News",
+                               "https://news.ycombinator.com/"))
+        self.assertEqual(wp.focus_for(DAY), [])
+
+    def test_the_title_alone_can_carry_the_keyword(self):
+        """The case the URL cannot answer: a Doc id names nothing at all."""
+        self.assertTrue(wp.focus_counts({
+            "bundle": wp.CHROME_BUNDLE, "tab": "Rubrik AI / RAC Policy",
+            "url": "https://docs.google.com/document/d/1BgD-6LSPyG/edit"}))
+
+    def test_the_url_alone_can_carry_the_keyword(self):
+        """And the reverse: a PR page titled with somebody's branch name."""
+        self.assertTrue(wp.focus_counts({
+            "bundle": wp.CHROME_BUNDLE, "tab": "fix flaky retry by someone",
+            "url": "https://github.com/scaledata/sdmain/pull/1"}))
+
+    def test_a_question_mark_in_the_title_does_not_hide_the_url(self):
+        """Why the two halves are tested separately rather than concatenated."""
+        self.assertTrue(wp.focus_counts({
+            "bundle": wp.CHROME_BUNDLE, "tab": "Is this thing on?",
+            "url": "https://internal.rubrik.com/wiki"}))
+
+    def test_searching_the_company_name_is_not_work(self):
+        self.assertFalse(wp.focus_counts({
+            "bundle": wp.CHROME_BUNDLE, "tab": "rubrik stock price - Google Search",
+            "url": "https://www.google.com/search?q=rubrik+stock+price"}))
+
+    def test_a_sample_written_before_the_field_existed_earns_nothing(self):
+        """Old rows, and any machine that declined the Automation prompt."""
+        self.write(self.samples(9 * 3600, 20, bundle=wp.CHROME_BUNDLE,
+                                app="Google Chrome"))
+        self.assertEqual(wp.focus_for(DAY), [])
+
+    def test_the_row_is_named_by_the_tab_not_by_the_browser(self):
+        self.write(self.chrome(9 * 3600, 3, "Rubrik AI / RAC Policy",
+                               "https://docs.google.com/document/d/1BgD"))
+        self.assertEqual(wp.focus_apps(DAY, 0, 86400),
+                         ["Rubrik AI / RAC Policy"])
+
+    def test_a_tab_switch_mid_morning_splits_the_credit(self):
+        """The whole point: two Chrome runs, one counted and one not.
+
+        Four windows, not three: the window a sample opens is named by that
+        sample, so the doc's last row still holds the thirty seconds up to the
+        switch. That is the same rule every other app is credited under.
+        """
+        self.write(self.chrome(9 * 3600, 4, "Rubrik AI / RAC Policy",
+                               "https://docs.google.com/document/d/1BgD"))
+        self.write(self.chrome(9 * 3600 + 120, 4, "Hacker News",
+                               "https://news.ycombinator.com/"))
+        self.assertEqual([wp.focus_name(a) for _, _, a in wp.focus_windows(DAY)],
+                         ["Rubrik AI / RAC Policy"] * 4)
+
+    def test_a_named_app_still_counts_without_any_tab(self):
+        """The Chrome branch must not have made the allow list conditional."""
+        self.write(self.samples(9 * 3600, 3))
+        self.assertEqual(len(wp.focus_for(DAY)), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
