@@ -61,11 +61,17 @@ stretch between consecutive samples only while they stay under
 vouches for, rather than one row before lunch claiming the afternoon -- the
 same trap `visit_duration` falls into below.
 
-`FOCUS_EXCLUDE` is an exclude list, not an allow list: on a work machine nearly
-everything in the foreground is the job, and an allow list silently loses a
-day's work every time a new tool enters the rotation.
+`FOCUS_INCLUDE` is an allow list: an app earns credit only by being named in
+it. It began as an exclude list, on the theory that nearly everything in the
+foreground of a work machine is the job -- true of the apps a person opens,
+false of the machine they run on. macOS keeps putting things in front that
+nobody chose: a notification alert, the lock screen, the printer dialog that
+named a minute of one day "Add Printer". Each was found only after it had
+inflated a day, because an exclude list is right only about the apps somebody
+thought to name. The allow list's own cost is that a new tool earns nothing
+until it is added -- a quieter failure, and one that errs low.
 
-The terminal is on that list for a different reason than the streaming apps.
+The terminal is left out for a different reason than the streaming apps.
 It is not leisure, it is ambiguous: the same window is frontmost whether the
 work is on this Mac or on the Linux desktop, and desktop work is subtracted
 from Mac periods elsewhere in the probe. Counting its foreground time would

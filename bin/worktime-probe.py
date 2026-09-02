@@ -843,64 +843,48 @@ FOCUS_IDLE_SEC = 120
 # hour until the next one.
 FOCUS_MAX_GAP_SEC = 90
 
-# Foreground time that is not work, by bundle id. An exclude list rather than
-# an allow list on purpose -- on a work machine nearly everything in the
-# foreground is the job, and an allow list quietly loses a day's work every
-# time a new tool enters the rotation, failing in the direction that looks like
-# an ordinary quiet afternoon.
+# Foreground time that counts as work, by bundle id. An allow list: an app
+# earns credit only by being named here, and everything else in the foreground
+# earns nothing.
 #
-# The terminal is here for a different reason than the rest. It is not leisure;
-# it is ambiguous. The same Ghostty window is the front app whether the work is
-# on this Mac or on the Linux desktop, so its foreground time cannot tell the
-# two apart, and the probe already treats desktop work as absence from Rubrik
-# work rather than as presence. Counting it would quietly re-add the very hours
-# the desktop-prompt subtraction exists to remove. Little is lost: real terminal
-# work here is Claude Code, and prompts already say so precisely.
-FOCUS_EXCLUDE = {
-    "com.apple.TV",
-    "com.apple.Music",
-    "com.apple.Photos",
-    "com.netflix.Netflix",
-    "com.spotify.client",
-    "com.valvesoftware.steam",
-    "com.mitchellh.ghostty",
-    # The browser is excluded for the same reason github_rows_for() refuses to
-    # count every Chrome visit: the front app says a browser is open, not what
-    # is in it, and "shopping and general search" in the foreground is not
-    # work. Chrome already has a better signal than app-level focus could ever
-    # be -- its history is classified by domain, so GitHub reading arrives via
-    # github_visits_for() and other work sites via chrome-work-blocks.py.
-    # Crediting the app on top of that both bypasses the classification and
-    # double-counts the visits that survive it.
-    #
-    # This used to cost the whole of today: the classified streams came only
-    # from the activity export, written that night, so a morning of code review
-    # was invisible until tomorrow. github_live_rows() closes that for GitHub by
-    # reading this Mac's own Chrome history directly, about a minute behind the
-    # browser. Other work domains still arrive a day late through the export.
-    "com.google.Chrome",
-    # The lock screen and the screensaver are the machine with nobody at it.
-    # They need saying explicitly: a locked Mac reports a real frontmost app,
-    # not an empty one, and typing a password resets the idle clock to zero --
-    # so unlocking looks exactly like attended work unless it is named here.
-    "com.apple.loginwindow",
-    "com.apple.ScreenSaverEngine",
-    # A notification alert takes the foreground for a moment without anybody
-    # working in it. Same class as the lock screen: real frontmost app, real
-    # zero idle, no work.
-    "com.apple.UserNotificationCenter",
-    # Changing a display setting or a keyboard shortcut is housekeeping on the
-    # machine, not the job the machine is for. Unlike the lock screen there is
-    # somebody at the keyboard, so nothing else here would ever rule it out --
-    # and because a period is labelled by the app that held most of it, a few
-    # minutes in here was enough to name a whole period "System Settings".
-    "com.apple.systempreferences",
-    # Settings panes that open as their own app rather than inside System
-    # Settings, so the exclusion above does not reach them. Adding a printer is
-    # the same housekeeping as changing a display setting, but it arrives under
-    # its own bundle id and its own name -- which is how a single sample of it
-    # ended up in the activity list as an event called "Add Printer".
-    "com.apple.print.add",
+# This used to be an exclude list, on the theory that nearly everything in the
+# foreground of a work machine is the job. That is true of the apps a person
+# opens and false of the machine they run on: macOS puts things in front that
+# nobody chose to open -- a notification alert, the lock screen, the printer
+# dialog that named a minute of the day "Add Printer". Each of those was a
+# separate discovery made after it had already inflated a day, because an
+# exclude list can only be right about the apps somebody thought to name, and
+# the ones that need naming are exactly the ones nobody predicted.
+#
+# The cost of inverting it is real and is accepted: a new tool joining the
+# rotation earns nothing until it is added below, and that looks like an
+# ordinary quiet afternoon rather than like a bug. It is the better failure --
+# bounded, and wrong in the direction of undercounting, where the exclude
+# list's failure invented work that never happened.
+#
+# Two large absences, both deliberate, both for reasons older than this list:
+#
+# Chrome, for the same reason github_rows_for() refuses to count every visit:
+# the front app says a browser is open, not what is in it, and "shopping and
+# general search" in the foreground is not work. Chrome already has a better
+# signal than app-level focus could ever be -- its history is classified by
+# domain, so GitHub reading arrives through github_visits_for() and other work
+# sites through chrome-work-blocks.py. Crediting the app on top of that would
+# both bypass the classification and double-count the visits that survive it.
+#
+# The terminal, because it is ambiguous rather than because it is leisure. The
+# same Ghostty window is the front app whether the work is on this Mac or on
+# the Linux desktop, so its foreground time cannot tell the two apart, and the
+# probe treats desktop work as absence from Rubrik work rather than as
+# presence. Counting it would quietly re-add the very hours the desktop-prompt
+# subtraction exists to remove. Little is lost: real terminal work here is
+# Claude Code, and prompts already say so precisely.
+FOCUS_INCLUDE = {
+    "com.tinyspeck.slackmacgap",  # Slack
+    "us.zoom.xos",                # Zoom
+    "dev.zed.Zed",                # Zed
+    "md.obsidian",                # Obsidian
+    "com.granola.app",            # Granola
 }
 
 
@@ -950,7 +934,7 @@ def focus_for(day: str) -> list[datetime]:
         lo, hi = sec_of(a["t"]), sec_of(b["t"])
         if not (0 < hi - lo <= FOCUS_MAX_GAP_SEC):
             continue
-        if not a.get("bundle") or a["bundle"] in FOCUS_EXCLUDE:
+        if a.get("bundle") not in FOCUS_INCLUDE:
             continue
         if b.get("idle", 0) > FOCUS_IDLE_SEC:
             continue
@@ -976,7 +960,7 @@ def focus_app_by_minute(day: str) -> dict[int, str]:
         lo, hi = sec_of(a["t"]), sec_of(b["t"])
         if not (0 < hi - lo <= FOCUS_MAX_GAP_SEC):
             continue
-        if not a.get("bundle") or a["bundle"] in FOCUS_EXCLUDE:
+        if a.get("bundle") not in FOCUS_INCLUDE:
             continue
         if b.get("idle", 0) > FOCUS_IDLE_SEC:
             continue
@@ -1004,7 +988,7 @@ def focus_apps(day: str, lo: int, hi: int) -> list[str]:
         alo, ahi = sec_of(a["t"]), sec_of(b["t"])
         if not (0 < ahi - alo <= FOCUS_MAX_GAP_SEC):
             continue
-        if not a.get("bundle") or a["bundle"] in FOCUS_EXCLUDE:
+        if a.get("bundle") not in FOCUS_INCLUDE:
             continue
         if b.get("idle", 0) > FOCUS_IDLE_SEC:
             continue

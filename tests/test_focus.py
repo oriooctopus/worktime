@@ -78,14 +78,35 @@ class TestCredit(FocusCase):
         self.write(self.samples(9 * 3600, 1))
         self.assertEqual(self.minutes(), [])
 
-    def test_excluded_app_earns_nothing(self):
+    def test_every_named_app_earns_its_time(self):
+        # The allow list is the whole of what focus can ever credit, so each
+        # entry is asserted rather than only the one Slack case above. An app
+        # silently dropped from the set fails here instead of showing up as a
+        # thin day nobody can explain.
+        for bundle in sorted(wp.FOCUS_INCLUDE):
+            with self.subTest(bundle=bundle):
+                self.setUp()
+                self.write(self.samples(9 * 3600, 11, bundle=bundle))
+                self.assertEqual(self.minutes(), list(range(540, 545)))
+                self.tearDown()
+
+    def test_leisure_earns_nothing(self):
         self.write(self.samples(9 * 3600, 11, bundle="com.netflix.Netflix",
                                 app="Netflix"))
         self.assertEqual(self.minutes(), [])
 
+    def test_an_unnamed_work_app_earns_nothing(self):
+        # The accepted cost of the allow list, pinned so it stays a decision
+        # rather than a surprise: a plausible work tool that nobody has added
+        # earns nothing at all. It errs low, which is the direction chosen --
+        # the fix is to name it, and this test is where that is documented.
+        self.write(self.samples(9 * 3600, 11, bundle="com.figma.Desktop",
+                                app="Figma"))
+        self.assertEqual(self.minutes(), [])
+
     def test_the_terminal_earns_nothing(self):
-        # Excluded for a different reason than the rest of the list: not
-        # leisure, but ambiguity. The same terminal is frontmost for work on
+        # Left out for a different reason than leisure is: ambiguity. The same
+        # terminal is frontmost for work on
         # this machine and for work on the Linux desktop, and desktop work is
         # counted as absence elsewhere in the probe -- so crediting it here
         # would re-add exactly the hours that subtraction removes.
@@ -219,8 +240,8 @@ class TestTruncation(FocusCase):
 
 class TestApps(FocusCase):
     def test_apps_are_ranked_by_time_held(self):
-        self.write(self.samples(9 * 3600, 3, bundle="com.apple.Safari",
-                                app="Safari"))
+        self.write(self.samples(9 * 3600, 3, bundle="dev.zed.Zed",
+                                app="Zed"))
         self.write(self.samples(9 * 3600 + 90, 7))
         self.assertEqual(wp.focus_apps(DAY, 9 * 3600, 9 * 3600 + 600)[0],
                          "Slack")
@@ -236,10 +257,10 @@ class TestAppByMinute(FocusCase):
         self.assertEqual(sorted(wp.focus_app_by_minute(DAY)), self.minutes())
 
     def test_a_minute_goes_to_whichever_app_held_most_of_it(self):
-        # Safari holds 09:00:00-09:00:20, Slack holds 09:00:20-09:01:00.
+        # Zed holds 09:00:00-09:00:20, Slack holds 09:00:20-09:01:00.
         self.write([
-            {"day": DAY, "t": "09:00:00", "app": "Safari",
-             "bundle": "com.apple.Safari", "idle": 0},
+            {"day": DAY, "t": "09:00:00", "app": "Zed",
+             "bundle": "dev.zed.Zed", "idle": 0},
             {"day": DAY, "t": "09:00:20", "app": "Slack", "bundle": SLACK,
              "idle": 0},
             {"day": DAY, "t": "09:01:00", "app": "Slack", "bundle": SLACK,
@@ -253,20 +274,20 @@ class TestAppByMinute(FocusCase):
         # 09:00 more seconds than the window spent there, and would let a
         # brief app win a minute it barely touched.
         self.write([
-            {"day": DAY, "t": "09:00:00", "app": "Safari",
-             "bundle": "com.apple.Safari", "idle": 0},
+            {"day": DAY, "t": "09:00:00", "app": "Zed",
+             "bundle": "dev.zed.Zed", "idle": 0},
             {"day": DAY, "t": "09:00:50", "app": "Slack", "bundle": SLACK,
              "idle": 0},
             {"day": DAY, "t": "09:01:20", "app": "Slack", "bundle": SLACK,
              "idle": 0},
         ])
         by_min = wp.focus_app_by_minute(DAY)
-        self.assertEqual(by_min[540], "Safari")   # 50s Safari vs 10s Slack
+        self.assertEqual(by_min[540], "Zed")   # 50s Zed vs 10s Slack
         self.assertEqual(by_min[541], "Slack")
 
     def test_agrees_with_focus_apps_over_the_same_minute(self):
-        self.write(self.samples(9 * 3600, 3, bundle="com.apple.Safari",
-                                app="Safari"))
+        self.write(self.samples(9 * 3600, 3, bundle="dev.zed.Zed",
+                                app="Zed"))
         self.write(self.samples(9 * 3600 + 60, 3))
         for minute, app in wp.focus_app_by_minute(DAY).items():
             ranked = wp.focus_apps(DAY, minute * 60, minute * 60 + 60)
