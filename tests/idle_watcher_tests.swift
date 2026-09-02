@@ -1,10 +1,17 @@
-// Drive a real IdleWatcher: take it past the threshold, press the button on
-// the panel it raises, and read the claim it wrote.
+// Drive a real IdleWatcher past the threshold and check what it does with an
+// absence now that the prompt is off: notice it once, write nothing, and put
+// nothing on screen.
 //
-// In-process for the same reason the countdown suite is: the button is the
-// only way to say "I was here", and a button that silently does nothing looks
-// exactly like no button at all. Idle is injected rather than read from the
-// system, because a test cannot make the machine go untouched for two minutes.
+// Nothing here raises a panel, deliberately. The previous version of this file
+// did -- it pressed the real button, which meant a real window appeared on
+// whatever the machine was doing every time the suite ran, including in the
+// middle of somebody's work. With IDLE_PROMPT_VISIBLE off that panel is not
+// what ships, so testing it was buying an interruption for coverage of a path
+// no user reaches. If the prompt is ever turned back on, the panel tests come
+// back with it -- and behind a switch that keeps them off a shared machine.
+//
+// Idle is injected rather than read from the system, because a test cannot
+// make the machine go untouched for two minutes.
 import AppKit
 
 @main
@@ -14,10 +21,6 @@ enum IdleWatcherTests {
     static func check(_ ok: Bool, _ what: String) {
         print(ok ? "ok   \(what)" : "FAIL \(what)")
         if !ok { failures += 1 }
-    }
-
-    static func spin(_ seconds: Double) {
-        RunLoop.main.run(until: Date().addingTimeInterval(seconds))
     }
 
     static func claims(_ path: String) -> [[String: Any]] {
@@ -35,58 +38,41 @@ enum IdleWatcherTests {
         try? FileManager.default.createDirectory(atPath: dir,
                                                  withIntermediateDirectories: true)
 
-        // Below the threshold nobody is asked anything. The machine being
+        // What ships: the prompt is off, so however long the machine is left
+        // alone, nothing is put in front of whoever comes back to it.
+        check(!IDLE_PROMPT_VISIBLE, "the idle prompt ships off")
+
+        let path = dir + "/shipped.jsonl"
+        let w = IdleWatcher(claimsPath: path)
+
+        // Below the threshold nothing happens at all. The machine being
         // briefly quiet is the normal state of reading a line of code.
-        let quiet = IdleWatcher(claimsPath: dir + "/quiet.jsonl")
-        quiet.tick(idle: IDLE_PROMPT_SEC - 1)
-        check(quiet.prompt == nil, "a short quiet stretch raises no panel")
+        w.tick(idle: IDLE_PROMPT_SEC - 1)
+        check(w.noticed == 0, "a short quiet stretch is not an absence")
+        check(w.prompt == nil, "a short quiet stretch raises no panel")
 
-        // Past it, the panel comes up and names when the silence started.
-        let path = dir + "/asked.jsonl"
-        let asked = IdleWatcher(claimsPath: path)
-        asked.tick(idle: 200)
-        check(asked.prompt != nil, "an absence past the threshold asks")
-        check(asked.prompt?.messageText == "Not counting this time — \(IDLE_CLAIM_SEC)s",
-              "the panel opens at the full window, got \(asked.prompt?.messageText ?? "nil")")
+        // Past it the absence is noticed -- that half is kept on purpose, it
+        // is the record the timeline row is built from -- but still silent.
+        w.tick(idle: 200)
+        check(w.noticed == 1, "an absence past the threshold is noticed")
+        check(w.prompt == nil, "an absence past the threshold raises no panel")
 
-        // One question per absence: still away 5s later, still the same
-        // silence, so it must not ask again.
-        let before = asked.prompt
-        asked.tick(idle: 205)
-        check(asked.prompt === before, "a continuing absence is not asked twice")
+        // One notice per absence: still away 5s later, still the same silence.
+        w.tick(idle: 205)
+        check(w.noticed == 1, "a continuing absence is not noticed twice")
 
-        // Pressing the button claims it, and the claim covers the silence AND
-        // the grace window after it -- otherwise the same reading session
-        // would be asked about again two minutes later.
-        asked.prompt?.keep.performClick(nil)
-        let rows = claims(path)
-        check(rows.count == 1, "the button writes exactly one claim (got \(rows.count))")
-        if let r = rows.first {
-            let from = r["from"] as? Int ?? -1
-            let until = r["until"] as? Int ?? -1
-            check(until - from >= IDLE_GRACE_SEC,
-                  "the claim covers the silence and the grace window (\(until - from)s)")
-        }
-        check(asked.prompt == nil, "the panel goes away once answered")
+        // Back at the machine, then away again: a second, different absence is
+        // its own.
+        w.tick(idle: 1)
+        w.tick(idle: 200)
+        check(w.noticed == 2, "a later absence is noticed again")
 
-        // Nobody answering writes nothing at all: exclusion is the default, so
-        // silence needs no record. A file appearing here would mean the two
-        // halves were both trying to describe the same absence.
-        let ignoredPath = dir + "/ignored.jsonl"
-        let ignored = IdleWatcher(claimsPath: ignoredPath)
-        ignored.tick(idle: 200)
-        check(ignored.prompt != nil, "the unanswered case still asks")
-        spin(Double(IDLE_CLAIM_SEC) + 1.5)
-        check(ignored.prompt == nil, "the panel withdraws when the window runs out")
-        check(claims(ignoredPath).isEmpty,
-              "an unanswered absence records nothing (got \(claims(ignoredPath).count))")
-
-        // Back at the machine, then away again: a second, different absence
-        // does get its own question.
-        ignored.tick(idle: 1)
-        ignored.tick(idle: 200)
-        check(ignored.prompt != nil, "a later absence is asked about again")
-        ignored.prompt?.close()
+        // Nothing is recorded. A claim only exists to protect time from being
+        // cut, and with the probe's IDLE_SUBTRACTS off there is no cut to
+        // protect anything from -- a file here would be a record of an answer
+        // to a question nobody was asked.
+        check(claims(path).isEmpty,
+              "an absence records nothing (got \(claims(path).count))")
 
         try? FileManager.default.removeItem(atPath: dir)
         print(failures == 0 ? "all idle watcher checks passed"

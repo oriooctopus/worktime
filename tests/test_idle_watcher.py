@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Compile and run the Swift IdleWatcher tests as part of the pytest suite.
 
-The button on the idle panel is the only way to say "I was here" about a
-stretch that is otherwise about to be taken off the day's total, so it gets an
-actual press rather than a reading of the code that wires it up. The other half
-of the feature -- what the probe does with the claim -- is covered by
+The watcher is what decides whether an absence interrupts anybody, so it is
+run rather than read. It no longer opens a window while doing it: the suite
+used to press the real button on a real panel, which meant running the tests
+put a countdown on screen over whatever the machine was doing. The other half
+of the feature -- what the probe does with an absence -- is covered by
 IdleExclusion in test_worktime_model.py.
 
 Run: pytest tests/test_idle_watcher.py
@@ -37,9 +38,9 @@ class IdleWatcherSuite(unittest.TestCase):
                                capture_output=True, text=True)
         self.assertEqual(build.returncode, 0,
                          f"idle watcher tests did not compile:\n{build.stderr}")
-        # The watcher opens a real panel, so this needs a window server. AppKit
-        # aborts without one, which would read as a broken button; skip rather
-        # than report a lie.
+        # The watcher still builds an NSApplication, so this needs a window
+        # server even though it now shows nothing. AppKit aborts without one,
+        # which would read as a broken watcher; skip rather than report a lie.
         run = subprocess.run([binary], capture_output=True, text=True, timeout=120)
         if run.returncode != 0 and "NSWindow" in run.stderr:
             self.skipTest("no window server in this session")

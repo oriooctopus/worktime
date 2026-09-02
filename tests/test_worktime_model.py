@@ -385,19 +385,24 @@ class IdleExclusion(unittest.TestCase):
                     "idle": idle}) + "\n")
         return d
 
-    def _with(self, samples, claims=(), fn=None):
+    def _with(self, samples, claims=(), fn=None, subtracts=True):
+        """`subtracts` forces IDLE_SUBTRACTS, so the tests of the RULE keep
+        testing the rule whichever way the shipped switch is set. What the
+        switch itself does is tested separately, against the real constant.
+        """
         d = self._focus(samples)
         claim_path = os.path.join(tempfile.mkdtemp(), "idle-claims.jsonl")
         with open(claim_path, "w") as fh:
             for lo, hi in claims:
                 fh.write(json.dumps({"day": self.DAY, "from": lo,
                                      "until": hi}) + "\n")
-        old = (wp.FOCUS_DIR, wp.IDLE_CLAIMS)
+        old = (wp.FOCUS_DIR, wp.IDLE_CLAIMS, wp.IDLE_SUBTRACTS)
         try:
             wp.FOCUS_DIR, wp.IDLE_CLAIMS = d, claim_path
+            wp.IDLE_SUBTRACTS = subtracts
             return fn()
         finally:
-            wp.FOCUS_DIR, wp.IDLE_CLAIMS = old
+            wp.FOCUS_DIR, wp.IDLE_CLAIMS, wp.IDLE_SUBTRACTS = old
 
     # --- recovering the stretch from the samples ---
 
@@ -447,9 +452,7 @@ class IdleExclusion(unittest.TestCase):
         merged = wp.merge_spans(wp.build_bouts(stamps, set(), tl), tl)
         kept = self._with(
             [(10, 4, 0, 210)], claims=[(HH(10, 0), HH(10, 24))],
-            fn=lambda: wp.subtract_spans(
-                merged, wp.subtract_spans(wp.idle_stretches(self.DAY),
-                                          wp.idle_claims_for(self.DAY))))
+            fn=lambda: wp.subtract_spans(merged, wp.idle_cut(self.DAY, [])))
         self.assertEqual(kept, merged)
 
     def test_the_grace_window_covers_a_later_silence_too(self):
@@ -458,9 +461,30 @@ class IdleExclusion(unittest.TestCase):
         claims = [(HH(10, 0), HH(10, 0) + wp.IDLE_GRACE_SEC)]
         left = self._with(
             [(10, 4, 0, 210), (10, 18, 0, 300)], claims=claims,
-            fn=lambda: wp.subtract_spans(wp.idle_stretches(self.DAY),
-                                         wp.idle_claims_for(self.DAY)))
+            fn=lambda: wp.idle_cut(self.DAY, []))
         self.assertEqual(left, [])
+
+    # --- what the switch does ---
+
+    def test_the_cut_is_off_and_costs_the_day_nothing(self):
+        # HID idle sees keys and mouse only, so reading, a call and an empty
+        # room are one reading to it; the cut removed worked minutes more
+        # often than absent ones and is switched off until it can tell them
+        # apart. An untouched stretch that would have been cut now isn't.
+        self.assertFalse(wp.IDLE_SUBTRACTS,
+                         "flipping this back on needs a rule that can tell "
+                         "reading from an empty room -- see README")
+        cut = self._with([(10, 4, 0, 210)], subtracts=wp.IDLE_SUBTRACTS,
+                         fn=lambda: wp.idle_cut(self.DAY, []))
+        self.assertEqual(cut, [])
+
+    def test_the_absence_is_still_measured_while_the_cut_is_off(self):
+        # The point of leaving the prompt up: the stretches keep being found
+        # and reported, so there is evidence to design a better rule from.
+        # Same sample, one switch apart.
+        seen = self._with([(10, 5, 0, 300)], subtracts=wp.IDLE_SUBTRACTS,
+                          fn=lambda: wp.idle_stretches(self.DAY))
+        self.assertEqual(seen, [[HH(10, 0), HH(10, 5)]])
 
     # --- which ones are worth showing ---
 

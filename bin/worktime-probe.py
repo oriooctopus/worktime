@@ -1021,6 +1021,16 @@ IDLE_CLAIMS = os.path.join(STATE, "idle-claims.jsonl")
 # later; the cost of the window is that a claim made on the way out banks it.
 IDLE_GRACE_SEC = 20 * 60
 
+# Whether an unclaimed absence is actually taken out of the day. Off: the
+# reading is too coarse to spend real minutes on -- HID idle counts only key
+# and mouse events, so reading, watching a build, being on a call and thinking
+# all look identical to walking out of the room, and the day lost time that
+# was worked. Everything that MEASURES the absence still runs: idle_stretches()
+# and bridged_idle() still report it, the bar still asks, and a claim is still
+# recorded. Only the arithmetic ignores it, so the evidence needed to build a
+# better rule keeps accumulating while a bad rule stops costing anything.
+IDLE_SUBTRACTS = False
+
 
 def idle_stretches(day: str) -> list[list[int]]:
     """Stretches the machine went untouched, as [start, end] seconds of day.
@@ -1075,6 +1085,24 @@ def idle_claims_for(day: str) -> list[list[int]]:
         if r.get("day") == day:
             out.append([r["from"], r["until"]])
     return sorted(out)
+
+
+def idle_cut(day: str, protected: list[list[int]]) -> list[list[int]]:
+    """What the day loses to absence: every untouched stretch, less the ones
+    already spoken for.
+
+    A claim is protected exactly like a mark, because it is one: the same
+    declaration that this silence was work, made in answer to a question
+    rather than unprompted.
+
+    Empty while IDLE_SUBTRACTS is off, which is the switch's whole effect --
+    kept as one function rather than an `if` at the call site so the
+    off-behaviour is something a test can run rather than something it has to
+    read the caller to know about.
+    """
+    if not IDLE_SUBTRACTS:
+        return []
+    return subtract_spans(idle_stretches(day), protected + idle_claims_for(day))
 
 
 def bridged_idle(day: str, timeline: list[tuple[int, str]]) -> list[list[int]]:
@@ -1447,16 +1475,19 @@ def activity_rows(day: str) -> list[dict]:
             "t": when.strftime("%H:%M"), "kind": "browsing",
             "what": one_line(detail)}))
 
-    # Time that was taken away, listed alongside the time that was added. It
-    # earns a row because it changed the day's arithmetic: the minutes either
-    # side are credited and these are not, and without a row saying so the
-    # total silently disagrees with the period it sits inside. Shown at the
-    # moment the machine went quiet, which is when the thing being reported
-    # started, and only once it is over -- see bridged_idle.
+    # Every stretch the machine went untouched, listed alongside the events.
+    # With IDLE_SUBTRACTS off these no longer change the day's arithmetic, so
+    # the row is now an observation rather than an explanation of a missing
+    # total -- which is exactly what makes it worth keeping: it is the record
+    # of what the rule WOULD have cut, and the only way to tell whether the
+    # threshold is anywhere near right before turning it back on. Shown at the
+    # moment the machine went quiet, and only once it is over -- see
+    # bridged_idle.
     for lo, hi in bridged_idle(day, mode_timeline(day)):
+        fate = ", not counted" if IDLE_SUBTRACTS else " (still counted)"
         rows.append((f"{lo // 3600:02d}:{lo // 60 % 60:02d}:{lo % 60:02d}", {
             "t": f"{lo // 3600:02d}:{lo // 60 % 60:02d}", "kind": "idle",
-            "what": f"away {round((hi - lo) / 60)}m, not counted"}))
+            "what": f"away {round((hi - lo) / 60)}m{fate}"}))
 
     spoken = {k[:5] for k, _ in rows}
     by_minute = focus_app_by_minute(day)
@@ -2191,12 +2222,11 @@ def write_vault_snapshot(day: str, events: list[datetime]) -> None:
     # is built from its first and last event, and nothing in between was ever
     # asked whether somebody was there for it.
     #
-    # A claim is protected exactly like a mark, because it is one: the same
-    # declaration that this silence was work, made in answer to a question
-    # rather than unprompted.
-    merged = subtract_spans(
-        merged,
-        subtract_spans(idle_stretches(day), protected + idle_claims_for(day)))
+    # Held behind IDLE_SUBTRACTS, currently off, so idle_cut returns nothing:
+    # the cut was wrong far more often than it was right, and a wrong cut
+    # removes minutes that were genuinely worked. The absence is still measured
+    # and still shown on the timeline -- it just no longer changes the total.
+    merged = subtract_spans(merged, idle_cut(day, protected))
 
     # Back to minutes for publication. Rounding the boundaries rather than the
     # durations keeps work and gaps tiling exactly: every gap still starts where
