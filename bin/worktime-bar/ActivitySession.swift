@@ -27,6 +27,21 @@ struct ActSession {
     var current = false
     var n = 0
     var kinds: [(String, Int)] = []
+    // The session's own events, oldest-last like the raw list, capped by the
+    // probe. `n` above counts every event the session held; these are as many
+    // of them as a tooltip can show, and what the two disagree by is what the
+    // hover says it left out.
+    var rows: [SessionRow] = []
+}
+
+// One event inside a session. The same shape as the raw list's rows and for
+// the same reason -- the hover is the raw list, scoped to one session, so it
+// carries the same four fields and shows them the same way round.
+struct SessionRow {
+    var t = ""
+    var kind = ""
+    var what = ""
+    var n = 1
 }
 
 func human(_ m: Int) -> String {
@@ -69,4 +84,42 @@ func sessionStrings(_ s: ActSession) -> (top: String, what: String) {
         what = String(what.prefix(SESSION_WHAT_CHARS - 1)) + "…"
     }
     return (top, what)
+}
+
+// Wider than a menu row, because a tooltip is drawn over the menu rather than
+// inside it and has the screen to work with -- but still capped, since a
+// pasted stack trace as a prompt would otherwise set the width of every line.
+let SESSION_TIP_CHARS = 72
+
+// What hovering a session row shows: the events it collapsed, in the order and
+// the shape the raw list shows them.
+//
+// The grouped view answers "what was this stretch" by summing its rows away,
+// which is the point of it and also the one thing it costs -- the evidence the
+// dot's verdict rests on stops being readable the moment it is grouped.
+// Toggling back to the raw list is not that answer either: it shows the newest
+// ten events of the whole day, not this session's. The hover is the only place
+// a single session's rows can be read, which is why it exists.
+//
+// Clock times here, not ages: the row above already places the session in the
+// day, so what these are being read against is each other and the range in the
+// header line.
+func sessionTip(_ s: ActSession) -> String {
+    var lines = [sessionStrings(s).top]
+    for r in s.rows {
+        var what = r.what
+        if what.count > SESSION_TIP_CHARS {
+            what = String(what.prefix(SESSION_TIP_CHARS - 1)) + "…"
+        }
+        // Same "×N" as the raw list, and absent for the ordinary single event
+        // for the same reason: a "×1" on every other line is noise standing in
+        // for the normal case.
+        lines.append("\(r.t)  \(r.kind) · \(what)" + (r.n > 1 ? "  ×\(r.n)" : ""))
+    }
+    // The cap the probe applied, said out loud. A tooltip that silently showed
+    // twelve of a hundred events would be a smaller day than the count on the
+    // row right above it, which is the one number it is being read against.
+    let shown = s.rows.reduce(0) { $0 + $1.n }
+    if s.n > shown { lines.append("… and \(s.n - shown) more") }
+    return lines.joined(separator: "\n")
 }

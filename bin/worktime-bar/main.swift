@@ -603,6 +603,11 @@ final class SessionRowView: NSView {
     init(_ s: ActSession, width: CGFloat) {
         super.init(frame: NSRect(x: 0, y: 0, width: width, height: 34))
         let (top, what) = sessionStrings(s)
+        // The rows this session collapsed. Grouping is what makes the day
+        // readable and it is also what puts the evidence out of reach; hovering
+        // is where it comes back, the same way the raw row's tooltip is where
+        // its exact minute stays reachable behind a rounded age.
+        toolTip = sessionTip(s)
 
         let topField = NSTextField(labelWithString: top)
         topField.font = NSFont.systemFont(ofSize: 12,
@@ -959,9 +964,13 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate {
                    + zip(status.activities, ages).map { a, age in
                        "\(age)\u{1}\(a.kind)\u{1}\(a.what)\u{1}\(a.n)"
                    }
+                   // The hover text too, not just the two visible lines: a
+                   // session whose rows changed without its tally changing --
+                   // a prompt collapsed differently, say -- draws the same row
+                   // over a tooltip that is now stale, and the tooltip is the
+                   // only place those rows can be read at all.
                    + status.sessions.map { s in
-                       let x = sessionStrings(s)
-                       return x.top + "\u{1}" + x.what
+                       sessionTip(s) + "\u{1}" + sessionStrings(s).what
                    }
                   ).joined(separator: "\u{2}")
         if key == lastMenuKey { return }
@@ -1161,6 +1170,12 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                guard let k = $0.first as? String,
                                      let n = $0.last as? Int else { return nil }
                                return (k, n)
+                           },
+                           rows: (g["rows"] as? [[String: Any]] ?? []).map { r in
+                               SessionRow(t: r["t"] as? String ?? "",
+                                          kind: r["kind"] as? String ?? "",
+                                          what: r["what"] as? String ?? "",
+                                          n: r["n"] as? Int ?? 1)
                            })
             }
             DispatchQueue.main.async { self.apply(s) }
