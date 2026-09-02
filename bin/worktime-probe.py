@@ -895,6 +895,12 @@ FOCUS_EXCLUDE = {
     # and because a period is labelled by the app that held most of it, a few
     # minutes in here was enough to name a whole period "System Settings".
     "com.apple.systempreferences",
+    # Settings panes that open as their own app rather than inside System
+    # Settings, so the exclusion above does not reach them. Adding a printer is
+    # the same housekeeping as changing a display setting, but it arrives under
+    # its own bundle id and its own name -- which is how a single sample of it
+    # ended up in the activity list as an event called "Add Printer".
+    "com.apple.print.add",
 }
 
 

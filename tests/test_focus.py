@@ -129,6 +129,15 @@ class TestCredit(FocusCase):
                                 app="System Settings"))
         self.assertEqual(self.minutes(), [])
 
+    def test_a_settings_pane_with_its_own_bundle_earns_nothing(self):
+        # Adding a printer is the same housekeeping as any other System
+        # Settings pane, but it opens as its own app, so excluding System
+        # Settings does not reach it. One sample of it was enough to publish an
+        # activity row called "Add Printer".
+        self.write(self.samples(9 * 3600, 11, bundle="com.apple.print.add",
+                                app="Add Printer"))
+        self.assertEqual(self.minutes(), [])
+
 
 class TestIdle(FocusCase):
     def test_idle_beyond_the_threshold_stops_credit(self):
