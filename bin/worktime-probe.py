@@ -1373,8 +1373,8 @@ def one_line(text: str, unescape: bool = False) -> str:
     return t[:ACTIVITY_TEXT_CHARS]
 
 
-def recent_activities(day: str, limit: int = ACTIVITY_LIST_N) -> list[dict]:
-    """The most recent work events, newest first, each with what it was.
+def activity_rows(day: str) -> list[dict]:
+    """The day's work events, newest first, each with what it was.
 
     The same streams events_for() merges, deliberately: this is meant to be the
     readable form of exactly what the dot's verdict was derived from, so a
@@ -1477,18 +1477,22 @@ def recent_activities(day: str, limit: int = ACTIVITY_LIST_N) -> list[dict]:
     # one page. Only an adjacent run merges, so returning to that PR an hour
     # later is still its own row rather than being folded into the earlier one.
     #
-    # Collapsed before the limit is applied, so ten rows are ten distinct
-    # activities rather than ten samples of however few. The whole day is
-    # collapsed rather than stopping at the tenth row: cutting the walk short
+    # Collapsed before the limit the caller applies, so ten rows are ten
+    # distinct activities rather than ten samples of however few. The whole day
+    # is collapsed rather than stopping at the tenth row: cutting the walk short
     # there would leave that last row's own duplicates uncounted, so it alone
     # would report a smaller number than it should.
+    #
+    # The whole day is returned, uncapped. The menu's raw list takes the top
+    # ten; the sessions view groups all of them, and a grouped view built from
+    # only the newest ten would report counts for its oldest session that were
+    # a slice of the list rather than what the session contained.
     out: list[dict] = []
     for _, a in rows:
         if out and out[-1]["kind"] == a["kind"] and out[-1]["what"] == a["what"]:
             out[-1]["n"] += 1
             continue
         out.append(dict(a, n=1))
-    out = out[:limit]
 
     # An absolute instant alongside the clock time, because the widget shows
     # these as ages ("4m", "2h") and an age has to be recomputed against the
@@ -1498,6 +1502,85 @@ def recent_activities(day: str, limit: int = ACTIVITY_LIST_N) -> list[dict]:
     for a in out:
         a["at"] = datetime.strptime(f"{day} {a['t']}", "%Y-%m-%d %H:%M").timestamp()
     return out
+
+
+# How many sessions the grouped view lists. Fewer than the raw list because a
+# session is a whole stretch of the day rather than one event, so eight of them
+# already reaches back further than ten raw rows ever do.
+SESSION_LIST_N = 8
+
+
+def group_sessions(rows: list[dict], worked: list[dict],
+                   limit: int = SESSION_LIST_N) -> list[dict]:
+    """The same rows, divided into the day's work periods. Newest first.
+
+    Deliberately grouped by the periods the snapshot already recorded rather
+    than by re-deriving boundaries from gaps between these rows. A second rule
+    would divide the same day a second way, and the two divisions would sit
+    three rows apart in one menu disagreeing about when the morning ended --
+    the exact failure the period list and the "since last activity" header were
+    folded together to stop. Here the sessions ARE the periods; what this adds
+    is what each one was made of.
+
+    Every row lands in exactly one session, including rows in minutes no period
+    covers -- an approval during a stretch that lapsed, say. Those group into
+    their own uncounted sessions instead of being dropped, because the raw list
+    shows them and a grouped view that quietly held fewer events than the list
+    it toggles with would be the second opinion this is trying not to be.
+    """
+    def minute(r: dict) -> int:
+        return int(r["t"][:2]) * 60 + int(r["t"][3:5])
+
+    def period_of(m: int) -> int | None:
+        for i, w in enumerate(worked):
+            if w["start"] <= m <= w["end"]:
+                return i
+        return None
+
+    out: list[dict] = []
+    for r in rows:
+        m = minute(r)
+        idx = period_of(m)
+        # Rows inside a period always join it. Uncounted rows have no period to
+        # belong to, so they run together only while they stay within the same
+        # silence that ends a period -- otherwise two stray approvals hours
+        # apart would print as one session spanning the afternoon between them.
+        if out and out[-1]["_idx"] == idx and (idx is not None
+                                               or out[-1]["start"] - m <= GAP_AFTER):
+            s = out[-1]
+        else:
+            w = worked[idx] if idx is not None else None
+            s = {"_idx": idx,
+                 "start": w["start"] if w else m,
+                 "end": w["end"] if w else m,
+                 # An uncounted run has no length to report: its minutes are
+                 # precisely the ones the day total left out, and printing a
+                 # span here would read as time credited.
+                 "len": w["len"] if w else 0,
+                 "what": (w.get("what") or "") if w else "",
+                 "counted": w is not None,
+                 "current": idx is not None and idx == len(worked) - 1,
+                 "n": 0, "kinds": []}
+            out.append(s)
+        # Rows arrive newest first, so the oldest one seen for an uncounted run
+        # is the one that sets its start.
+        if not s["counted"]:
+            s["start"] = m
+        s["n"] += r["n"]
+        kinds = dict(s["kinds"])
+        kinds[r["kind"]] = kinds.get(r["kind"], 0) + r["n"]
+        # Biggest first: the breakdown is one line and the widget truncates it,
+        # so what falls off the end should be the smallest contributor.
+        s["kinds"] = sorted(kinds.items(), key=lambda kv: (-kv[1], kv[0]))
+
+    for s in out:
+        del s["_idx"]
+    return out[:limit]
+
+
+def recent_activities(day: str, limit: int = ACTIVITY_LIST_N) -> list[dict]:
+    """The newest events only -- what the menu's raw list shows."""
+    return activity_rows(day)[:limit]
 
 
 # Markdown, not JSON. Obsidian Sync ships .md between devices by default but
@@ -2711,7 +2794,7 @@ MIN_RECOMPUTE_SEC = 10
 # versioning is a .get() default on every read -- which would quietly serve an
 # empty activity list as though the day had none. A version mismatch is simply
 # a miss, handled by the path that already exists for a stale day.
-STATUS_CACHE_V = 4
+STATUS_CACHE_V = 5
 
 
 def activity_fingerprint(day: str) -> str:
@@ -2782,6 +2865,12 @@ def live_activity(day: str) -> tuple[datetime | None, list[int], list[dict]]:
     because it is a function of exactly the same inputs as `last`: it can only
     change when the fingerprint does, so caching it beside them means a poll
     during genuine silence still costs nothing but a walk of stat() calls.
+
+    What is cached is the whole day's rows, not the ten the menu lists. Both
+    views the menu can show are cut from them: the raw list is the top ten, and
+    the sessions are the same rows grouped -- grouped in status() rather than
+    here, because that grouping reads the snapshot and status() is where the
+    snapshot is brought up to date.
     """
     try:
         c = json.load(open(STATUS_CACHE))
@@ -2812,7 +2901,7 @@ def live_activity(day: str) -> tuple[datetime | None, list[int], list[dict]]:
     stamps = sorted([t.hour * 60 + t.minute for t in prompts_for(day)]
                     + [t.hour * 60 + t.minute for t in focus_for(day)])
     last = events[-1] if events else None
-    acts = recent_activities(day)
+    acts = activity_rows(day)
     # Per-pid, because this is now written by whichever process polls first and
     # there are several: the menu bar every 5s, the cron check, and any CLI run.
     # A shared fixed name meant two of them raced on the same path -- the first
@@ -2837,7 +2926,7 @@ def status() -> dict:
     now = now_local()
     day = now.strftime("%Y-%m-%d")
     now_m = now.hour * 60 + now.minute
-    last, stamps, activities = live_activity(day)
+    last, stamps, all_acts = live_activity(day)
     quiet_sec = (now - last).total_seconds() if last else None
     quiet = quiet_sec / 60 if quiet_sec is not None else None
 
@@ -2874,6 +2963,7 @@ def status() -> dict:
     # alone, and this remains read-only with respect to both.
     worked_minutes = 0
     periods = []
+    sessions = []
     focus_pct = None
     path = snapshot_path(day)
     if not os.path.exists(path) or json.load(open(path)).get("fp") != activity_fingerprint(day):
@@ -2898,6 +2988,10 @@ def status() -> dict:
                 "current": i == len(worked) - 1,
             })
         periods.reverse()
+        # Grouped here, off the snapshot that was just brought up to date --
+        # the whole point of the sessions view is that its divisions are the
+        # period list's divisions, so it has to read the same copy of them.
+        sessions = group_sessions(all_acts, worked)
 
     # Read from the same snapshot the menu bar's period list came from, not
     # recomputed here -- this is the on-disk record of the last completed
@@ -2919,7 +3013,10 @@ def status() -> dict:
             "periods": periods,
             # Newest first, same as `periods`. The periods say how the day was
             # divided up; this says what the divisions were made out of.
-            "activities": activities}
+            "activities": all_acts[:ACTIVITY_LIST_N],
+            # The same evidence, folded back into those divisions. The menu
+            # shows one or the other, never both at once.
+            "sessions": sessions}
 
 
 def backfill(days: int) -> None:
