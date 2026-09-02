@@ -38,6 +38,37 @@ of eight hops in two seconds is one interval rather than eight units of work.
 **`activity-export.py`** writes the daily activity table from WhatsApp,
 iMessage, calls, Chrome and Claude Code, with cached LLM period summaries.
 
+## The live dot reads the same evidence differently
+
+The day's arithmetic and the dot in the menu bar ask different questions of
+the same log, and conflating them is what put the dot on "quiet 1m" eighteen
+seconds after a message was typed into Slack.
+
+`focus_for()` answers "which minutes were attended". It credits whole minutes,
+and it credits the span BETWEEN two samples, so the newest sample is always
+uncredited until the next heartbeat closes it. Together that is up to ~90s of
+invented silence -- invisible against a five-minute cutoff, fatal against the
+one-minute unfocused one.
+
+`last_focus_input()` answers "when was somebody last here". A sample's `idle`
+is measured backwards from it, so a row at 09:05:00 reading 45 is the complete
+claim "somebody was at this machine at 09:04:15" -- a point in time, at second
+resolution, needing no neighbouring row. That is the same shape as a prompt,
+and the same arithmetic `idle_stretches()` uses to place the start of an
+absence.
+
+`last_slack_send()` is the same move applied to Slack. `search.messages` is
+cached for four minutes because a network round trip cannot sit on a
+five-second poll, so the desktop client's own console log carries the live
+verdict instead -- measured against a day of real sends it lands about a
+second BEFORE the API's timestamp. It sees strictly less than the API, and
+every omission is wanted: a send from the phone or from a script holding the
+same token leaves no line in this Mac's log.
+
+Both are folded into `status()` and nowhere else, the same way the devpod
+heartbeat is. They can only ever make the dot fresher -- never a period
+longer or a day's total larger.
+
 ## Why foreground time replaced Slack sends
 
 Sends were a bad proxy in the one direction that mattered. Reading half an hour

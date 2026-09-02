@@ -373,5 +373,112 @@ class TestReadsRealWriterFormat(FocusCase):
         self.assertEqual(self.minutes(), [540])
 
 
+class TestLastFocusInput(FocusCase):
+    """The live anchor: the newest moment somebody touched this Mac with a
+    work app in front.
+
+    Separate from focus_for() on purpose, and these assert the difference. The
+    day's arithmetic wants whole minutes bounded by a closing sample; the dot
+    wants the last instant a person was here, and reading the first as the
+    second is what put the dot on "quiet 1m" eighteen seconds after a message
+    was typed into Slack.
+    """
+
+    def at(self, day=DAY):
+        return wp.last_focus_input(day)
+
+    def test_a_single_sample_is_enough(self):
+        # The case focus_for() cannot serve: one row, no successor. It still
+        # carries a complete claim -- somebody touched this machine at 09:00:00
+        # with Slack in front -- and the live dot has nothing else to go on
+        # until the next heartbeat, thirty seconds away.
+        self.write(self.samples(9 * 3600, 1))
+        self.assertEqual(self.minutes(), [])
+        self.assertEqual(self.at().strftime("%H:%M:%S"), "09:00:00")
+
+    def test_keeps_seconds_where_focus_for_floors_to_the_minute(self):
+        # The screenshot case, reproduced from the log that produced it: the
+        # newest sample was 09:01:47 and focus_for()'s newest minute was
+        # 09:01:00. Measured at 09:02:05 that is 18s of quiet against 65s --
+        # either side of the one-minute unfocused cutoff.
+        self.write([
+            {"day": DAY, "t": "09:01:12", "app": "Slack", "bundle": SLACK,
+             "idle": 0},
+            {"day": DAY, "t": "09:01:47", "app": "Slack", "bundle": SLACK,
+             "idle": 0},
+        ])
+        self.assertEqual(wp.focus_for(DAY)[-1].strftime("%H:%M:%S"), "09:01:00")
+        self.assertEqual(self.at().strftime("%H:%M:%S"), "09:01:47")
+
+    def test_idle_is_subtracted_so_an_absence_cannot_hold_the_dot(self):
+        # A row reading 300 at 09:05:00 says the last input was 09:00:00, and
+        # that is what it must report. Taking the sample's own timestamp would
+        # let every heartbeat during an absence renew the dot indefinitely --
+        # the machine is never quiet while the app is running.
+        self.write([{"day": DAY, "t": "09:05:00", "app": "Slack",
+                     "bundle": SLACK, "idle": 300}])
+        self.assertEqual(self.at().strftime("%H:%M:%S"), "09:00:00")
+
+    def test_a_night_of_heartbeats_collapses_to_the_last_real_input(self):
+        # Rows keep being written every 30s with nobody there, idle climbing.
+        # All of them describe the same instant, so the answer is that instant
+        # and not the newest row.
+        self.write([{"day": DAY, "t": hms(9 * 3600 + i * 30), "app": "Slack",
+                     "bundle": SLACK, "idle": i * 30} for i in range(1, 40)])
+        self.assertEqual(self.at().strftime("%H:%M:%S"), "09:00:00")
+
+    def test_an_app_off_the_allow_list_never_anchors_the_dot(self):
+        # Ghostty is the front app whether the work is here or on the Linux
+        # desktop, so it cannot hold the dot green -- the same reason it earns
+        # no credit in focus_for().
+        self.write(self.samples(9 * 3600, 4, bundle="com.mitchellh.ghostty",
+                                app="Ghostty"))
+        self.assertIsNone(self.at())
+
+    def test_no_log_reports_nothing_rather_than_a_time(self):
+        self.assertIsNone(self.at())
+
+    def test_never_reaches_back_past_the_start_of_the_day(self):
+        # The machine was left on overnight, so the first sample's idle spans
+        # midnight. Yesterday's input is not this day's evidence.
+        self.write([{"day": DAY, "t": "00:02:00", "app": "Slack",
+                     "bundle": SLACK, "idle": 9000}])
+        self.assertEqual(self.at().strftime("%H:%M:%S"), "00:00:00")
+
+
+class TestFocusWindows(FocusCase):
+    """The pairing the three duration questions share.
+
+    Extracted because the same five lines were written out three times, and a
+    rule added to one copy and not the others produces a minute that is counted
+    but has no app against it.
+    """
+
+    def test_the_three_readers_agree_on_what_counts(self):
+        # A run that counts, then a hole longer than one sample may vouch for,
+        # then a run that counts. Every reader must see the same two windows.
+        self.write(self.samples(9 * 3600, 3)
+                   + self.samples(9 * 3600 + 600, 3))
+        windows = list(wp.focus_windows(DAY))
+        self.assertEqual([(lo, hi) for lo, hi, _ in windows],
+                         [(32400, 32430), (32430, 32460),
+                          (33000, 33030), (33030, 33060)])
+        # focus_apps() spans the same seconds, so the gap is absent from it too.
+        self.assertEqual(wp.focus_apps(DAY, 0, 86400), ["Slack"])
+
+    def test_the_window_is_named_by_the_app_that_held_it(self):
+        # The EARLIER row names the window; the later one only closes it.
+        # Reading the app off the closing row would label every stretch with
+        # whatever you switched to next.
+        self.write([
+            {"day": DAY, "t": "09:00:00", "app": "Slack", "bundle": SLACK,
+             "idle": 0},
+            {"day": DAY, "t": "09:00:30", "app": "Obsidian",
+             "bundle": "md.obsidian", "idle": 0},
+        ])
+        self.assertEqual([a["app"] for _, _, a in wp.focus_windows(DAY)],
+                         ["Slack"])
+
+
 if __name__ == "__main__":
     unittest.main()
