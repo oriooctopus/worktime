@@ -45,6 +45,22 @@ let BLINK_INTERVAL = 0.5
 let HOTKEY_CODE = UInt32(kVK_ANSI_S)
 let HOTKEY_MODS = UInt32(cmdKey | optionKey)
 
+// ⌥W logs an entry: one keypress saying this minute was worked, for work this
+// machine has no way to see. Nothing opens, nothing is asked.
+//
+// Registered the same way, and deliberately without ⌘: the shift toggle is a
+// decision about the whole day and wants the harder chord, while this is meant
+// to be cheap enough to press mid-thought. ⌥W types "∑" in a text field, so
+// the two-key form is only safe because a Carbon hot key consumes the event
+// before the frontmost app sees it.
+let ENTRY_HOTKEY_CODE = UInt32(kVK_ANSI_W)
+let ENTRY_HOTKEY_MODS = UInt32(optionKey)
+
+// Which hot key fired. The Carbon handler is installed once and shared, so it
+// has to tell them apart by id rather than by which registration it came from.
+let HOTKEY_ID_SHIFT = UInt32(1)
+let HOTKEY_ID_ENTRY = UInt32(2)
+
 // Absolute, not `/usr/bin/env python3`. launchd hands this process a PATH of
 // /usr/bin:/bin:/usr/sbin:/sbin, so `env` resolves to Apple's /usr/bin/python3
 // (3.9), which cannot even import the probe -- `str | None` in an annotation
@@ -665,6 +681,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // smoothly between polls rather than jumping every 5s.
     var lastActivityAt: Date?
     var hotKeyRef: EventHotKeyRef?
+    var entryHotKeyRef: EventHotKeyRef?
     // Which of the two activity views is showing, remembered across launches.
     // The choice is about how the reader wants to read the day rather than
     // about anything happening in it, so having it reset every time the app is
@@ -696,17 +713,35 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func registerHotKey() {
         var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard),
                                  eventKind: UInt32(kEventHotKeyPressed))
-        InstallEventHandler(GetApplicationEventTarget(), { _, _, _ -> OSStatus in
-            DispatchQueue.main.async { bar.toggleShift() }
+        InstallEventHandler(GetApplicationEventTarget(), { _, event, _ -> OSStatus in
+            // Read out of the event rather than assumed: one handler now
+            // serves both hot keys, so acting without asking which fired
+            // would make ⌥W end the shift.
+            var id = EventHotKeyID()
+            GetEventParameter(event, EventParamName(kEventParamDirectObject),
+                              EventParamType(typeEventHotKeyID), nil,
+                              MemoryLayout<EventHotKeyID>.size, nil, &id)
+            DispatchQueue.main.async {
+                switch id.id {
+                case HOTKEY_ID_ENTRY: bar.logEntry()
+                default:              bar.toggleShift()
+                }
+            }
             return noErr
         }, 1, &spec, nil, nil)
         // Logged because a hot key that fails to register fails silently and
         // invisibly: the shortcut simply does nothing, which is indistinguishable
         // from the app being down or the probe erroring.
         let err = RegisterEventHotKey(HOTKEY_CODE, HOTKEY_MODS,
-                                      EventHotKeyID(signature: OSType(0x574B_5453), id: 1),
+                                      EventHotKeyID(signature: OSType(0x574B_5453),
+                                                    id: HOTKEY_ID_SHIFT),
                                       GetApplicationEventTarget(), 0, &hotKeyRef)
         FileHandle.standardError.write("hotkey cmd+opt+S register -> \(err)\n".data(using: .utf8)!)
+        let entryErr = RegisterEventHotKey(ENTRY_HOTKEY_CODE, ENTRY_HOTKEY_MODS,
+                                           EventHotKeyID(signature: OSType(0x574B_5453),
+                                                         id: HOTKEY_ID_ENTRY),
+                                           GetApplicationEventTarget(), 0, &entryHotKeyRef)
+        FileHandle.standardError.write("hotkey opt+W register -> \(entryErr)\n".data(using: .utf8)!)
     }
 
     func applicationDidFinishLaunching(_: Notification) {
@@ -976,6 +1011,10 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate {
             m.addItem(NSMenuItem(title: "Meeting ended early",
                                  action: #selector(endMeetingEarly), keyEquivalent: ""))
         }
+        // Here as well as on ⌥W, because a shortcut nothing in the interface
+        // mentions is a shortcut that is forgotten by the week after it ships.
+        m.addItem(NSMenuItem(title: "Log an entry",
+                             action: #selector(logEntry), keyEquivalent: "w"))
         m.addItem(NSMenuItem(title: "Refresh now",
                              action: #selector(refreshNow), keyEquivalent: "r"))
         m.addItem(.separator())
@@ -1127,6 +1166,18 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let running = status.state == "marked"
         DispatchQueue.global(qos: .utility).async {
             _ = runProbe(running ? ["unmark", "last"] : ["mark"])
+            DispatchQueue.main.async { self.refresh() }
+        }
+    }
+
+    // ⌥W. One keypress, no window, no question: it records that this minute
+    // was worked and nothing else. Deliberately not a text prompt -- the value
+    // of the shortcut is that it costs nothing to press mid-thought, and a
+    // dialog that takes the caret to ask what you are doing is an interruption
+    // of the very work it is trying to record.
+    @objc func logEntry() {
+        DispatchQueue.global(qos: .utility).async {
+            _ = runProbe(["note"])
             DispatchQueue.main.async { self.refresh() }
         }
     }

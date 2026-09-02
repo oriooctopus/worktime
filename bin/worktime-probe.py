@@ -19,6 +19,7 @@ Usage:
   worktime-probe.py backfill [n]   -- rebuild the last n days of snapshots
   worktime-probe.py mode [focused|unfocused]  -- read or set the focus mode
   worktime-probe.py meeting_end    -- the meeting running now ended at this minute
+  worktime-probe.py note [text]    -- record work this probe cannot see
 """
 
 from __future__ import annotations  # 3.8 can parse the annotations
@@ -904,6 +905,64 @@ def approvals_for(day: str) -> list[str]:
     return [r["t"] for r in approval_rows_for(day)]
 
 
+NOTES = os.path.join(STATE, "notes.jsonl")
+
+# What an entry with no text says in the activity list. Phrased as what the
+# person did rather than as what the tracker lacks -- "untracked work" would
+# describe the probe's blind spot, and the row is about the work.
+GENERIC_NOTE = "working (logged by hand)"
+
+
+def note_rows_for(day: str) -> list[dict]:
+    """One day's typed entries, whole records, oldest first.
+
+    Every other stream infers presence from a trace the work happened to
+    leave. This one is the person saying so directly -- a whiteboard, a phone
+    call, a document in an app nothing here reads -- and it is treated as
+    evidence on exactly the same footing as a prompt, because a statement
+    from the only witness who was actually there outranks every signal that
+    is guessing from a side effect.
+
+    A point event, not a span: it says a minute was worked, and the ordinary
+    chaining rule joins it to whatever is around it. `mark` remains the way
+    to claim a stretch. Written by the menu bar's manual-entry hotkey.
+    """
+    if not os.path.exists(NOTES):
+        return []
+    out = []
+    for line in open(NOTES):
+        if not line.strip():
+            continue
+        r = json.loads(line)
+        if r.get("day") == day:
+            out.append(r)
+    return sorted(out, key=lambda r: r["t"])
+
+
+def notes_for(day: str) -> list[str]:
+    """Just the times, as HH:MM:SS -- what the event streams need."""
+    return [r["t"] for r in note_rows_for(day)]
+
+
+def add_note(text: str = "") -> dict:
+    """Append one entry at this moment. Returns the record written.
+
+    Text is optional because the shortcut that writes these does not ask for
+    any: the whole point of a one-key entry is that it costs nothing to press,
+    and a prompt for a description would interrupt the work being recorded.
+    An entry with nothing typed still says the only thing this stream exists
+    to say -- that the minute was worked -- so it gets a fixed label rather
+    than a blank row, which would read as a bug in the list.
+    """
+    now = now_local()
+    rec = {"day": now.strftime("%Y-%m-%d"), "t": now.strftime("%H:%M:%S"),
+           "text": " ".join(text.split()) or GENERIC_NOTE}
+    os.makedirs(STATE, exist_ok=True)
+    with open(NOTES, "a") as fh:
+        fh.write(json.dumps(rec) + "\n")
+    return rec
+
+
 FOCUS_DIR = os.path.join(STATE, "focus")
 
 # How long after your last keystroke or mouse move the machine stops counting
@@ -1478,10 +1537,11 @@ def desktop_prompts_for(day: str) -> list[datetime]:
 def events_for(day: str) -> list[datetime]:
     """Everything that proves someone was working.
 
-    Prompts, attended foreground minutes, permission approvals, and github.com
-    Chrome visits, merged into one list on purpose. A Slack reply two minutes
-    after a prompt continues that work period; treating the streams separately
-    would put a gap between them and then count the same stretch twice.
+    Prompts, attended foreground minutes, permission approvals, hand-logged
+    entries, and github.com Chrome visits, merged into one list on purpose. A
+    Slack reply two minutes after a prompt continues that work period;
+    treating the streams separately would put a gap between them and then
+    count the same stretch twice.
 
     Slack SENDS are deliberately absent, though slack_for() still runs and
     still fills the tooltip. Every minute a send used to prove is a minute the
@@ -1505,6 +1565,7 @@ def events_for(day: str) -> list[datetime]:
     out = list(prompts_for(day))
     out += focus_for(day)
     out += [at(t) for t in approvals_for(day)]
+    out += [at(t) for t in notes_for(day)]
     out += github_visits_for(day)
     return sorted(out)
 
@@ -1604,6 +1665,11 @@ def activity_rows(day: str) -> list[dict]:
         rows.append((r["t"], {
             "t": r["t"][:5], "kind": "approval",
             "what": f"approved {r.get('tool') or 'a tool'}"}))
+
+    for r in note_rows_for(day):
+        rows.append((r["t"], {
+            "t": r["t"][:5], "kind": "note",
+            "what": one_line(r["text"])}))
 
     for when, detail in github_rows_for(day):
         rows.append((when.strftime("%H:%M:00"), {
@@ -3002,7 +3068,7 @@ def activity_fingerprint(day: str) -> str:
     # without waiting for something else to happen. It is the one input that
     # changes on its own while the person is doing nothing this probe can
     # otherwise see, which is the whole reason the live read exists.
-    for p in (MARKS, APPROVALS, MODEFILE, CAL_FILE, IDLE_CLAIMS,
+    for p in (MARKS, APPROVALS, NOTES, MODEFILE, CAL_FILE, IDLE_CLAIMS,
               os.path.join(SLACK_DIR, f"{day}.json"),
               os.path.join(FOCUS_DIR, f"{day}.jsonl"),
               chrome_history_path() or "chrome-history-absent",
@@ -3300,6 +3366,14 @@ if __name__ == "__main__":
         write_vault_snapshot(day, events_for(day))
         print(json.dumps({"cut_min": cut, "cuts": cuts,
                           "at": now_local().strftime("%H:%M")}))
+    elif cmd == "note":
+        # Rebuilds the snapshot the way `mark` and `mode` do. The entry is a
+        # claim about the minute it was typed in, so waiting for the next
+        # 20-minute check would leave the dashboard disagreeing with the menu
+        # about a day the person just corrected by hand.
+        rec = add_note(" ".join(sys.argv[2:]))
+        write_vault_snapshot(rec["day"], events_for(rec["day"]))
+        print(json.dumps({"at": rec["t"][:5], "text": rec["text"]}))
     elif cmd == "status":
         # One small line for the menu bar: what the tracker thinks right now.
         print(json.dumps(status()))
