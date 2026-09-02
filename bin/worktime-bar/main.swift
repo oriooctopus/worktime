@@ -800,6 +800,29 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let color: NSColor = status.state == "marked" ? MARKED
             : (status.state == "working" ? WORKING : AWAY)
 
+        // In focused mode the cutoff is always five minutes, so "2m since last
+        // activity" already tells you how much silence the run has left. In
+        // unfocused mode it does not: the cutoff is whatever the bout has
+        // earned on the ramp so far, anywhere between one and five minutes, and
+        // nothing on screen said which. That is exactly the reading that looked
+        // wrong -- a bout switched to unfocused mid-run carries the width it
+        // already earned, so it goes on counting through silences that the "1m,
+        // widening to 5m" label implies would have ended it. Naming both halves
+        // -- what is left, and of what -- makes the rule in force visible while
+        // it is still in force.
+        var why = status.why
+        if status.mode == "unfocused", status.state == "working",
+           let quiet = status.quietSec, let cutoff = status.gapAfterSec {
+            // Ceil, so the countdown reads "1m left" for the whole final minute
+            // rather than dropping to a 0m that never corresponds to anything:
+            // the moment it truly reaches zero the state is no longer working
+            // and this line is gone.
+            let left = Int(ceil(Double(cutoff - quiet) / 60))
+            if left > 0 {
+                why += "  ·  \(left)m left of \(Int((Double(cutoff) / 60).rounded()))m"
+            }
+        }
+
         // Every period lives in the submenu, none of them at the top level.
         // They used to lead the menu -- three two-line rows of time ranges,
         // counts and summaries -- but the activity list now says what the day
@@ -818,7 +841,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // menu that changes without the probe's answer changing at all, so
         // keying on the activity alone would hold "1m" on screen indefinitely.
         let ages = status.activities.map { activityAge($0) }
-        let key = ([worked, symbol, status.why, status.state, status.mode]
+        let key = ([worked, symbol, why, status.state, status.mode]
                    + periods.map { p in
                        let s = periodStrings(p)
                        return s.top + "\u{1}" + s.what
@@ -839,7 +862,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let st = NSMenuItem(title: "", action: nil, keyEquivalent: "")
         st.view = StatusRowView(width: 300, symbol: symbol,
-                                text: status.why, color: color)
+                                text: why, color: color)
         m.addItem(st)
         m.addItem(.separator())
 
