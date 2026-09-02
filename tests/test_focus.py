@@ -90,6 +90,55 @@ class TestCredit(FocusCase):
                 self.assertEqual(self.minutes(), list(range(540, 545)))
                 self.tearDown()
 
+    def test_a_self_raising_app_earns_nothing_on_an_untouched_machine(self):
+        # The 2026-09-02 shape, reproduced: the front app becomes Granola while
+        # the idle reading is already deep past the threshold, because Granola
+        # raised itself at the end of a meeting nobody was sitting through. The
+        # allow list would credit every minute of it and name a session after
+        # an app that was never chosen.
+        for bundle in sorted(wp.FOCUS_SELF_RAISING):
+            with self.subTest(bundle=bundle):
+                self.setUp()
+                self.write(self.samples(9 * 3600, 11, bundle=bundle,
+                                        idle=wp.FOCUS_IDLE_SEC + 600))
+                self.assertEqual(self.minutes(), [])
+                self.tearDown()
+
+    def test_a_self_raising_app_still_earns_when_somebody_is_typing(self):
+        # The gate is on the idle reading, not on the app: Granola opened and
+        # actually used is ordinary work and must be counted like Slack.
+        for bundle in sorted(wp.FOCUS_SELF_RAISING):
+            with self.subTest(bundle=bundle):
+                self.setUp()
+                self.write(self.samples(9 * 3600, 11, bundle=bundle))
+                self.assertEqual(self.minutes(), list(range(540, 545)))
+                self.tearDown()
+
+    def test_a_self_raising_flash_between_other_apps_earns_nothing(self):
+        # The other half of the same bug, and the one the idle gate cannot see:
+        # Granola takes the front for a single heartbeat while somebody types
+        # in another window, so idle reads ~0 and fifteen seconds would paint
+        # two minutes with a name nobody chose.
+        self.write(self.samples(9 * 3600, 4, bundle=SLACK))
+        self.write([{"day": DAY, "t": hms(9 * 3600 + 120), "app": "Granola",
+                     "bundle": "com.granola.app", "idle": 1}])
+        self.write(self.samples(9 * 3600 + 150, 4, bundle=SLACK))
+        self.assertNotIn("Granola", wp.focus_app_by_minute(DAY).values())
+
+    def test_a_self_raising_app_gives_up_only_its_first_heartbeat(self):
+        # It is dropped rather than gated forever: a run that holds the front
+        # keeps everything after its opening sample.
+        self.write(self.samples(9 * 3600, 11, bundle="com.granola.app",
+                                app="Granola"))
+        self.assertEqual(self.minutes(), list(range(540, 545)))
+        self.assertEqual(wp.focus_apps(DAY, 9 * 3600, 9 * 3600 + 300),
+                         ["Granola"])
+
+    def test_every_self_raising_app_is_one_the_allow_list_names(self):
+        # The narrow rule only ever tightens the broad one. A bundle here that
+        # FOCUS_INCLUDE does not carry would be a rule about nothing.
+        self.assertTrue(wp.FOCUS_SELF_RAISING <= wp.FOCUS_INCLUDE)
+
     def test_leisure_earns_nothing(self):
         self.write(self.samples(9 * 3600, 11, bundle="com.netflix.Netflix",
                                 app="Netflix"))
