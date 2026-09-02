@@ -114,6 +114,29 @@ class GroupSessions(unittest.TestCase):
     def test_no_rows_is_no_sessions(self):
         self.assertEqual(wp.group_sessions([], [period(540, 570)]), [])
 
+    def test_a_session_carries_its_own_rows(self):
+        rows = [row("09:20", "prompt", "b"), row("09:10", "slack", "a")]
+        out = wp.group_sessions(rows, [period(540, 570)])
+        self.assertEqual([r["t"] for r in out[0]["rows"]], ["09:20", "09:10"])
+        self.assertEqual(out[0]["rows"][1]["kind"], "slack")
+
+    def test_carried_rows_are_capped_but_the_count_is_not(self):
+        rows = [row(f"09:{m:02d}", what=str(m)) for m in range(59, 0, -1)]
+        out = wp.group_sessions(rows, [period(540, 600)])
+        self.assertEqual(len(out[0]["rows"]), wp.SESSION_TIP_N)
+        # The cap is on what travels, not on what is reported: the widget
+        # subtracts one from the other to say how many it could not show, so a
+        # capped `n` would make it claim the session held only twelve.
+        self.assertEqual(out[0]["n"], len(rows))
+        # Newest first, so what a hover drops is the oldest end of the session
+        # rather than the part being asked about.
+        self.assertEqual(out[0]["rows"][0]["t"], "09:59")
+
+    def test_carried_rows_keep_their_collapsed_count(self):
+        out = wp.group_sessions([row("09:10", "browsing", "pr", n=4)],
+                                [period(540, 570)])
+        self.assertEqual(out[0]["rows"][0]["n"], 4)
+
     def test_no_private_keys_leak_into_the_payload(self):
         out = wp.group_sessions([row("09:10")], [period(540, 570)])
         self.assertNotIn("_idx", out[0])

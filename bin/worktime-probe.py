@@ -1551,6 +1551,12 @@ def activity_rows(day: str) -> list[dict]:
 # already reaches back further than ten raw rows ever do.
 SESSION_LIST_N = 8
 
+# How many of a session's own rows travel with it, for the hover that shows
+# what the session was made of. Twelve is about as tall as a tooltip can get
+# before it stops being readable at a glance, and it is more than the raw list
+# shows of the whole day.
+SESSION_TIP_N = 12
+
 
 def group_sessions(rows: list[dict], worked: list[dict],
                    limit: int = SESSION_LIST_N) -> list[dict]:
@@ -1602,7 +1608,7 @@ def group_sessions(rows: list[dict], worked: list[dict],
                  "what": (w.get("what") or "") if w else "",
                  "counted": w is not None,
                  "current": idx is not None and idx == len(worked) - 1,
-                 "n": 0, "kinds": []}
+                 "n": 0, "kinds": [], "rows": []}
             out.append(s)
         # Rows arrive newest first, so the oldest one seen for an uncounted run
         # is the one that sets its start.
@@ -1614,6 +1620,14 @@ def group_sessions(rows: list[dict], worked: list[dict],
         # Biggest first: the breakdown is one line and the widget truncates it,
         # so what falls off the end should be the smallest contributor.
         s["kinds"] = sorted(kinds.items(), key=lambda kv: (-kv[1], kv[0]))
+        # The rows themselves ride along so hovering a session can show what it
+        # was made of without a second call and without the widget having to
+        # re-derive which rows belonged to which session. Capped, because a
+        # busy period holds a hundred of them and a tooltip taller than the
+        # screen shows nothing usefully; `n` above still counts them all, and
+        # the widget says how many the cap left out.
+        if len(s["rows"]) < SESSION_TIP_N:
+            s["rows"].append({k: r[k] for k in ("t", "kind", "what", "n")})
 
     for s in out:
         del s["_idx"]

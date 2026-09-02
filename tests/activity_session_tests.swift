@@ -16,9 +16,10 @@ func check(_ cond: Bool, _ what: String) {
 
 func session(start: Int = 540, end: Int = 570, len: Int = 30,
              what: String = "", counted: Bool = true, current: Bool = false,
-             n: Int = 4, kinds: [(String, Int)] = [("prompt", 4)]) -> ActSession {
+             n: Int = 4, kinds: [(String, Int)] = [("prompt", 4)],
+             rows: [SessionRow] = []) -> ActSession {
     ActSession(start: start, end: end, len: len, what: what, counted: counted,
-               current: current, n: n, kinds: kinds)
+               current: current, n: n, kinds: kinds, rows: rows)
 }
 
 // Swift allows loose statements only in a file called main.swift, and this one
@@ -77,6 +78,56 @@ check(wordy.what.hasSuffix("…"), "a truncated line did not end in an ellipsis"
 // No test for an empty tally: every session is built from at least one row, so
 // `kinds` is never empty, and a branch here for the case that cannot happen
 // would only make a broken payload draw as though it were fine.
+
+// -- the hover ------------------------------------------------------------
+
+// The tooltip opens with the row's own top line, so what is being read is
+// anchored to the session it came from rather than floating free of it.
+let tip = sessionTip(session(
+    n: 3, kinds: [("prompt", 2), ("approval", 1)],
+    rows: [SessionRow(t: "09:03", kind: "prompt", what: "run the tests", n: 1),
+           SessionRow(t: "09:01", kind: "approval", what: "approved Bash", n: 1),
+           SessionRow(t: "09:00", kind: "prompt", what: "hello", n: 1)]))
+let tipLines = tip.split(separator: "\n", omittingEmptySubsequences: false)
+check(String(tipLines[0]) == sessionStrings(session(n: 3, kinds: [("prompt", 2), ("approval", 1)])).top,
+      "the hover did not open with the row's own line: \"\(tipLines[0])\"")
+check(tipLines.count == 4, "the hover drew \(tipLines.count) lines for 3 events")
+check(tipLines[1] == "09:03  prompt · run the tests",
+      "an event line read as \"\(tipLines[1])\"")
+
+// A collapsed row carries its count, and an uncollapsed one does not -- the
+// same rule the raw list follows, since this is that list scoped to one
+// session.
+let counted = sessionTip(session(n: 5, rows: [
+    SessionRow(t: "09:03", kind: "browsing", what: "the same PR", n: 4),
+    SessionRow(t: "09:01", kind: "prompt", what: "go", n: 1)]))
+check(counted.contains("09:03  browsing · the same PR  ×4"),
+      "a collapsed row lost its count: \"\(counted)\"")
+check(counted.contains("09:01  prompt · go\n") || counted.hasSuffix("09:01  prompt · go"),
+      "a single event was given a ×1: \"\(counted)\"")
+
+// What the probe's cap left out is said out loud. Silently showing twelve of a
+// hundred would contradict the event count on the row being hovered, which is
+// the number this is read against.
+let capped = sessionTip(session(n: 30, rows: [
+    SessionRow(t: "09:03", kind: "prompt", what: "one", n: 1)]))
+check(capped.hasSuffix("… and 29 more"),
+      "a capped hover did not say what it left out: \"\(capped)\"")
+
+// A session whose rows all fit says nothing about more, rather than "and 0
+// more".
+let whole = sessionTip(session(n: 1, rows: [
+    SessionRow(t: "09:03", kind: "prompt", what: "one", n: 1)]))
+check(!whole.contains("more"), "a complete hover claimed there was more: \"\(whole)\"")
+
+// A pasted stack trace as a prompt must not set the width of every other line.
+let wide = sessionTip(session(n: 1, rows: [
+    SessionRow(t: "09:03", kind: "prompt",
+               what: String(repeating: "x", count: 300), n: 1)]))
+for line in wide.split(separator: "\n") {
+    check(line.count <= SESSION_TIP_CHARS + 20,
+          "a hover line ran to \(line.count) characters")
+}
 
 if failures.isEmpty {
     print("activity session strings: all checks passed")

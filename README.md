@@ -274,6 +274,13 @@ summary. Same rows, same boundaries as the period list — nothing is regrouped
 by a second rule, and events in minutes no period covers keep a row of their
 own marked `not counted` rather than disappearing from the tally.
 
+Hovering a session row shows its own events — up to twelve of them, in the
+same shape the raw list draws, with a line saying how many the cap left out.
+Grouping is what makes the day readable and also what puts the evidence out of
+reach; the hover is the only place one session's rows can be read, since
+toggling back gives the newest ten events of the whole day rather than of that
+stretch.
+
 ## Ending a meeting when the call ends
 
 A scheduled meeting keeps the dot green until its scheduled end, so a half-hour
