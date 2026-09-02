@@ -49,11 +49,19 @@ It is a more generous signal, so the day gets longer. Two things keep it
 honest:
 
 **Idle.** `CGEventSource.secondsSinceLastEventType` gives seconds since the
-last mouse or key event. Past `FOCUS_IDLE_SEC` (120) the machine stops counting
-as attended, so an app left frontmost over lunch earns nothing. Two minutes is
-tight for reading, and is only safe because the two long passive stretches have
-evidence of their own -- a meeting is held by the calendar, a code review by
-the GitHub visits.
+last input event of ANY kind -- keys, clicks, movement, scroll, gestures --
+under the `~0` wildcard, so typing resets it exactly as the mouse does.
+`FOCUS_IDLE_SEC` is 120.
+
+This gate is currently OFF (`FOCUS_IDLE_GATES = False`): an app left frontmost
+while nobody touches the machine still earns its minutes. It was switched off
+along with the subtraction below, because between them idle had two separate
+consequences -- time cut from the day, and time that quietly never arrived --
+and only the first had a row anywhere explaining it. A minute that was never
+credited looked identical to a minute that was never worked. Idle is binary
+now: a stretch either is or isn't, and there is one place that says what that
+means. The cost, accepted deliberately: a work app parked in the foreground
+all afternoon accrues the afternoon.
 
 **A heartbeat.** The sampler writes every 30 seconds, and the probe credits the
 stretch between consecutive samples only while they stay under

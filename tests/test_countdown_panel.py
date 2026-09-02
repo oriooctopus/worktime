@@ -47,3 +47,33 @@ class CountdownPanelSuite(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NoPanelsOnScreen(unittest.TestCase):
+    """No Swift test may put a real window on the machine running the suite.
+
+    This is a regression test for an actual interruption, not a style rule.
+    Every `pytest` run used to raise four countdown panels over whatever the
+    user was doing, and because they are the same widget the app uses for real,
+    the only way to tell them from a genuine prompt was to know the suite
+    happened to be running. `present: false` keeps every bit of the coverage --
+    an off-screen button still clicks -- and costs nothing.
+    """
+
+    def test_no_swift_test_builds_a_visible_panel(self):
+        here = os.path.dirname(os.path.abspath(__file__))
+        offenders = []
+        for name in sorted(os.listdir(here)):
+            if not name.endswith("_tests.swift"):
+                continue
+            text = open(os.path.join(here, name)).read()
+            # Constructor calls run over several lines, so each one is read
+            # from its opening paren to the closing brace of its last closure
+            # argument rather than line by line.
+            for i, chunk in enumerate(text.split("CountdownPanel(")[1:]):
+                head = chunk[:400]
+                if "present: false" not in head:
+                    offenders.append(f"{name} (call {i + 1})")
+        self.assertEqual(offenders, [],
+                         "these build a panel that would appear on screen "
+                         "during the test run: " + ", ".join(offenders))

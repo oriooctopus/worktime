@@ -161,6 +161,21 @@ class TestCredit(FocusCase):
 
 
 class TestIdle(FocusCase):
+    """The gate ships OFF (FOCUS_IDLE_GATES). These force it on, because what
+    they cover is the RULE -- what the gate does when something asks for it --
+    and that has to keep working whichever way the switch is set. What the
+    switch itself does is TestIdleGateOff, below, against the real constant.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.orig_gate = wp.FOCUS_IDLE_GATES
+        wp.FOCUS_IDLE_GATES = True
+
+    def tearDown(self):
+        wp.FOCUS_IDLE_GATES = self.orig_gate
+        super().tearDown()
+
     def test_idle_beyond_the_threshold_stops_credit(self):
         # Every sample reports more idle than the threshold allows: the app is
         # frontmost, the machine is unattended, nothing is earned.
@@ -188,6 +203,47 @@ class TestIdle(FocusCase):
             {"day": DAY, "t": "09:00:30", "app": "Slack", "bundle": SLACK,
              "idle": 150},
         ])
+        self.assertEqual(self.minutes(), [])
+
+
+class TestIdleGateOff(FocusCase):
+    """What ships: idle no longer withholds credit, only the one binary
+    question remains.
+
+    Being untouched used to have two separate consequences -- time cut from
+    the day, and time that quietly never arrived. The second had no row
+    anywhere to explain it, so a minute that was simply never credited was
+    indistinguishable from one that was never worked.
+    """
+
+    def test_the_gate_ships_off(self):
+        self.assertFalse(wp.FOCUS_IDLE_GATES)
+
+    def test_an_untouched_window_still_earns_its_minutes(self):
+        # The same log as test_idle_beyond_the_threshold_stops_credit, run
+        # against the shipped switch instead of a forced one.
+        self.write(self.samples(9 * 3600, 11, idle=wp.FOCUS_IDLE_SEC + 30))
+        self.assertEqual(self.minutes(), [540, 541, 542, 543, 544])
+
+    def test_the_gate_is_off_everywhere_or_nowhere(self):
+        # A minute credited by focus_for() that focus_app_by_minute() then
+        # refuses to label is a counted minute with no app against it, which
+        # is what a half-applied switch produces. Same log, both answers.
+        self.write(self.samples(9 * 3600, 11, idle=wp.FOCUS_IDLE_SEC + 30))
+        labelled = wp.focus_app_by_minute(DAY)
+        self.assertEqual(sorted(labelled), self.minutes())
+        self.assertEqual(set(labelled.values()), {"Slack"})
+
+    def test_the_apps_that_held_an_untouched_span_are_still_named(self):
+        self.write(self.samples(9 * 3600, 11, idle=wp.FOCUS_IDLE_SEC + 30))
+        self.assertEqual(wp.focus_apps(DAY, 9 * 3600, 9 * 3600 + 600), ["Slack"])
+
+    def test_the_apps_that_do_not_count_are_still_refused(self):
+        # Removing the gate must not have removed the allow list with it: an
+        # untouched hour of Chrome earns nothing for a reason of its own.
+        self.write(self.samples(9 * 3600, 11, bundle="com.google.Chrome",
+                                app="Google Chrome",
+                                idle=wp.FOCUS_IDLE_SEC + 30))
         self.assertEqual(self.minutes(), [])
 
 

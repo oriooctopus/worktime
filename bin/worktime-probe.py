@@ -894,6 +894,27 @@ FOCUS_DIR = os.path.join(STATE, "focus")
 # honest default is to stop counting rather than to keep crediting silence.
 FOCUS_IDLE_SEC = 120
 
+# Whether an untouched window is barred from EARNING focus credit, as opposed
+# to being subtracted from time already earned. Off.
+#
+# These were two separate consequences of one reading, which made "am I idle?"
+# a three-state question: counted, cut, or silently never credited. The third
+# was the confusing one -- nothing was taken away, so no row explained it, and
+# time simply failed to appear. Idle is now binary: either a stretch is idle or
+# it isn't, and what that means is decided in exactly one place.
+FOCUS_IDLE_GATES = False
+
+
+def idle_blocks(sample: dict) -> bool:
+    """Whether this sample's reading bars the window it closes from credit.
+
+    One function for the three call sites so the switch cannot be half-applied
+    -- crediting a minute in focus_for() that focus_app_by_minute() then
+    refuses to label leaves a counted minute with no app against it.
+    """
+    return FOCUS_IDLE_GATES and sample.get("idle", 0) > FOCUS_IDLE_SEC
+
+
 # The most time one sample may vouch for. The bar writes every
 # FOCUS_HEARTBEAT_SEC (30s), so consecutive rows are normally 30s apart and
 # anything materially longer means the log stopped -- sleep, lock, a crash, the
@@ -995,7 +1016,7 @@ def focus_for(day: str) -> list[datetime]:
             continue
         if a.get("bundle") not in FOCUS_INCLUDE:
             continue
-        if b.get("idle", 0) > FOCUS_IDLE_SEC:
+        if idle_blocks(b):
             continue
         # hi is exclusive: a window ending exactly at 09:05:00 covers no part
         # of 09:05, and crediting it would add a phantom minute to the end of
@@ -1021,7 +1042,7 @@ def focus_app_by_minute(day: str) -> dict[int, str]:
             continue
         if a.get("bundle") not in FOCUS_INCLUDE:
             continue
-        if b.get("idle", 0) > FOCUS_IDLE_SEC:
+        if idle_blocks(b):
             continue
         name = a.get("app") or a["bundle"]
         # A window can straddle a minute boundary, so its seconds are split
@@ -1049,7 +1070,7 @@ def focus_apps(day: str, lo: int, hi: int) -> list[str]:
             continue
         if a.get("bundle") not in FOCUS_INCLUDE:
             continue
-        if b.get("idle", 0) > FOCUS_IDLE_SEC:
+        if idle_blocks(b):
             continue
         span = min(ahi, hi) - max(alo, lo)
         if span <= 0:
