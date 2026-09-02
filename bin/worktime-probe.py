@@ -19,6 +19,8 @@ Usage:
   worktime-probe.py backfill [n]   -- rebuild the last n days of snapshots
   worktime-probe.py mode [focused|unfocused]  -- read or set the focus mode
   worktime-probe.py meeting_end    -- the meeting running now ended at this minute
+  worktime-probe.py end_session [last]  -- close the mark and cut the meeting,
+                                          at this minute or at the last entry
   worktime-probe.py note [text]    -- record work this probe cannot see
 """
 
@@ -855,6 +857,72 @@ def close_open_marks(when: int | None = None) -> list[dict]:
             fh.write(json.dumps(r) + "\n")
     os.replace(tmp, MARKS)
     return closed
+
+
+def last_entry_end(events: list[datetime]) -> int:
+    """Minute-of-day the day's work ends at, if it ends at the last thing seen.
+
+    The one definition of "end after the last entry", shared by the ⌘⌥S stop
+    and by End Session so the two cannot drift into meaning different minutes.
+
+    TAIL_SEC, not the bare stamp. A period already gets that much on top of its
+    last prompt -- sending one is not an instantaneous act -- so ending a shift
+    exactly on the stamp would credit the same last minute less than the
+    ordinary rule does, and a person who pressed the stop shortcut would come
+    out behind one who simply walked away. Following the buffer the model
+    already applies is what keeps the two endings agreeing.
+
+    A day with nothing in it yet returns 0, which close_open_marks clamps up to
+    each mark's own start and thereby closes it zero-length -- the honest
+    reading of "credit the work the tracker saw" when it saw none.
+    """
+    if not events:
+        return 0
+    last = max(events) + timedelta(seconds=TAIL_SEC)
+    return last.hour * 60 + last.minute
+
+
+def end_session(at_last: bool = False) -> dict:
+    """Close everything currently holding the day open, at one minute.
+
+    `unmark` alone is not that. It ends a manual mark, and a mark is only one of
+    the things that keep the dot lit -- a scheduled meeting holds it green on
+    the calendar's schedule regardless, and on an ordinary afternoon of
+    prompting neither is running at all. So the shift toggle had nothing to
+    offer someone who never pressed start and is now leaving: the only way to
+    say "that was the day" was to click Stop on a mark that did not exist.
+
+    This is that statement. It closes any open mark and cuts any meeting that
+    would otherwise run past the chosen minute, in one step, so the menu item
+    means the same thing whichever of them happened to be true.
+
+    `at_last` ends at the last entry instead of at this minute, through the same
+    last_entry_end the ⌘⌥S stop uses: they are one decision made in two places
+    and must not resolve to two different minutes.
+
+    A cut written when no meeting is running is inert -- effective_meeting_end
+    only applies a cut to the meeting it landed inside -- so this does not need
+    to ask whether one is, and cannot get that question wrong.
+
+    Rebuilds the snapshot the way `mark`, `mode` and `meeting_end` do: ending
+    the day changes the total as well as the dot, and waiting for the next
+    20-minute check would leave the dashboard still counting a day the person
+    just declared over.
+    """
+    now = now_local()
+    day = now.strftime("%Y-%m-%d")
+    events = events_for(day)
+    when = last_entry_end(events) if at_last else now.hour * 60 + now.minute
+    closed = close_open_marks(when)
+    cuts = append_meeting_cut(when)
+    write_vault_snapshot(day, events)
+    return {
+        "at": hhmm_of(when),
+        "at_last_entry": at_last,
+        "closed": [{"start": hhmm_of(r["start"]), "end": hhmm_of(r["end"]),
+                    "note": r["note"]} for r in closed],
+        "cuts": cuts,
+    }
 
 
 def to_min(hhmm: str) -> int:
@@ -3345,15 +3413,16 @@ if __name__ == "__main__":
         events = events_for(day)
         when = None
         if len(sys.argv) > 2 and sys.argv[2] == "last":
-            # A day with no events yet clamps to each mark's own start inside
-            # close_open_marks, which closes it zero-length.
-            when = max((e.hour * 60 + e.minute for e in events), default=0)
+            when = last_entry_end(events)
         closed = close_open_marks(when)
         write_vault_snapshot(day, events)
         print(json.dumps({
             "closed": [{"start": hhmm_of(r["start"]), "end": hhmm_of(r["end"]),
                         "note": r["note"]} for r in closed],
         }))
+    elif cmd == "end_session":
+        print(json.dumps(end_session(
+            at_last=len(sys.argv) > 2 and sys.argv[2] == "last")))
     elif cmd == "mode":
         # Bare `mode` reads, `mode <name>` sets. Setting rebuilds the snapshot
         # so the dashboard and the menu redraw under the new rule at once
