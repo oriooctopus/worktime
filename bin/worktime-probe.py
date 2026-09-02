@@ -1928,6 +1928,13 @@ def group_sessions(rows: list[dict], worked: list[dict],
         # the widget says how many the cap left out.
         if len(s["rows"]) < SESSION_TIP_N:
             s["rows"].append({k: r[k] for k in ("t", "kind", "what", "n")})
+        # And the row is told which session took it. The raw list uses this to
+        # show, when one of its rows is hovered, which of the others came from
+        # the same stretch -- the grouping is the answer the sessions view
+        # gives, and this is that answer without leaving the list. Written onto
+        # the caller's own row dicts, since those are what the raw list is cut
+        # from and a parallel index would be a second thing to keep in step.
+        r["session"] = len(out) - 1
 
     for s in out:
         del s["_idx"]

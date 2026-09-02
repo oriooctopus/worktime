@@ -309,7 +309,9 @@ summary. Same rows, same boundaries as the period list — nothing is regrouped
 by a second rule, and events in minutes no period covers keep a row of their
 own marked `not counted` rather than disappearing from the tally.
 
-Each session row opens a submenu (hover the `›`) listing its own events — up to
+Hovering any row in the raw list brackets every other row from the same
+session, so the grouping the sessions view gives is readable without leaving
+the list. Each session row opens a submenu (hover the `›`) listing its own events — up to
 twenty of them, in the same three columns the raw list uses, ending in a line
 saying how many the cap left out. Grouping is what makes the day readable and
 also what puts the evidence out of reach; the submenu is the only place one

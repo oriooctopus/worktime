@@ -137,6 +137,21 @@ class GroupSessions(unittest.TestCase):
                                 [period(540, 570)])
         self.assertEqual(out[0]["rows"][0]["n"], 4)
 
+    def test_every_row_is_told_which_session_took_it(self):
+        # What the raw list's hover brackets: pointing at one event marks the
+        # others from the same stretch, so each row has to name its session --
+        # a row that named none would break the run in two on screen.
+        rows = [row("14:05"), row("09:20"), row("09:10")]
+        wp.group_sessions(rows, [period(540, 570), period(840, 850)])
+        self.assertEqual([r["session"] for r in rows], [0, 1, 1])
+
+    def test_the_stamped_index_points_at_the_session_it_is_in(self):
+        rows = [row("14:05"), row("09:10")]
+        out = wp.group_sessions(rows, [period(540, 570), period(840, 850)])
+        for r in rows:
+            s = out[r["session"]]
+            self.assertLessEqual(s["start"], int(r["t"][:2]) * 60 + int(r["t"][3:5]))
+
     def test_no_private_keys_leak_into_the_payload(self):
         out = wp.group_sessions([row("09:10")], [period(540, 570)])
         self.assertNotIn("_idx", out[0])
