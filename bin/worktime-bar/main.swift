@@ -104,27 +104,6 @@ struct Activity {
     var n = 1
 }
 
-// The same evidence as `activities`, folded into the periods it happened in.
-// Not a second division of the day: the probe groups by the very spans the
-// period list is built from, so a session's range is a period's range and the
-// only thing new here is the tally of what that stretch was made of.
-//
-// `counted` is false for a run of evidence in minutes no period covers -- real
-// events in time the day total deliberately left out. They keep a row because
-// the raw list shows them, and a grouped view holding fewer events than the
-// list it toggles with would be a different account of the day rather than the
-// same one, gathered up.
-struct ActSession {
-    var start = 0
-    var end = 0
-    var len = 0
-    var what = ""
-    var counted = true
-    var current = false
-    var n = 0
-    var kinds: [(String, Int)] = []
-}
-
 struct Status {
     var state = "unknown"
     var why = "not yet polled"
@@ -340,16 +319,6 @@ func dotImage(_ color: NSColor, hollow: Bool) -> NSImage {
 // second instead of just blinking the dot in place.
 func emptyDotImage() -> NSImage {
     NSImage(size: NSSize(width: 18, height: 18))
-}
-
-func human(_ m: Int) -> String {
-    m >= 60 ? "\(m / 60)h \(m % 60)m" : "\(m)m"
-}
-
-// Periods carry minute-of-day integers, not wall-clock strings -- the probe
-// publishes them that way so the widget can do arithmetic on them too.
-func hhmm(_ m: Int) -> String {
-    String(format: "%02d:%02d", m / 60, m % 60)
 }
 
 // A period's summary line, matching the mockup's three fallback states: a
@@ -571,31 +540,6 @@ final class ActivityRowView: NSView {
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
-}
-
-// The two lines a session row shows, kept out of the view so a test can read
-// them and so the menu key can be built from exactly the strings on screen.
-//
-// Clock times rather than the raw list's ages: a session is a stretch with two
-// ends, and "28m ago" for something that ran for half an hour names only the
-// moment it started. The raw rows are point events and read better as ages;
-// these are spans and read better as spans.
-func sessionStrings(_ s: ActSession) -> (top: String, what: String) {
-    let events = "\(s.n) event\(s.n == 1 ? "" : "s")"
-    var top = s.counted
-        ? "\(hhmm(s.start))–\(hhmm(s.end)) · \(human(s.len))   \(events)"
-        // No length, because these minutes were not credited and printing a
-        // span here would read as time that was.
-        : "\(hhmm(s.start))–\(hhmm(s.end)) · not counted   \(events)"
-    if s.current && s.counted { top += "   ·  now" }
-
-    var what = s.kinds.map { "\($0.1) \($0.0)" }.joined(separator: " · ")
-    // The period's own summary, when it has earned one, after the tally. The
-    // tally says what the stretch was made of; this says what it was about,
-    // and the two together are the whole reason to collapse the rows.
-    if !s.what.isEmpty { what += "  —  \(s.what)" }
-    if what.count > 52 { what = String(what.prefix(51)) + "…" }
-    return (top, what)
 }
 
 // Two lines, unlike the raw rows' one. A session stands for a dozen of them,
