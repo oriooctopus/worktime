@@ -161,6 +161,43 @@ func runProbe(_ args: [String]) -> String? {
     return String(data: data, encoding: .utf8)
 }
 
+// Confirmation for ⌥W. The press is silent by design -- nothing opens, no
+// window takes the caret -- and the dot only moves if the minute was not
+// already counted, so a working shortcut and a dead one look identical from
+// the outside. The banner is the only thing that tells them apart.
+//
+// Posted with osascript rather than UNUserNotificationCenter because this app
+// carries an ad-hoc signature, and macOS refuses an ad-hoc identity notification
+// authorization outright: requestAuthorization returns "Notifications are not
+// allowed for this application", after which a post is *accepted* at the call
+// site and then silently dropped. A path that reports success and shows nothing
+// is the worst possible shape for the one thing standing in for feedback, so
+// this goes through an identity the system already trusts. Registering the
+// bundle with lsregister and launching through LaunchServices were both tried;
+// neither lifts the refusal.
+//
+// The cost of that choice is that macOS owns how long the banner stays up
+// (roughly five seconds). A notification withdrawn on our own schedule needs
+// the native API, which needs a real signing identity.
+func notifyEntryLogged() {
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+    p.arguments = ["-e", "display notification \"Logged this minute as work.\" "
+        + "with title \"Worktime\""]
+    // Logged rather than swallowed, same as the probe: a banner that stops
+    // appearing is indistinguishable from a hot key that stopped registering.
+    do { try p.run() } catch {
+        FileHandle.standardError.write(
+            "notify launch failed: \(error)\n".data(using: .utf8)!)
+        return
+    }
+    p.waitUntilExit()
+    if p.terminationStatus != 0 {
+        FileHandle.standardError.write(
+            "notify exit \(p.terminationStatus)\n".data(using: .utf8)!)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Focus sampling
 //
@@ -1177,7 +1214,12 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // of the very work it is trying to record.
     @objc func logEntry() {
         DispatchQueue.global(qos: .utility).async {
-            _ = runProbe(["note"])
+            // Only claims what actually happened. runProbe reports its own
+            // failure to stderr; a banner saying the minute was logged when
+            // the write never landed would be worse than no banner at all,
+            // because it is the thing being trusted instead of checking.
+            guard runProbe(["note"]) != nil else { return }
+            notifyEntryLogged()
             DispatchQueue.main.async { self.refresh() }
         }
     }
