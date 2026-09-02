@@ -118,6 +118,13 @@ struct Activity {
     var kind = ""
     var what = ""
     var n = 1
+    // Which session this event fell into, as the probe grouped them. Carried
+    // so the raw list can mark the rest of a stretch when one of its rows is
+    // hovered -- the grouping is the sessions view's answer, and this is that
+    // answer without leaving the list. Nil when the payload had no sessions to
+    // group by, which marks nothing rather than lumping the unlabelled
+    // together as though they were one.
+    var session: Int?
 }
 
 struct Status {
@@ -607,7 +614,48 @@ func columnWidth(_ labels: [String]) -> CGFloat {
     }.max() ?? 0)
 }
 
+// Which session the pointer is currently over, shared by every row of one
+// built menu.
+//
+// It lives outside the rows because the answer the raw list gives on hover is
+// about the OTHER rows: pointing at one event marks every event of the same
+// stretch, which is the sessions view's grouping shown without leaving the
+// list. A row cannot know that on its own -- it needs to hear that a sibling
+// was entered -- so the rows share one of these and redraw when it changes.
+final class SessionHover {
+    private(set) var session: Int?
+    // Every row that can respond, session rows included. Held strongly: the
+    // menu owns the views, this object is rebuilt with them, and both are
+    // discarded together on the next build.
+    var rows: [NSView] = []
+
+    func enter(_ id: Int?) {
+        guard id != session else { return }
+        session = id
+        for r in rows { r.needsDisplay = true }
+    }
+}
+
+// The tint a hovered row takes. Deliberately not the menu's own blue selection
+// fill: that is the OS's way of saying "this is what a click will act on", and
+// these rows are not clickable -- a full selection bar on them would promise a
+// press that does nothing. A wash of the accent colour reads as "this is what
+// you are pointing at" without making that promise.
+func hoverFill() -> NSColor {
+    NSColor.controlAccentColor.withAlphaComponent(0.13)
+}
+
 final class ActivityRowView: NSView {
+    // Set when this row belongs to a session the list also knows about; nil
+    // when the payload carried no grouping, in which case hovering marks
+    // nothing rather than pretending every unlabelled row is one group.
+    var session: Int?
+    weak var hover: SessionHover?
+    // Whether this row is the top or the bottom of its session's run, which is
+    // what the bracket's two arms are drawn from.
+    var groupFirst = false
+    var groupLast = false
+
     init(_ a: Activity, width: CGFloat, age: String,
          ageWidth: CGFloat, kindWidth: CGFloat) {
         super.init(frame: NSRect(x: 0, y: 0, width: width, height: 17))
@@ -620,7 +668,9 @@ final class ActivityRowView: NSView {
         ageField.textColor = .secondaryLabelColor
         ageField.alignment = .right
         // The age is the rounded version; this is where the exact minute it
-        // was rounded from stays reachable.
+        // was rounded from stays reachable. It is a tooltip on the row itself
+        // rather than anything drawn, so it does not compete with the bracket
+        // the hover draws -- the two say different things about the same row.
         toolTip = a.t
 
         let kindField = NSTextField(labelWithString: a.kind)
@@ -656,7 +706,11 @@ final class ActivityRowView: NSView {
         whatField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         NSLayoutConstraint.activate([
-            ageField.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            // Indented past the bracket's gutter, so the columns do not shift
+            // sideways when a group lights up -- the mark has to be drawn in
+            // space the text never occupies or the whole list jumps on hover.
+            ageField.leadingAnchor.constraint(equalTo: leadingAnchor,
+                                              constant: 14 + GROUP_GUTTER),
             ageField.widthAnchor.constraint(equalToConstant: ageWidth),
             kindField.leadingAnchor.constraint(equalTo: ageField.trailingAnchor, constant: 8),
             kindField.widthAnchor.constraint(equalToConstant: kindWidth),
@@ -668,7 +722,65 @@ final class ActivityRowView: NSView {
         ])
     }
 
+    // Rebuilt on every layout pass rather than added once: menu rows are laid
+    // out after they are made, and a tracking area added against the initial
+    // zero-ish frame covers the wrong rectangle for the row's whole life.
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        for a in trackingAreas { removeTrackingArea(a) }
+        addTrackingArea(NSTrackingArea(
+            rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            owner: self, userInfo: nil))
+    }
+
+    override func mouseEntered(with _: NSEvent) { hover?.enter(session) }
+    // Cleared rather than left standing: the pointer leaving the list has to
+    // put it back the way it was, and the next row entered replaces this
+    // anyway, so the two together mean the mark follows the pointer exactly.
+    override func mouseExited(with _: NSEvent) { hover?.enter(nil) }
+
     required init?(coder: NSCoder) { fatalError("not used") }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        guard let session, hover?.session == session else { return }
+        hoverFill().setFill()
+        bounds.fill()
+        drawGroupBracket(in: bounds, first: groupFirst, last: groupLast)
+    }
+}
+
+// How much room the group bracket gets at the leading edge of a raw row.
+let GROUP_GUTTER: CGFloat = 10
+
+// One row's slice of the bracket that marks a hovered session: a vertical
+// stroke down the gutter, with a short arm at whichever end is the end of the
+// run.
+//
+// Drawn per row rather than as one shape over the group because a menu has no
+// surface spanning several items -- each item is its own view and cannot paint
+// outside itself. The arms are what makes the stack of strokes read as a
+// single bracket rather than as a stripe on each row.
+func drawGroupBracket(in bounds: NSRect, first: Bool, last: Bool) {
+    let x = bounds.minX + GROUP_GUTTER / 2
+    let arm: CGFloat = 4
+    let path = NSBezierPath()
+    path.lineWidth = 1.5
+    path.lineCapStyle = .round
+    // The stroke runs the full height of every row, so consecutive rows join
+    // into one unbroken line down the group.
+    path.move(to: NSPoint(x: x, y: bounds.minY))
+    path.line(to: NSPoint(x: x, y: bounds.maxY))
+    if first {
+        path.move(to: NSPoint(x: x, y: bounds.maxY - 0.75))
+        path.line(to: NSPoint(x: x + arm, y: bounds.maxY - 0.75))
+    }
+    if last {
+        path.move(to: NSPoint(x: x, y: bounds.minY + 0.75))
+        path.line(to: NSPoint(x: x + arm, y: bounds.minY + 0.75))
+    }
+    NSColor.controlAccentColor.setStroke()
+    path.stroke()
 }
 
 // Two lines, unlike the raw rows' one. A session stands for a dozen of them,
@@ -676,6 +788,13 @@ final class ActivityRowView: NSView {
 // and the same custom-NSView reason as PeriodRowView applies: an NSMenuItem's
 // own title is dimmed by the menu's vibrancy pass no matter what is set on it.
 final class SessionRowView: NSView {
+    // Its own index, so entering it lights this row alone. It shares the
+    // hover object with the raw rows because only one list is ever on screen,
+    // and one mechanism for "what is the pointer on" is one fewer to keep in
+    // step than two.
+    var session: Int?
+    weak var hover: SessionHover?
+
     init(_ s: ActSession, width: CGFloat) {
         super.init(frame: NSRect(x: 0, y: 0, width: width, height: 34))
         let (top, what) = sessionStrings(s)
@@ -693,9 +812,15 @@ final class SessionRowView: NSView {
 
         // AppKit draws the submenu arrow for an ordinary menu item and draws
         // nothing at all for one with a custom view, so a row whose events are
-        // one hover away would look exactly like a row that has none. Drawn
-        // here at the same trailing inset the OS uses, so the column of arrows
-        // reads as the system's own.
+        // one hover away would look exactly like a row that has none.
+        //
+        // On the leading edge rather than the trailing one, where a submenu
+        // arrow normally sits. The trailing edge of these rows is a ragged one
+        // -- the two lines are different lengths and both truncate -- so an
+        // arrow parked out there floated away from the row it belongs to,
+        // while the leading edge is the one straight line the block already
+        // has. It also puts the mark in the same gutter the raw list's bracket
+        // uses, so both lists say "there is more here" in the same column.
         let arrow = NSTextField(labelWithString: "\u{203A}")
         arrow.font = NSFont.systemFont(ofSize: 13)
         arrow.textColor = .tertiaryLabelColor
@@ -705,18 +830,39 @@ final class SessionRowView: NSView {
             addSubview(f)
         }
         NSLayoutConstraint.activate([
-            topField.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
-            topField.trailingAnchor.constraint(lessThanOrEqualTo: arrow.leadingAnchor, constant: -6),
-            topField.topAnchor.constraint(equalTo: topAnchor, constant: 4),
-            whatField.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
-            whatField.trailingAnchor.constraint(lessThanOrEqualTo: arrow.leadingAnchor, constant: -6),
-            whatField.topAnchor.constraint(equalTo: topField.bottomAnchor, constant: 1),
-            arrow.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            arrow.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
             arrow.centerYAnchor.constraint(equalTo: centerYAnchor),
+            topField.leadingAnchor.constraint(equalTo: arrow.trailingAnchor, constant: 6),
+            topField.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -14),
+            topField.topAnchor.constraint(equalTo: topAnchor, constant: 4),
+            whatField.leadingAnchor.constraint(equalTo: topField.leadingAnchor),
+            whatField.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -14),
+            whatField.topAnchor.constraint(equalTo: topField.bottomAnchor, constant: 1),
         ])
     }
 
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        for a in trackingAreas { removeTrackingArea(a) }
+        addTrackingArea(NSTrackingArea(
+            rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            owner: self, userInfo: nil))
+    }
+
+    // The fill lands on mouseEntered, which is the moment the pointer arrives
+    // -- the submenu still waits out the OS's own hover delay before it opens,
+    // and without this the row gave no sign at all during that wait.
+    override func mouseEntered(with _: NSEvent) { hover?.enter(session) }
+    override func mouseExited(with _: NSEvent) { hover?.enter(nil) }
+
     required init?(coder: NSCoder) { fatalError("not used") }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        guard let session, hover?.session == session else { return }
+        hoverFill().setFill()
+        bounds.fill()
+    }
 }
 
 // The events one session collapsed, as a submenu rather than as a tooltip.
@@ -849,6 +995,10 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // about anything happening in it, so having it reset every time the app is
     // rebuilt would make it feel like a mode that keeps slipping back.
     var grouped = UserDefaults.standard.bool(forKey: "activityGrouped")
+    // What the pointer is on inside the activity list, shared by that list's
+    // rows. Held here only so it outlives build() and is replaced by the next
+    // one, alongside the views it drives.
+    var hover: SessionHover?
     let focusLog = FocusLog()
     var audioTimer: Timer?
     var detector = CallDetector(minCallSec: MIN_CALL_SEC, settleSec: SETTLE_SEC)
@@ -1140,20 +1290,43 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate {
             toggle.state = grouped ? .on : .off
             m.addItem(toggle)
 
+            // One per build, and replaced with the rows it belongs to: the old
+            // views go when the menu is emptied, so a hover object kept across
+            // builds would be holding rows that are no longer on screen.
+            let hover = SessionHover()
+            self.hover = hover
             if grouped {
-                for s in status.sessions {
+                for (i, s) in status.sessions.enumerated() {
                     let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-                    item.view = SessionRowView(s, width: 300)
+                    let view = SessionRowView(s, width: 300)
+                    view.session = i
+                    view.hover = hover
+                    hover.rows.append(view)
+                    item.view = view
                     item.submenu = sessionSubmenu(s)
                     m.addItem(item)
                 }
             } else {
                 let ageWidth = columnWidth(ages)
                 let kindWidth = columnWidth(status.activities.map(\.kind))
-                for (a, age) in zip(status.activities, ages) {
+                let sessions = status.activities.map(\.session)
+                for (i, (a, age)) in zip(status.activities, ages).enumerated() {
                     let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-                    item.view = ActivityRowView(a, width: 300, age: age,
-                                                ageWidth: ageWidth, kindWidth: kindWidth)
+                    let view = ActivityRowView(a, width: 300, age: age,
+                                               ageWidth: ageWidth, kindWidth: kindWidth)
+                    view.session = a.session
+                    view.hover = hover
+                    // The list is in time order and a session is a contiguous
+                    // stretch of it, so a run's ends are simply where the
+                    // neighbour's session differs. The last row of the list
+                    // counts as an end even when its session continues past
+                    // it: the bracket has to close where the list stops,
+                    // because nothing below is there to close it.
+                    view.groupFirst = i == 0 || sessions[i - 1] != a.session
+                    view.groupLast = i == sessions.count - 1
+                        || sessions[i + 1] != a.session
+                    hover.rows.append(view)
+                    item.view = view
                     m.addItem(item)
                 }
             }
@@ -1305,7 +1478,8 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate {
                          at: a["at"] as? TimeInterval ?? 0,
                          kind: a["kind"] as? String ?? "",
                          what: a["what"] as? String ?? "",
-                         n: a["n"] as? Int ?? 1)
+                         n: a["n"] as? Int ?? 1,
+                         session: a["session"] as? Int)
             }
             s.sessions = (j["sessions"] as? [[String: Any]] ?? []).map { g in
                 ActSession(start: g["start"] as? Int ?? 0,
