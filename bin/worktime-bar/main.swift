@@ -821,7 +821,13 @@ final class SessionRowView: NSView {
         // while the leading edge is the one straight line the block already
         // has. It also puts the mark in the same gutter the raw list's bracket
         // uses, so both lists say "there is more here" in the same column.
-        let arrow = NSTextField(labelWithString: "\u{203A}")
+        //
+        // Pointing back out of the menu, not into it. On the trailing edge an
+        // arrow points the way the submenu will open and that is what makes it
+        // legible; moved to this side, the same glyph pointed at the row's own
+        // text, which reads as "the rest is that way" aimed at the words right
+        // next to it.
+        let arrow = NSTextField(labelWithString: "\u{2039}")
         arrow.font = NSFont.systemFont(ofSize: 13)
         arrow.textColor = .tertiaryLabelColor
 
