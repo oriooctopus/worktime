@@ -254,6 +254,15 @@ something actually changed.
 | Amber  | Idle: no recent activity and no meeting |
 | Red    | Probe failed to run or returned an error |
 
+**Recent activity, raw or grouped:** the dropdown lists the evidence the dot's
+verdict was derived from — the newest ten events, one line each. **Group into
+sessions** (⌘G, remembered across launches) folds the whole day's events into
+the work periods they happened in, one two-line row per period: its time range
+and length, how many events it held, the tally by kind, and the period's
+summary. Same rows, same boundaries as the period list — nothing is regrouped
+by a second rule, and events in minutes no period covers keep a row of their
+own marked `not counted` rather than disappearing from the tally.
+
 ## Ending a meeting when the call ends
 
 A scheduled meeting keeps the dot green until its scheduled end, so a half-hour

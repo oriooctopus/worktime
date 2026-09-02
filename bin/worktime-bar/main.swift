@@ -104,6 +104,27 @@ struct Activity {
     var n = 1
 }
 
+// The same evidence as `activities`, folded into the periods it happened in.
+// Not a second division of the day: the probe groups by the very spans the
+// period list is built from, so a session's range is a period's range and the
+// only thing new here is the tally of what that stretch was made of.
+//
+// `counted` is false for a run of evidence in minutes no period covers -- real
+// events in time the day total deliberately left out. They keep a row because
+// the raw list shows them, and a grouped view holding fewer events than the
+// list it toggles with would be a different account of the day rather than the
+// same one, gathered up.
+struct ActSession {
+    var start = 0
+    var end = 0
+    var len = 0
+    var what = ""
+    var counted = true
+    var current = false
+    var n = 0
+    var kinds: [(String, Int)] = []
+}
+
 struct Status {
     var state = "unknown"
     var why = "not yet polled"
@@ -116,6 +137,7 @@ struct Status {
     var focusPct: Int?
     var periods: [Period] = []
     var activities: [Activity] = []
+    var sessions: [ActSession] = []
 }
 
 func runProbe(_ args: [String]) -> String? {
@@ -551,6 +573,68 @@ final class ActivityRowView: NSView {
     required init?(coder: NSCoder) { fatalError("not used") }
 }
 
+// The two lines a session row shows, kept out of the view so a test can read
+// them and so the menu key can be built from exactly the strings on screen.
+//
+// Clock times rather than the raw list's ages: a session is a stretch with two
+// ends, and "28m ago" for something that ran for half an hour names only the
+// moment it started. The raw rows are point events and read better as ages;
+// these are spans and read better as spans.
+func sessionStrings(_ s: ActSession) -> (top: String, what: String) {
+    let events = "\(s.n) event\(s.n == 1 ? "" : "s")"
+    var top = s.counted
+        ? "\(hhmm(s.start))–\(hhmm(s.end)) · \(human(s.len))   \(events)"
+        // No length, because these minutes were not credited and printing a
+        // span here would read as time that was.
+        : "\(hhmm(s.start))–\(hhmm(s.end)) · not counted   \(events)"
+    if s.current && s.counted { top += "   ·  now" }
+
+    var what = s.kinds.map { "\($0.1) \($0.0)" }.joined(separator: " · ")
+    // The period's own summary, when it has earned one, after the tally. The
+    // tally says what the stretch was made of; this says what it was about,
+    // and the two together are the whole reason to collapse the rows.
+    if !s.what.isEmpty { what += "  —  \(s.what)" }
+    if what.count > 52 { what = String(what.prefix(51)) + "…" }
+    return (top, what)
+}
+
+// Two lines, unlike the raw rows' one. A session stands for a dozen of them,
+// so it can afford the height the thing it replaced would have spent anyway --
+// and the same custom-NSView reason as PeriodRowView applies: an NSMenuItem's
+// own title is dimmed by the menu's vibrancy pass no matter what is set on it.
+final class SessionRowView: NSView {
+    init(_ s: ActSession, width: CGFloat) {
+        super.init(frame: NSRect(x: 0, y: 0, width: width, height: 34))
+        let (top, what) = sessionStrings(s)
+
+        let topField = NSTextField(labelWithString: top)
+        topField.font = NSFont.systemFont(ofSize: 12,
+                                          weight: s.current ? .semibold : .regular)
+        topField.textColor = s.counted ? .labelColor : .secondaryLabelColor
+        topField.lineBreakMode = .byTruncatingTail
+
+        let whatField = NSTextField(labelWithString: what)
+        whatField.font = ACTIVITY_FONT
+        whatField.textColor = .secondaryLabelColor
+        whatField.lineBreakMode = .byTruncatingTail
+
+        for f in [topField, whatField] {
+            f.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(f)
+        }
+        NSLayoutConstraint.activate([
+            topField.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            topField.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -14),
+            topField.topAnchor.constraint(equalTo: topAnchor, constant: 4),
+            whatField.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            whatField.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -14),
+            whatField.topAnchor.constraint(equalTo: topField.bottomAnchor, constant: 1),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+}
+
 func addPeriodItem(_ p: Period, to menu: NSMenu) {
     let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     item.view = PeriodRowView(p, width: 300)
@@ -637,6 +721,11 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // smoothly between polls rather than jumping every 5s.
     var lastActivityAt: Date?
     var hotKeyRef: EventHotKeyRef?
+    // Which of the two activity views is showing, remembered across launches.
+    // The choice is about how the reader wants to read the day rather than
+    // about anything happening in it, so having it reset every time the app is
+    // rebuilt would make it feel like a mode that keeps slipping back.
+    var grouped = UserDefaults.standard.bool(forKey: "activityGrouped")
     let focusLog = FocusLog()
     var audioTimer: Timer?
     var detector = CallDetector(minCallSec: MIN_CALL_SEC, settleSec: SETTLE_SEC)
@@ -818,13 +907,22 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // menu that changes without the probe's answer changing at all, so
         // keying on the activity alone would hold "1m" on screen indefinitely.
         let ages = status.activities.map { activityAge($0) }
-        let key = ([worked, symbol, status.why, status.state, status.mode]
+        // Both views' strings go in the key, not just the one on screen: the
+        // toggle changes which is drawn without changing anything the probe
+        // said, so a key built from the visible view alone would match on the
+        // click that flips it and leave the old list up.
+        let key = ([worked, symbol, status.why, status.state, status.mode,
+                    grouped ? "grouped" : "raw"]
                    + periods.map { p in
                        let s = periodStrings(p)
                        return s.top + "\u{1}" + s.what
                    }
                    + zip(status.activities, ages).map { a, age in
                        "\(age)\u{1}\(a.kind)\u{1}\(a.what)\u{1}\(a.n)"
+                   }
+                   + status.sessions.map { s in
+                       let x = sessionStrings(s)
+                       return x.top + "\u{1}" + x.what
                    }
                   ).joined(separator: "\u{2}")
         if key == lastMenuKey { return }
@@ -852,17 +950,40 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Ten single-line rows is the one place this menu spends real height,
         // which is why they are single-line and why the periods sit in a
         // submenu: this list is the log, so they don't need to be.
+        //
+        // The same evidence can be read two ways, and which one is wanted
+        // depends on the question. "Why is the dot green right now" is answered
+        // by the newest few events; "what did this morning consist of" is
+        // answered by the day gathered into its periods, where ten raw rows
+        // reach back twenty minutes and eight sessions reach back hours. A
+        // checked row under the header switches between them, and the header
+        // says which is showing so the list is never ambiguous about it.
         if !status.activities.isEmpty {
-            let head = NSMenuItem(title: "Recent activity", action: nil, keyEquivalent: "")
+            let head = NSMenuItem(title: grouped ? "Recent activity — sessions"
+                                                 : "Recent activity",
+                                  action: nil, keyEquivalent: "")
             head.isEnabled = false
             m.addItem(head)
-            let ageWidth = columnWidth(ages)
-            let kindWidth = columnWidth(status.activities.map(\.kind))
-            for (a, age) in zip(status.activities, ages) {
-                let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-                item.view = ActivityRowView(a, width: 300, age: age,
-                                            ageWidth: ageWidth, kindWidth: kindWidth)
-                m.addItem(item)
+            let toggle = NSMenuItem(title: "Group into sessions",
+                                    action: #selector(toggleGrouped), keyEquivalent: "g")
+            toggle.state = grouped ? .on : .off
+            m.addItem(toggle)
+
+            if grouped {
+                for s in status.sessions {
+                    let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+                    item.view = SessionRowView(s, width: 300)
+                    m.addItem(item)
+                }
+            } else {
+                let ageWidth = columnWidth(ages)
+                let kindWidth = columnWidth(status.activities.map(\.kind))
+                for (a, age) in zip(status.activities, ages) {
+                    let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+                    item.view = ActivityRowView(a, width: 300, age: age,
+                                                ageWidth: ageWidth, kindWidth: kindWidth)
+                    m.addItem(item)
+                }
             }
             m.addItem(.separator())
         }
@@ -981,6 +1102,24 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate {
                          what: a["what"] as? String ?? "",
                          n: a["n"] as? Int ?? 1)
             }
+            s.sessions = (j["sessions"] as? [[String: Any]] ?? []).map { g in
+                ActSession(start: g["start"] as? Int ?? 0,
+                           end: g["end"] as? Int ?? 0,
+                           len: g["len"] as? Int ?? 0,
+                           what: g["what"] as? String ?? "",
+                           counted: g["counted"] as? Bool ?? true,
+                           current: g["current"] as? Bool ?? false,
+                           n: g["n"] as? Int ?? 0,
+                           // JSON pairs, not a dictionary, because the order is
+                           // the payload's: the probe sorts biggest first so
+                           // the smallest contributor is what truncates off the
+                           // end of the line, and a dictionary would lose that.
+                           kinds: (g["kinds"] as? [[Any]] ?? []).compactMap {
+                               guard let k = $0.first as? String,
+                                     let n = $0.last as? Int else { return nil }
+                               return (k, n)
+                           })
+            }
             DispatchQueue.main.async { self.apply(s) }
         }
     }
@@ -1027,6 +1166,15 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // The clicked item carries the mode name, so both rows share one action and
     // neither can drift from the title beside its own checkmark.
+    // Purely a way of looking at what the last poll already returned, so this
+    // asks the probe for nothing and rebuilds straight away. The menu closes on
+    // the click, so the flipped view is what opens next time.
+    @objc func toggleGrouped() {
+        grouped.toggle()
+        UserDefaults.standard.set(grouped, forKey: "activityGrouped")
+        build()
+    }
+
     @objc func pickMode(_ sender: NSMenuItem) {
         guard let name = sender.representedObject as? String else { return }
         DispatchQueue.global(qos: .utility).async {
