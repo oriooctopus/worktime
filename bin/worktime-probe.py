@@ -889,6 +889,12 @@ FOCUS_EXCLUDE = {
     # working in it. Same class as the lock screen: real frontmost app, real
     # zero idle, no work.
     "com.apple.UserNotificationCenter",
+    # Changing a display setting or a keyboard shortcut is housekeeping on the
+    # machine, not the job the machine is for. Unlike the lock screen there is
+    # somebody at the keyboard, so nothing else here would ever rule it out --
+    # and because a period is labelled by the app that held most of it, a few
+    # minutes in here was enough to name a whole period "System Settings".
+    "com.apple.systempreferences",
 }
 
 

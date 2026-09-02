@@ -119,6 +119,16 @@ class TestCredit(FocusCase):
                                 app="loginwindow"))
         self.assertEqual(self.minutes(), [])
 
+    def test_system_settings_earns_nothing(self):
+        # Somebody IS at the keyboard, so no idle or gap check will ever rule
+        # this out -- changing a display setting simply isn't the job. It has
+        # to be named, or a few minutes of housekeeping both earns work time
+        # and names the period it lands in.
+        self.write(self.samples(9 * 3600, 11,
+                                bundle="com.apple.systempreferences",
+                                app="System Settings"))
+        self.assertEqual(self.minutes(), [])
+
 
 class TestIdle(FocusCase):
     def test_idle_beyond_the_threshold_stops_credit(self):
