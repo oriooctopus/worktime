@@ -25,21 +25,43 @@ let IDLE_GRACE_SEC = 20 * 60
 let IDLE_CLAIMS = ("~/.claude/stats/worktime/idle-claims.jsonl" as NSString)
     .expandingTildeInPath
 
-// Asks whether an absence counted, and records the answer only when there is
-// one. Exclusion needs no record; a claim does.
+// Whether the absence is put on screen. OFF, and the panel is the reason the
+// whole feature was switched off: the question interrupted whatever was
+// actually being done -- over a full-screen app, on every Space, mid-sentence
+// -- to ask about a silence that HID idle had misread anyway, since it counts
+// only keys and mouse and cannot tell reading, a call or a long build from an
+// empty room. With the probe's IDLE_SUBTRACTS off there is nothing left for an
+// answer to change, so a panel demanding one within ten seconds is pure
+// interruption.
+//
+// The absence is still NOTICED, which is what "keep it for debugging" needs:
+// every one is logged to stderr here, and the probe still finds them in the
+// focus log and prints them on the timeline. Debugging reads a log; it does
+// not need a window in front of the work being debugged.
+let IDLE_PROMPT_VISIBLE = false
+
+// Notices an absence, and -- when the prompt is on -- asks whether it counted.
 final class IdleWatcher {
     /// Injectable so a test can write claims somewhere other than the real
     /// log, and so the suite never appends to the running app's file.
     private let claimsPath: String
+    /// Injectable for the same reason, plus one more: a test that raised the
+    /// real panel put a window on the user's screen every time the suite ran.
+    private let visible: Bool
     private var panel: CountdownPanel?
-    // One question per absence. Without this the panel would reappear every
-    // poll for as long as somebody stayed away -- forty prompts over a lunch,
-    // all asking about the same silence, none of them answerable.
+    // One notice per absence. Without this it would fire every poll for as
+    // long as somebody stayed away -- forty over a lunch, all about the same
+    // silence.
     private var asked = false
     private var graceUntil = Date.distantPast
 
-    init(claimsPath: String = IDLE_CLAIMS) {
+    /// Absences seen, so a test can prove the watcher still notices them with
+    /// the panel off -- the half of the feature that is deliberately kept.
+    private(set) var noticed = 0
+
+    init(claimsPath: String = IDLE_CLAIMS, visible: Bool = IDLE_PROMPT_VISIBLE) {
         self.claimsPath = claimsPath
+        self.visible = visible
     }
 
     private static let stamp: DateFormatter = {
@@ -65,17 +87,24 @@ final class IdleWatcher {
         }
         guard !asked, panel == nil, now >= graceUntil else { return }
         asked = true
+        noticed += 1
         let since = now.addingTimeInterval(-idle)
         let clock = Self.stamp.string(from: since)
+        // The record the absence leaves when nothing is shown. stderr is where
+        // the bar's other diagnostics go, and the probe's timeline row is the
+        // durable copy -- see IDLE_PROMPT_VISIBLE.
+        FileHandle.standardError.write(
+            "idle since \(clock) noticed; still counted\n".data(using: .utf8)!)
+        guard visible else { return }
         panel = CountdownPanel(
             meeting: "Away since \(clock)",
             seconds: IDLE_CLAIM_SEC,
             buttonTitle: "I am here",
-            messageFor: { "Not counting this time — \($0)s" },
+            messageFor: { "Still counting — noting this only — \($0)s" },
             onExpire: { [weak self] in
                 self?.panel = nil
                 FileHandle.standardError.write(
-                    "idle since \(clock) unclaimed; not counted\n".data(using: .utf8)!)
+                    "idle since \(clock) unclaimed; still counted\n".data(using: .utf8)!)
             },
             onCancel: { [weak self] in
                 guard let self else { return }
@@ -92,7 +121,9 @@ final class IdleWatcher {
     /// Record that a person answered for this silence, covering the stretch
     /// asked about and the grace window after it as one span -- so the probe
     /// applies the window by reading the claim rather than by re-deriving a
-    /// rule of its own.
+    /// rule of its own. Still written while IDLE_SUBTRACTS is off, because a
+    /// claim is now the only labelled example of "away by the threshold, but
+    /// actually working" -- which is what a better threshold gets fitted to.
     private func claim(from since: Date, at now: Date) {
         let cal = Calendar.current
         func secOfDay(_ d: Date) -> Int {
