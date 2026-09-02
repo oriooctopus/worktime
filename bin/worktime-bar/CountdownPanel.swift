@@ -38,11 +38,22 @@ final class CountdownPanel {
     private let onExpire: () -> Void
     private let onCancel: () -> Void
 
+    /// Whether the panel is actually put on screen.
+    ///
+    /// Only a test passes false, and it is the whole reason this exists: the
+    /// suite builds four real panels, and every run of `pytest` dropped four
+    /// countdowns on top of whatever the machine was doing -- indistinguishable
+    /// from the app prompting for real, and arriving while somebody was in the
+    /// middle of something. The panel's BEHAVIOUR is what those tests are for
+    /// (the button, the countdown, the expiry), and none of it needs the window
+    /// to be visible: an NSButton off screen still clicks, and a timer still
+    /// fires. So the tests keep all of their coverage and stop interrupting.
     init(meeting: String, seconds: Int,
          buttonTitle: String = "Keep tracking",
          messageFor: @escaping (Int) -> String = {
              "Ended — stopping tracking in \($0)s"
          },
+         present: Bool = true,
          onExpire: @escaping () -> Void, onCancel: @escaping () -> Void) {
         self.remaining = seconds
         self.messageFor = messageFor
@@ -98,9 +109,12 @@ final class CountdownPanel {
 
         redraw()
         place()
-        // Regardless, not makeKeyAndOrderFront: the app is an accessory and
-        // must not steal the keyboard from whatever the meeting was about.
-        panel.orderFrontRegardless()
+        if present {
+            // Regardless, not makeKeyAndOrderFront: the app is an accessory
+            // and must not steal the keyboard from whatever the meeting was
+            // about.
+            panel.orderFrontRegardless()
+        }
 
         let t = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             self?.tick()

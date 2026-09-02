@@ -30,10 +30,19 @@ enum CountdownPanelTests {
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
 
+        // Every panel here is built with `present: false`. They used to be
+        // real windows, which meant running the test suite dropped four
+        // countdowns on screen over whatever the machine was doing -- and they
+        // look exactly like the app prompting for real, so the only way to
+        // tell was to know the suite happened to be running. Nothing below
+        // needs the window: the button still clicks and the timer still fires
+        // off screen, so the coverage is unchanged and the interruption is
+        // gone. A panel built the normal way still shows -- see the default.
+
         // Pressing the button cancels, and cancelling is not ending.
         var expired = 0, cancelled = 0
         var panel: CountdownPanel? = CountdownPanel(
-            meeting: "Design review", seconds: 3,
+            meeting: "Design review", seconds: 3, present: false,
             onExpire: { expired += 1 }, onCancel: { cancelled += 1 })
         check(panel!.messageText == "Ended — stopping tracking in 3s",
               "opens at the full countdown, got \(panel!.messageText)")
@@ -49,7 +58,7 @@ enum CountdownPanelTests {
 
         // Left alone, it counts down and ends the meeting once.
         expired = 0; cancelled = 0
-        panel = CountdownPanel(meeting: "Standup", seconds: 2,
+        panel = CountdownPanel(meeting: "Standup", seconds: 2, present: false,
                                onExpire: { expired += 1 }, onCancel: { cancelled += 1 })
         spin(1.4)
         check(panel!.messageText == "Ended — stopping tracking in 1s",
@@ -63,7 +72,7 @@ enum CountdownPanelTests {
 
         // Withdrawn because the call came back: neither outcome.
         expired = 0; cancelled = 0
-        panel = CountdownPanel(meeting: "Retro", seconds: 3,
+        panel = CountdownPanel(meeting: "Retro", seconds: 3, present: false,
                                onExpire: { expired += 1 }, onCancel: { cancelled += 1 })
         spin(1.2)
         panel!.close()
@@ -73,7 +82,8 @@ enum CountdownPanelTests {
         panel = nil
 
         // A meeting with no name still names something.
-        let unnamed = CountdownPanel(meeting: "", seconds: 3, onExpire: {}, onCancel: {})
+        let unnamed = CountdownPanel(meeting: "", seconds: 3, present: false,
+                                     onExpire: {}, onCancel: {})
         check(unnamed.messageText.hasPrefix("Ended"), "an unnamed meeting still opens")
         unnamed.close()
 
