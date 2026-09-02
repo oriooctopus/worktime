@@ -235,6 +235,10 @@ draws a coloured dot; it never recomputes state itself.
 - **Meeting cuts** — written by `worktime-probe.py meeting_end`. A meeting that
   finished early stops counting from that minute on, both for the live dot and
   for the day's total.
+- **End of session** — written by `worktime-probe.py end_session [last]`. Closes
+  any open mark *and* cuts any meeting still running, at one minute: this one,
+  or (`last`) the last entry the tracker saw. It is the "that was the day"
+  statement, and unlike `unmark` it does not assume a mark was ever started.
 
 **How it decides working vs not working:**
 
@@ -350,6 +354,31 @@ It is a panel rather than a notification because a banner dismisses itself after
 about five seconds — half the countdown — Focus suppresses delivery and a
 meeting is exactly when Focus is on, and `UNUserNotificationCenter` would put a
 permission prompt in front of a tracker that currently asks for nothing.
+
+## Starting and ending a shift
+
+**⌘⌥S** starts a shift, or ends the running one — the same action the menu's
+**Start working** / **Stop working** row performs, which is why that row shows
+the chord. Stopping ends the shift at the *last entry the tracker saw*, not at
+the keypress: the chord gets pressed on the way out the door, and the minutes
+between the last prompt and the press are the leaving, not the work. That end
+carries the same `TAIL_SEC` the period model already adds after a last prompt,
+so a stop and a walk-away credit the same final minute.
+
+**End Session** sits below it and is always shown, whether or not a shift was
+started — a scheduled meeting or a run of prompting keeps the day open with
+nothing marked at all, and there was previously no menu item that meant "that
+was the day" in either case. Its submenu names the two minutes rather than
+picking one:
+
+| | ends at |
+|---|---|
+| **End Now** | this minute |
+| **End After Last Entry** | the last entry, plus `TAIL_SEC` — same rule as ⌘⌥S |
+
+Either closes an open mark and cuts a meeting that would otherwise run past
+that minute, in one step. A cut written when no meeting is running is inert:
+`effective_meeting_end` only applies a cut to the meeting it landed inside.
 
 ## Building the menu bar app
 

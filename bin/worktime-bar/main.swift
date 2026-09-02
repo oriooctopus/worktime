@@ -791,6 +791,13 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // What the menu currently renders. Rebuilding relays the menu out, which
     // flickers while it is open, and most polls change nothing that shows.
     var lastMenuKey = ""
+    // Whether the dropdown is on screen. ⌘⌥S now exists twice -- as the Carbon
+    // hot key and as the toggle row's key equivalent -- and an open menu
+    // matches its own key equivalents while the hot key manager goes on
+    // dispatching the chord regardless. Both would fire, so a shift would be
+    // started and immediately ended by one press. While the menu is up it owns
+    // the chord and the hot key stands down.
+    var menuIsOpen = false
 
     // The Carbon handler is a bare C function pointer and cannot capture, so
     // it reaches the app through the `bar` global rather than through self.
@@ -810,7 +817,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate {
             DispatchQueue.main.async {
                 switch id.id {
                 case HOTKEY_ID_ENTRY: bar.logEntry()
-                default:              bar.toggleShift()
+                default:              if !bar.menuIsOpen { bar.toggleShift() }
                 }
             }
             return noErr
@@ -1084,16 +1091,42 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // one had taken. Showing only the move that applies makes the state
         // legible and the duplicate unreachable.
         //
-        // The stop here is deliberately not the one ⌘⌥S performs. Clicking it
-        // is a decision made now, so it ends the shift now; the hotkey is
-        // pressed while standing up and ends it at the last event instead.
-        if status.state == "marked" {
-            m.addItem(NSMenuItem(title: "Stop working (end now)",
-                                 action: #selector(unmark), keyEquivalent: "m"))
-        } else {
-            m.addItem(NSMenuItem(title: "Start working",
-                                 action: #selector(mark), keyEquivalent: "m"))
+        // One action, too: this row and ⌘⌥S are the same decision, so they run
+        // the same code and the row advertises the chord. They used to differ
+        // -- the row ended the shift now, the chord at the last event -- which
+        // made the shortcut impossible to describe in the interface without
+        // also explaining that it did something slightly different. The two
+        // endings are still both reachable, by name, under End Session below.
+        let toggle = NSMenuItem(title: status.state == "marked" ? "Stop working"
+                                                                : "Start working",
+                                action: #selector(toggleShift), keyEquivalent: "s")
+        toggle.keyEquivalentModifierMask = [.command, .option]
+        m.addItem(toggle)
+
+        // Always present, unlike the toggle's stop, which only appears once a
+        // mark is running. A mark is not the only thing that keeps the day
+        // open -- a meeting runs on the calendar's schedule and prompting
+        // lights the dot with nothing marked at all -- so on most afternoons
+        // there was no menu item at all that meant "that was the day". This
+        // is that item, and it says which minute it means rather than picking
+        // for you.
+        let endSub = NSMenu()
+        for (title, atLast) in [("End Now", false), ("End After Last Entry", true)] {
+            let mi = NSMenuItem(title: title, action: #selector(endSession(_:)),
+                                keyEquivalent: "")
+            mi.representedObject = atLast
+            // Set here, not by the sweep at the bottom of build(): that walks
+            // m.items, which is the top level only. A submenu item left with a
+            // nil target falls back to the responder chain, finds nothing that
+            // implements the selector, and AppKit draws the row permanently
+            // greyed out -- the menu looks broken rather than acting broken.
+            mi.target = self
+            endSub.addItem(mi)
         }
+        let endHost = NSMenuItem(title: "End Session", action: nil, keyEquivalent: "")
+        endHost.submenu = endSub
+        m.addItem(endHost)
+
         if status.why.hasPrefix("in ") {
             m.addItem(NSMenuItem(title: "Meeting ended early",
                                  action: #selector(endMeetingEarly), keyEquivalent: ""))
@@ -1146,6 +1179,9 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate {
         build()
         refresh()
     }
+
+    func menuWillOpen(_: NSMenu) { menuIsOpen = true }
+    func menuDidClose(_: NSMenu) { menuIsOpen = false }
 
     // The probe shells out to prompt-count and Slack, so a poll can take a
     // second or two. On the main thread that freezes the menu bar for everyone.
@@ -1238,23 +1274,14 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate {
         build()
     }
 
-    @objc func mark() {
-        DispatchQueue.global(qos: .utility).async {
-            _ = runProbe(["mark"])
-            DispatchQueue.main.async { self.refresh() }
-        }
-    }
-
-    @objc func unmark() {
-        DispatchQueue.global(qos: .utility).async {
-            _ = runProbe(["unmark"])
-            DispatchQueue.main.async { self.refresh() }
-        }
-    }
-
-    // ⌘⌥S. Starts a shift, or ends the running one at the last event the probe
-    // saw -- not at this keypress. Reading the state on main before dispatching
-    // keeps the decision and the menu's rendering of it from disagreeing.
+    // ⌘⌥S, and the toggle row that names it. Starts a shift, or ends the
+    // running one at the last event the probe saw -- not at this keypress: the
+    // chord gets pressed on the way out the door, and the minutes between the
+    // last prompt and the press are the leaving, not the work. Ending at this
+    // minute instead is End Session's "End Now", which is a thing you ask for
+    // by name rather than a difference between two ways of doing one thing.
+    // Reading the state on main before dispatching keeps the decision and the
+    // menu's rendering of it from disagreeing.
     @objc func toggleShift() {
         let running = status.state == "marked"
         DispatchQueue.global(qos: .utility).async {
@@ -1295,6 +1322,25 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let name = sender.representedObject as? String else { return }
         DispatchQueue.global(qos: .utility).async {
             _ = runProbe(["mode", name])
+            DispatchQueue.main.async { self.refresh() }
+        }
+    }
+
+    // End Session. Closes whatever is holding the day open -- an open mark, a
+    // meeting still running on the calendar's schedule -- at one minute, either
+    // this one or the last entry the tracker saw. The probe decides which
+    // minute "the last entry" is, using the same rule the shift stop uses, so
+    // there is one answer to that question and not two.
+    @objc func endSession(_ sender: NSMenuItem) {
+        // Logged rather than defaulted: the two rows mean different minutes, so
+        // guessing one would silently end the day at a time nobody asked for.
+        guard let atLast = sender.representedObject as? Bool else {
+            FileHandle.standardError.write(
+                "end session: row carried no minute choice\n".data(using: .utf8)!)
+            return
+        }
+        DispatchQueue.global(qos: .utility).async {
+            _ = runProbe(atLast ? ["end_session", "last"] : ["end_session"])
             DispatchQueue.main.async { self.refresh() }
         }
     }
