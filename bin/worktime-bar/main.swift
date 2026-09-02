@@ -603,11 +603,6 @@ final class SessionRowView: NSView {
     init(_ s: ActSession, width: CGFloat) {
         super.init(frame: NSRect(x: 0, y: 0, width: width, height: 34))
         let (top, what) = sessionStrings(s)
-        // The rows this session collapsed. Grouping is what makes the day
-        // readable and it is also what puts the evidence out of reach; hovering
-        // is where it comes back, the same way the raw row's tooltip is where
-        // its exact minute stays reachable behind a rounded age.
-        toolTip = sessionTip(s)
 
         let topField = NSTextField(labelWithString: top)
         topField.font = NSFont.systemFont(ofSize: 12,
@@ -620,21 +615,70 @@ final class SessionRowView: NSView {
         whatField.textColor = .secondaryLabelColor
         whatField.lineBreakMode = .byTruncatingTail
 
-        for f in [topField, whatField] {
+        // AppKit draws the submenu arrow for an ordinary menu item and draws
+        // nothing at all for one with a custom view, so a row whose events are
+        // one hover away would look exactly like a row that has none. Drawn
+        // here at the same trailing inset the OS uses, so the column of arrows
+        // reads as the system's own.
+        let arrow = NSTextField(labelWithString: "\u{203A}")
+        arrow.font = NSFont.systemFont(ofSize: 13)
+        arrow.textColor = .tertiaryLabelColor
+
+        for f in [topField, whatField, arrow] {
             f.translatesAutoresizingMaskIntoConstraints = false
             addSubview(f)
         }
         NSLayoutConstraint.activate([
             topField.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
-            topField.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -14),
+            topField.trailingAnchor.constraint(lessThanOrEqualTo: arrow.leadingAnchor, constant: -6),
             topField.topAnchor.constraint(equalTo: topAnchor, constant: 4),
             whatField.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
-            whatField.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -14),
+            whatField.trailingAnchor.constraint(lessThanOrEqualTo: arrow.leadingAnchor, constant: -6),
             whatField.topAnchor.constraint(equalTo: topField.bottomAnchor, constant: 1),
+            arrow.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            arrow.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
+}
+
+// The events one session collapsed, as a submenu rather than as a tooltip.
+//
+// A tooltip was the first shape this took and it lands ON the list it is
+// describing: the rows either side of the one being read disappear under it,
+// which is the opposite of what hovering a row in a list is for. A submenu
+// opens beside the menu, leaves the day visible next to it, and is the shape
+// the OS already uses for "this row has more behind it" -- including the hover
+// to open it, which is what was being asked for in the first place.
+//
+// Same three columns as the raw list, for the same reason the raw list has
+// them: this IS the raw list, scoped to one session. The one difference is the
+// first column, which holds the clock time rather than an age -- inside a
+// stretch that ended an hour ago, what each event is being read against is the
+// others and the range on the parent row, not the present moment.
+func sessionSubmenu(_ s: ActSession) -> NSMenu {
+    let sub = NSMenu()
+    let times = s.rows.map(\.t)
+    let timeWidth = columnWidth(times)
+    let kindWidth = columnWidth(s.rows.map(\.kind))
+    for r in s.rows {
+        let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        item.view = ActivityRowView(Activity(t: r.t, at: 0, kind: r.kind,
+                                             what: r.what, n: r.n),
+                                    width: 420, age: r.t,
+                                    ageWidth: timeWidth, kindWidth: kindWidth)
+        sub.addItem(item)
+    }
+    // What the payload's cap left out, said out loud: a submenu showing twenty
+    // of a hundred would contradict the event count on the row it hangs off,
+    // which is the number it is read against.
+    if let line = sessionMoreLine(s) {
+        let more = NSMenuItem(title: line, action: nil, keyEquivalent: "")
+        more.isEnabled = false
+        sub.addItem(more)
+    }
+    return sub
 }
 
 func addPeriodItem(_ p: Period, to menu: NSMenu) {
@@ -964,14 +1008,10 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate {
                    + zip(status.activities, ages).map { a, age in
                        "\(age)\u{1}\(a.kind)\u{1}\(a.what)\u{1}\(a.n)"
                    }
-                   // The hover text too, not just the two visible lines: a
-                   // session whose rows changed without its tally changing --
-                   // a prompt collapsed differently, say -- draws the same row
-                   // over a tooltip that is now stale, and the tooltip is the
-                   // only place those rows can be read at all.
-                   + status.sessions.map { s in
-                       sessionTip(s) + "\u{1}" + sessionStrings(s).what
-                   }
+                   // sessionKey covers the submenu's rows as well as the two
+                   // visible lines -- see its own comment for why what is
+                   // hidden behind a hover still has to be in here.
+                   + status.sessions.map(sessionKey)
                   ).joined(separator: "\u{2}")
         if key == lastMenuKey { return }
         lastMenuKey = key
@@ -1021,6 +1061,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 for s in status.sessions {
                     let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
                     item.view = SessionRowView(s, width: 300)
+                    item.submenu = sessionSubmenu(s)
                     m.addItem(item)
                 }
             } else {

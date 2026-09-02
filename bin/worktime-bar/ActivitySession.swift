@@ -86,40 +86,30 @@ func sessionStrings(_ s: ActSession) -> (top: String, what: String) {
     return (top, what)
 }
 
-// Wider than a menu row, because a tooltip is drawn over the menu rather than
-// inside it and has the screen to work with -- but still capped, since a
-// pasted stack trace as a prompt would otherwise set the width of every line.
-let SESSION_TIP_CHARS = 72
-
-// What hovering a session row shows: the events it collapsed, in the order and
-// the shape the raw list shows them.
+// The last line of a session's submenu, when the probe's cap kept some of its
+// events from travelling. Nil when they all did -- "… and 0 more" is worse
+// than silence.
 //
-// The grouped view answers "what was this stretch" by summing its rows away,
-// which is the point of it and also the one thing it costs -- the evidence the
-// dot's verdict rests on stops being readable the moment it is grouped.
-// Toggling back to the raw list is not that answer either: it shows the newest
-// ten events of the whole day, not this session's. The hover is the only place
-// a single session's rows can be read, which is why it exists.
-//
-// Clock times here, not ages: the row above already places the session in the
-// day, so what these are being read against is each other and the range in the
-// header line.
-func sessionTip(_ s: ActSession) -> String {
-    var lines = [sessionStrings(s).top]
-    for r in s.rows {
-        var what = r.what
-        if what.count > SESSION_TIP_CHARS {
-            what = String(what.prefix(SESSION_TIP_CHARS - 1)) + "…"
-        }
-        // Same "×N" as the raw list, and absent for the ordinary single event
-        // for the same reason: a "×1" on every other line is noise standing in
-        // for the normal case.
-        lines.append("\(r.t)  \(r.kind) · \(what)" + (r.n > 1 ? "  ×\(r.n)" : ""))
-    }
-    // The cap the probe applied, said out loud. A tooltip that silently showed
-    // twelve of a hundred events would be a smaller day than the count on the
-    // row right above it, which is the one number it is being read against.
+// It has to be said at all because the row the submenu hangs off reports the
+// session's whole count: a submenu that silently showed twenty events of a
+// hundred would be a different day from the row that opened it, and the reader
+// has both numbers in front of them.
+func sessionMoreLine(_ s: ActSession) -> String? {
     let shown = s.rows.reduce(0) { $0 + $1.n }
-    if s.n > shown { lines.append("… and \(s.n - shown) more") }
-    return lines.joined(separator: "\n")
+    return s.n > shown ? "… and \(s.n - shown) more" : nil
+}
+
+// Everything a session draws, as one string, for the menu key that decides
+// whether an open dropdown needs rebuilding.
+//
+// The submenu's rows are part of what is on screen, so they belong in that key:
+// a session whose events changed without its tally changing -- a prompt
+// collapsed differently, say -- draws an identical row over a submenu that is
+// now describing the wrong thing. Not shown to anyone, so the format only has
+// to be unambiguous, which is what the separators are for.
+func sessionKey(_ s: ActSession) -> String {
+    let x = sessionStrings(s)
+    return ([x.top, x.what]
+            + s.rows.map { "\($0.t)\u{1}\($0.kind)\u{1}\($0.what)\u{1}\($0.n)" }
+            + [sessionMoreLine(s) ?? ""]).joined(separator: "\u{3}")
 }

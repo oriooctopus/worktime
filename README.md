@@ -305,12 +305,13 @@ summary. Same rows, same boundaries as the period list — nothing is regrouped
 by a second rule, and events in minutes no period covers keep a row of their
 own marked `not counted` rather than disappearing from the tally.
 
-Hovering a session row shows its own events — up to twelve of them, in the
-same shape the raw list draws, with a line saying how many the cap left out.
-Grouping is what makes the day readable and also what puts the evidence out of
-reach; the hover is the only place one session's rows can be read, since
-toggling back gives the newest ten events of the whole day rather than of that
-stretch.
+Each session row opens a submenu (hover the `›`) listing its own events — up to
+twenty of them, in the same three columns the raw list uses, ending in a line
+saying how many the cap left out. Grouping is what makes the day readable and
+also what puts the evidence out of reach; the submenu is the only place one
+session's rows can be read, since toggling back gives the newest ten events of
+the whole day rather than of that stretch. It opens beside the menu rather than
+over it, which a tooltip could not do.
 
 ## Ending a meeting when the call ends
 
