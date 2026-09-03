@@ -96,7 +96,12 @@ func sessionStrings(_ s: ActSession) -> (top: String, what: String) {
 // two windows read as one confusing wide menu whose left half had different
 // rules. The gap is the whole reason this is a panel we place rather than a
 // submenu the OS places.
-let POPOVER_GAP: CGFloat = 10
+//
+// Five points, which is about a hair's width on screen and all this needs to
+// be. The job is only to break the seam so the two windows read as two; ten
+// did that and then went on to look like a space left on purpose, which is a
+// second thing to notice on the way to reading the list.
+let POPOVER_GAP: CGFloat = 5
 
 // Kept off the screen edge by this much when the panel has to be clamped, so a
 // panel pushed against the side of the display still reads as a floating thing
