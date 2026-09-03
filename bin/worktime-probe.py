@@ -3266,7 +3266,7 @@ MIN_RECOMPUTE_SEC = 10
 # versioning is a .get() default on every read -- which would quietly serve an
 # empty activity list as though the day had none. A version mismatch is simply
 # a miss, handled by the path that already exists for a stale day.
-STATUS_CACHE_V = 5
+STATUS_CACHE_V = 6
 
 
 def activity_fingerprint(day: str) -> str:
@@ -3324,9 +3324,15 @@ def activity_fingerprint(day: str) -> str:
     return hashlib.sha1("|".join(sorted(parts)).encode()).hexdigest()
 
 
-def live_activity(day: str) -> tuple[datetime | None, list[int], list[dict]]:
-    """Last event, mark-closing stamps and the recent list, memoised on the
-    fingerprint.
+def live_activity(day: str) -> tuple[datetime | None, list[int], list[int],
+                                     list[dict]]:
+    """Last event, mark-closing stamps, event stamps and the recent list,
+    memoised on the fingerprint.
+
+    The two stamp lists answer two different questions and must not be
+    conflated: `stamps` is prompts and focus, exactly what closes an open mark,
+    while `ev_stamps` is every event, which is the run of work the unfocused
+    ramp measures.
 
     Returns only the things status() needs. Everything time-dependent -- how
     long the silence has run, whether a mark is still open right now -- is
@@ -3360,18 +3366,28 @@ def live_activity(day: str) -> tuple[datetime | None, list[int], list[dict]]:
     # green and stays green.
     if hit and time.time() - c.get("at", 0) < MIN_RECOMPUTE_SEC:
         return ((datetime.fromisoformat(c["last"]) if c["last"] else None),
-                c["stamps"], c["acts"])
+                c["stamps"], c["ev_stamps"], c["acts"])
 
     fp = activity_fingerprint(day)
     if hit and c.get("fp") == fp:
         last = datetime.fromisoformat(c["last"]) if c["last"] else None
-        return last, c["stamps"], c["acts"]
+        return last, c["stamps"], c["ev_stamps"], c["acts"]
 
     events = events_for(day)
     # Prompts and focus only, matching what marks_for() closes an open mark on.
     # Approvals are deliberately excluded there and must stay excluded here.
     stamps = sorted([t.hour * 60 + t.minute for t in prompts_for(day)]
                     + [t.hour * 60 + t.minute for t in focus_for(day)])
+    # Every event, which is a different question and belongs to the ramp.
+    # `last` is drawn from `events`, so the bout the unfocused cutoff is
+    # measured over has to be drawn from `events` too. Measuring the silence
+    # against one set and the bout that earns the cutoff against a narrower one
+    # is what made a browsing-only minute read as "4m since last activity, 2m
+    # left of 5m": the browse refreshed the clock, could not open a bout of its
+    # own, and the ramp went on quoting the width an hour-old prompt run had
+    # earned. check() has always chained the full event list here; this is
+    # status() being brought into line with it.
+    ev_stamps = sorted({t.hour * 60 + t.minute for t in events})
     last = events[-1] if events else None
     acts = activity_rows(day)
     # Per-pid, because this is now written by whichever process polls first and
@@ -3382,10 +3398,11 @@ def live_activity(day: str) -> tuple[datetime | None, list[int], list[dict]]:
     tmp = f"{STATUS_CACHE}.{os.getpid()}.tmp"
     with open(tmp, "w") as fh:
         json.dump({"v": STATUS_CACHE_V, "fp": fp, "day": day, "stamps": stamps,
+                   "ev_stamps": ev_stamps,
                    "at": time.time(), "acts": acts,
                    "last": last.isoformat() if last else None}, fh)
     os.replace(tmp, STATUS_CACHE)
-    return last, stamps, acts
+    return last, stamps, ev_stamps, acts
 
 
 def status() -> dict:
@@ -3398,7 +3415,7 @@ def status() -> dict:
     now = now_local()
     day = now.strftime("%Y-%m-%d")
     now_m = now.hour * 60 + now.minute
-    last, stamps, all_acts = live_activity(day)
+    last, stamps, ev_stamps, all_acts = live_activity(day)
 
     # Folded in here and nowhere else, for the reason given on
     # last_focus_input(): live_activity()'s `last` comes from focus_for(),
@@ -3419,9 +3436,12 @@ def status() -> dict:
 
     if touched and (last is None or touched > last):
         last = touched
+        # Into the event stamps, not the mark-closing ones: this moved `last`,
+        # so it has to move the bout the cutoff is measured over, but a Slack
+        # send is not one of the two signals marks_for() closes an open mark on.
         t_m = touched.hour * 60 + touched.minute
-        if t_m not in stamps:
-            stamps = sorted(stamps + [t_m])
+        if t_m not in ev_stamps:
+            ev_stamps = sorted(ev_stamps + [t_m])
 
     quiet_sec = (now - last).total_seconds() if last else None
     quiet = quiet_sec / 60 if quiet_sec is not None else None
@@ -3429,7 +3449,7 @@ def status() -> dict:
     # What the run in progress has earned, not the flat GAP_AFTER: in unfocused
     # mode a lone prompt lapses after a minute and only a session that has been
     # going a while holds the dot green for the full five.
-    cutoff_sec = live_cutoff(day, [m * 60 for m in stamps])
+    cutoff_sec = live_cutoff(day, [m * 60 for m in ev_stamps])
 
     open_mark = next((m for m in marks_for(day, stamps)
                       if m["open"] and m["start"] <= now_m <= m["end"]), None)
