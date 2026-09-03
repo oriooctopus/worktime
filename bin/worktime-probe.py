@@ -1046,40 +1046,22 @@ FOCUS_DIR = os.path.join(STATE, "focus")
 # honest default is to stop counting rather than to keep crediting silence.
 FOCUS_IDLE_SEC = 120
 
-# Whether a window the LATER sample reports as untouched is barred from credit,
-# as opposed to being subtracted from time already earned. Off.
+# How long a self-raising app must HOLD the front before its activation counts
+# as somebody choosing it. Granola takes the foreground for a few seconds when
+# a meeting ends and gives it straight back; a person who opens Granola stays
+# in it. One heartbeat's worth was the old threshold, expressed as "survive to
+# the next sample", and thirty seconds is the same line drawn where activations
+# rather than samples can see it.
+FOCUS_HOLD_SEC = 30
+
+# How far an activation's NAME carries when nothing replaces it. Labelling
+# only -- it buys no time, since credit is the activation itself.
 #
-# Not to be confused with the input gate in focus_counts(), which is on and
-# does bar untouched windows. That one reads the earlier sample -- the app that
-# held the window -- and asks whether anybody was there when it took the
-# front. This asks the closing sample to retroactively cancel a window already
-# credited, which is the three-state shape described below.
-#
-# These were two separate consequences of one reading, which made "am I idle?"
-# a three-state question: counted, cut, or silently never credited. The third
-# was the confusing one -- nothing was taken away, so no row explained it, and
-# time simply failed to appear. Idle is now binary: either a stretch is idle or
-# it isn't, and what that means is decided in exactly one place.
-FOCUS_IDLE_GATES = False
-
-
-def idle_blocks(sample: dict) -> bool:
-    """Whether this sample's reading bars the window it closes from credit.
-
-    One function for the three call sites so the switch cannot be half-applied
-    -- crediting a minute in focus_for() that focus_app_by_minute() then
-    refuses to label leaves a counted minute with no app against it.
-    """
-    return FOCUS_IDLE_GATES and sample.get("idle", 0) > FOCUS_IDLE_SEC
-
-
-# The most time one sample may vouch for. The bar writes every
-# FOCUS_HEARTBEAT_SEC (30s), so consecutive rows are normally 30s apart and
-# anything materially longer means the log stopped -- sleep, lock, a crash, the
-# app not running. Those minutes get credited to nobody, which is the whole
-# point: the failure mode this avoids is one sample before lunch claiming the
-# hour until the next one.
-FOCUS_MAX_GAP_SEC = 90
+# Needed because the last activation of a day has no successor to bound it, and
+# because an app left in front overnight would otherwise put its name on every
+# minute until morning. Ten minutes is roughly how long a window stays a fair
+# description of what somebody was doing.
+FOCUS_LABEL_MAX_SEC = 600
 
 # Foreground time that counts as work, by bundle id. An allow list: an app
 # earns credit only by being named here, and everything else in the foreground
@@ -1216,32 +1198,50 @@ def focus_name(sample: dict) -> str:
 
 
 def self_raised(prev: dict | None, sample: dict) -> bool:
-    """Whether this sample is the moment a self-raising app put itself in front.
+    """Whether this activation is an app putting itself in front, not a person.
 
-    The input gate in focus_counts() catches the long absence, and misses the
+    The input gate in focus_counts() catches the long absence and misses the
     short one it is the same bug as: Granola flashing to the front for a single
-    heartbeat between two Chrome samples while somebody types somewhere else.
-    The idle reading there is one second, because a person really is at the
-    machine -- just not in that window. Fifteen seconds of flash then paints two
-    whole minutes with Granola's name, and on a minute where nothing else was
-    counting it wins them outright.
+    heartbeat while somebody types in another window. The idle reading there is
+    one second, because a person really is at the machine -- just not in that
+    window.
 
-    So a self-raising app has to hold the foreground through a heartbeat before
-    any of it counts: the first sample of the run is dropped and the rest are
-    kept. The cost is the opening thirty seconds of a Granola session somebody
-    really did open, which is the right thing to spend to stop naming minutes
-    after a notification.
+    So a self-raising app has to HOLD the front to count: `prev` is the
+    activation that follows this one, and if it lands within FOCUS_HOLD_SEC the
+    flash is discarded. The argument is named for the pairing it had under the
+    span model, where it was the row before rather than the row after.
+
+    The cost is a Granola session somebody opened and abandoned inside thirty
+    seconds, which is not a session.
     """
     if sample.get("bundle") not in FOCUS_SELF_RAISING:
         return False
-    return prev is None or prev.get("bundle") != sample.get("bundle")
+    if prev is None:
+        return False
+    return sec_of(prev["t"]) - sec_of(sample["t"]) < FOCUS_HOLD_SEC
+
+
+# The bar's live reading: what is in front right now and how long since the
+# last input. Overwritten every poll, never appended to -- see writePresence()
+# in main.swift for why the two signals were split apart.
+PRESENCE_PATH = os.path.join(STATE, "presence.json")
+
+
+def presence_row() -> dict | None:
+    """The bar's current reading, or None before it has ever written one."""
+    if not os.path.exists(PRESENCE_PATH):
+        return None
+    with open(PRESENCE_PATH) as f:
+        return json.load(f)
 
 
 def focus_rows(day: str) -> list[dict]:
     """Raw focus samples for one day, in order.
 
-    Written by the menu bar app; see the FocusLog comment in main.swift for why
-    it is sampled rather than driven by activation notifications.
+    Written by the menu bar app on every switch of the front application; see
+    the FocusLog comment in main.swift. Repeated rows for the same app are the
+    heartbeat, which exists for the live dot's idle reading and not for credit
+    -- focus_activations() is what strips them back to the switches.
     """
     path = os.path.join(FOCUS_DIR, f"{day}.jsonl")
     if not os.path.exists(path):
@@ -1256,30 +1256,62 @@ def focus_rows(day: str) -> list[dict]:
     return sorted(out, key=lambda r: r["t"])
 
 
-def focus_windows(day: str):
-    """Credited windows in the focus log, as (start_sec, end_sec, sample).
+def focus_activations(day: str):
+    """The moments a work app CAME to the front, in order.
 
-    The log is a series of point samples and every duration question asked of
-    it -- which minutes were attended, which app held a minute, which apps held
-    a range -- is answered by pairing adjacent rows and reading the span
-    between them. That pairing, and the three tests that decide whether a span
-    counts at all, were written out three times; a rule added to one copy and
-    not the others is the failure this exists to make impossible.
+    A row whose front THING differs from the row before it. The bar writes on
+    every switch, so this is the switch itself; it also writes a heartbeat
+    while nothing changes, and those repeats are what this drops.
 
-    The sample yielded is the EARLIER row: it names the app that held the
-    window. Whether the window counts is decided partly by the later row, which
-    is why both are needed and why a caller cannot simply walk the rows.
+    Derived rather than recorded, which is what makes it readable back through
+    every log already on disk: a day of heartbeat rows reduces to exactly the
+    switches that produced it. 2026-09-02's 2,989 rows are 569 activations.
+
+    The "thing" is the bundle everywhere except Chrome, where it is the bundle
+    and the tab. Chrome earns per PAGE rather than per app -- an hour of Hacker
+    News in the foreground earns nothing -- so leaving a document for a PR
+    inside the same window is a switch by every measure this code cares about,
+    and keying on the bundle alone would file it as no event at all.
+
+    The first row of the day counts as one. Whatever was in front at the first
+    sample was put there by somebody, even if the switch itself happened
+    yesterday -- and the alternative, skipping it, silently drops the opening
+    app of every morning.
     """
-    rows = focus_rows(day)
     prev = None
-    for a, b in zip(rows, rows[1:]):
-        lo, hi = sec_of(a["t"]), sec_of(b["t"])
-        if (0 < hi - lo <= FOCUS_MAX_GAP_SEC
-                and focus_counts(a)
-                and not idle_blocks(b)
-                and not self_raised(prev, a)):
+    for r in focus_rows(day):
+        key = (r.get("bundle"), r.get("tab") if r.get("bundle") == CHROME_BUNDLE
+               else None)
+        if key != prev:
+            yield r
+        prev = key
+
+
+def focus_windows(day: str):
+    """Spans for LABELLING, as (start_sec, end_sec, sample) -- not credit.
+
+    An activation names the foreground until the next one replaces it, and
+    that span is what answers "which app held this minute" and "what was I in
+    during this period". It is not what answers "was this minute worked":
+    focus_for() decides that from the activations alone, so a span here can
+    cover minutes the day never counted. That separation is the point. The two
+    questions were one function, and the answer to the second was silently
+    borrowing the first's arithmetic -- which is how a window nobody touched
+    came to bill forty-one minutes.
+
+    Capped at FOCUS_LABEL_MAX_SEC. A name is only worth carrying as far as it
+    stays true, and an app left in front overnight stops describing anything
+    long before morning.
+    """
+    acts = list(focus_activations(day))
+    for a, b in zip(acts, acts[1:] + [None]):
+        if not focus_counts(a) or self_raised(b, a):
+            continue
+        lo = sec_of(a["t"])
+        hi = sec_of(b["t"]) if b else lo + FOCUS_LABEL_MAX_SEC
+        hi = min(hi, lo + FOCUS_LABEL_MAX_SEC)
+        if hi > lo:
             yield lo, hi, a
-        prev = a
 
 
 def focus_for(day: str) -> list[datetime]:
@@ -1291,25 +1323,31 @@ def focus_for(day: str) -> list[datetime]:
     whatsoever, so the largest genuinely-working stretches Slack ever generated
     were exactly the ones it reported as gaps.
 
-    Returned as one datetime per covered minute rather than as spans, because
-    every other input here is a point event and the period machinery is built
-    on chaining point events. A span would need its own path through code that
-    already works.
+    One datetime per ACTIVATION -- the moment somebody put the app in front --
+    and nothing for the time it then spent sitting there. Reaching for an app
+    is a thing a person does, at a moment, exactly like sending a prompt; the
+    period machinery is built on chaining point events and this is now one of
+    them rather than a duration wearing the same shape.
 
-    Credit runs between consecutive samples, and is decided by the LATER
-    sample's idle reading: idle is measured backwards from the sample, so the
-    row that closes a window is the one that knows whether anybody touched the
-    machine during it. Deciding on the earlier row instead would credit the
-    first two minutes of every absence, every time.
+    It used to credit the span between consecutive samples, which made being
+    in front a subscription: the log ticks every FOCUS_HEARTBEAT_SEC whether or
+    not anybody is there, so an app left in front billed at the same rate all
+    night. Gating on idle capped the damage at two minutes per absence and left
+    the model wrong in the same direction. What ends it is that a switch
+    happens once.
+
+    A stretch genuinely spent in one app is not lost with the duration. Nobody
+    sits in a single window for an hour -- 2026-09-02 holds 569 activations --
+    and each one seeds a bout that GAP_AFTER joins to its neighbours, so real
+    work reads as a run of switches. Measured against the span model on live
+    logs the whole day moves by -2 minutes (2026-09-01); the -39 on 2026-09-02
+    is the untouched Slack evening this was built to stop counting.
     """
     base = datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=LOCAL)
-    minutes: set[int] = set()
-    for lo, hi, _a in focus_windows(day):
-        # hi is exclusive: a window ending exactly at 09:05:00 covers no part
-        # of 09:05, and crediting it would add a phantom minute to the end of
-        # every contiguous run.
-        minutes.update(range(lo // 60, (hi - 1) // 60 + 1))
-    return [base + timedelta(minutes=m) for m in sorted(minutes)]
+    acts = list(focus_activations(day))
+    return [base + timedelta(seconds=sec_of(a["t"]))
+            for a, nxt in zip(acts, acts[1:] + [None])
+            if focus_counts(a) and not self_raised(nxt, a)]
 
 
 def focus_app_by_minute(day: str) -> dict[int, str]:
@@ -1354,15 +1392,16 @@ def focus_apps(day: str, lo: int, hi: int) -> list[str]:
 def last_focus_input(day: str) -> datetime | None:
     """The most recent moment somebody touched this Mac with a work app in front.
 
-    Exists because focus_for() cannot answer the live question, and the two
-    reasons are both structural rather than bugs in it. It credits whole
-    MINUTES, so a sample at 09:01:47 becomes the point 09:01:00 and up to 59
-    seconds of silence is invented; and it credits the span BETWEEN two rows,
-    so the newest row is always uncredited until the next heartbeat lands, for
-    up to another FOCUS_HEARTBEAT_SEC. Together that is up to ~90s of phantom
-    quiet while somebody is sitting right there, which is invisible against a
-    five-minute cutoff and fatal against the one-minute unfocused one: switch
-    to Slack, type, and the dot goes idle a few seconds later.
+    Exists because focus_for() cannot answer the live question. It reports
+    ACTIVATIONS, and somebody who switched to Slack at 09:00 and has been
+    typing in it since produces exactly one point, at 09:00 -- which is the
+    right answer for how much of the day was worked and the wrong one for
+    whether they are at the desk now.
+
+    So the live reading comes from presence.json, which the bar overwrites on
+    every poll whether or not anything changed. That file is the heartbeat,
+    moved off the focus log and out of the day's arithmetic: it has no history,
+    so nothing can accumulate credit from it.
 
     A row's `idle` is measured backwards from it, so a sample at 09:05:00
     reading 45 makes the claim "somebody was at this machine at 09:04:15" --
@@ -1372,13 +1411,16 @@ def last_focus_input(day: str) -> datetime | None:
     absence.
 
     Deliberately NOT folded into focus_for() or events_for(). The day's
-    arithmetic is settled by the span model and by the idle subtraction, and
-    those are decided in one place on purpose; this can only ever make the live
-    dot fresher, never a period longer or a total larger.
+    arithmetic is settled by the activations, and this can only ever make the
+    live dot fresher, never a period longer or a total larger.
     """
     base = datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=LOCAL)
     best = None
-    for r in focus_rows(day):
+    rows = focus_rows(day)
+    live = presence_row()
+    if live and live.get("day") == day:
+        rows = rows + [live]
+    for r in rows:
         # focus_app(), not focus_counts(): this asks WHEN somebody last typed,
         # and a stale row answers it as well as a fresh one -- t minus its own
         # idle reading is the same moment either way. Gating on idle here would

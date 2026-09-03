@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Tests for the focus signal -- attended foreground time.
 
-Focus replaced Slack sends as the evidence that a stretch in Slack was work,
-and it is the first input here that is an INTERVAL rather than a point. Both
-facts make it easy to get wrong in the expensive direction: a signal that
-credits time nobody worked reads as a plausible day, so nothing about the
-output looks broken. The invariants that stop that are asserted here.
+Focus replaced Slack sends as the evidence that a stretch in Slack was work.
+It was an INTERVAL and is now a point: credit is the ACTIVATION -- the moment
+somebody put an app in front -- and the time the app then spends sitting there
+earns nothing. That is the one thing easiest to get wrong in the expensive
+direction, because a signal that credits time nobody worked still reads as a
+plausible day. The invariants that stop it are asserted here.
 
 Run: pytest tests/test_focus.py
 """
@@ -42,10 +43,17 @@ class FocusCase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.orig = wp.FOCUS_DIR
+        self.orig_presence = wp.PRESENCE_PATH
         wp.FOCUS_DIR = self.tmp.name
+        # Pointed at the temp dir, not merely ignored: the real file is being
+        # written by the bar on this machine while the tests run, so a test
+        # that forgot to override it would read live state and pass or fail
+        # depending on what was in the foreground.
+        wp.PRESENCE_PATH = os.path.join(self.tmp.name, "presence.json")
 
     def tearDown(self):
         wp.FOCUS_DIR = self.orig
+        wp.PRESENCE_PATH = self.orig_presence
         self.tmp.cleanup()
 
     def write(self, rows, day=DAY):
@@ -55,28 +63,47 @@ class FocusCase(unittest.TestCase):
                 fh.write(json.dumps(r) + "\n")
 
     def samples(self, start, n, bundle=SLACK, idle=0, step=30, app="Slack"):
-        """`n` heartbeats `step` apart, as the bar would actually write them."""
+        """`n` rows for the SAME app, `step` apart -- one activation.
+
+        The shape every log already on disk is made of: the bar used to
+        heartbeat every 30s whether or not anything changed. Kept because
+        reading those logs back correctly is the whole of what makes today's
+        change backdatable, so the tests keep exercising it.
+        """
         return [{"day": DAY, "t": hms(start + i * step), "app": app,
                  "bundle": bundle, "idle": idle} for i in range(n)]
+
+    def switches(self, start, bundles, step=30, idle=0):
+        """One row per entry, each a different app -- `len(bundles)` activations."""
+        return [{"day": DAY, "t": hms(start + i * step), "app": b.split(".")[-1],
+                 "bundle": b, "idle": idle} for i, b in enumerate(bundles)]
 
     def minutes(self, day=DAY):
         return [t.hour * 60 + t.minute for t in wp.focus_for(day)]
 
 
 class TestCredit(FocusCase):
-    def test_attended_run_credits_every_minute_it_covers(self):
-        # 09:00:00 to 09:05:00, heartbeating every 30s with input throughout.
-        # Five minutes of presence earn five minutes, not six: the run ends on
-        # the 09:05 boundary and covers no part of that minute.
+    def test_a_run_in_one_app_is_one_event_however_long_it_holds(self):
+        # 09:00:00 to 09:05:00 in Slack. Under the span model this earned five
+        # minutes and would have earned fifty for fifty; it is one switch, so
+        # it is one point, and what the day makes of that point is the bout
+        # chainer's business rather than this signal's.
         self.write(self.samples(9 * 3600, 11))
-        self.assertEqual(self.minutes(), list(range(540, 545)))
+        self.assertEqual(self.minutes(), [540])
 
-    def test_a_single_sample_credits_nothing(self):
-        # One row has no successor, so there is no interval to vouch for. The
-        # alternative -- crediting from the sample to now -- is the failure
-        # that would let one row before lunch claim the afternoon.
+    def test_a_single_row_is_a_whole_event(self):
+        # The exact inversion of the old rule, which needed a successor to have
+        # anything to measure and so credited a lone row nothing. A switch is
+        # complete on its own.
         self.write(self.samples(9 * 3600, 1))
-        self.assertEqual(self.minutes(), [])
+        self.assertEqual(self.minutes(), [540])
+
+    def test_switching_back_and_forth_earns_each_switch(self):
+        # Why real work is not lost with the duration: nobody sits in one
+        # window for an hour. Slack, Zed, Slack is three acts, not one.
+        self.write(self.switches(9 * 3600, [SLACK, "dev.zed.Zed", SLACK],
+                                 step=120))
+        self.assertEqual(self.minutes(), [540, 542, 544])
 
     def test_every_named_app_earns_its_time(self):
         # The allow list is the whole of what focus can ever credit, so each
@@ -87,7 +114,7 @@ class TestCredit(FocusCase):
             with self.subTest(bundle=bundle):
                 self.setUp()
                 self.write(self.samples(9 * 3600, 11, bundle=bundle))
-                self.assertEqual(self.minutes(), list(range(540, 545)))
+                self.assertEqual(self.minutes(), [540])
                 self.tearDown()
 
     def test_a_self_raising_app_earns_nothing_on_an_untouched_machine(self):
@@ -111,28 +138,36 @@ class TestCredit(FocusCase):
             with self.subTest(bundle=bundle):
                 self.setUp()
                 self.write(self.samples(9 * 3600, 11, bundle=bundle))
-                self.assertEqual(self.minutes(), list(range(540, 545)))
+                self.assertEqual(self.minutes(), [540])
                 self.tearDown()
 
     def test_a_self_raising_flash_between_other_apps_earns_nothing(self):
-        # The other half of the same bug, and the one the idle gate cannot see:
-        # Granola takes the front for a single heartbeat while somebody types
-        # in another window, so idle reads ~0 and fifteen seconds would paint
-        # two minutes with a name nobody chose.
-        self.write(self.samples(9 * 3600, 4, bundle=SLACK))
-        self.write([{"day": DAY, "t": hms(9 * 3600 + 120), "app": "Granola",
-                     "bundle": "com.granola.app", "idle": 1}])
-        self.write(self.samples(9 * 3600 + 150, 4, bundle=SLACK))
+        # The half of the bug the input gate cannot see: Granola takes the
+        # front for a few seconds while somebody types in another window, so
+        # idle reads ~0 and the flash looks exactly like a choice. It has to
+        # HOLD the front to count, and this one gives it back inside
+        # FOCUS_HOLD_SEC.
+        self.write(self.switches(9 * 3600, [SLACK, "com.granola.app", SLACK],
+                                 step=15))
+        self.assertEqual(self.minutes(), [540, 540])
         self.assertNotIn("Granola", wp.focus_app_by_minute(DAY).values())
 
-    def test_a_self_raising_app_gives_up_only_its_first_heartbeat(self):
-        # It is dropped rather than gated forever: a run that holds the front
-        # keeps everything after its opening sample.
-        self.write(self.samples(9 * 3600, 11, bundle="com.granola.app",
+    def test_a_self_raising_app_that_holds_the_front_is_a_real_session(self):
+        # Dropped for flashing past, not for being Granola: kept the moment it
+        # stays put longer than a flash.
+        self.write(self.switches(9 * 3600, ["com.granola.app", SLACK],
+                                 step=wp.FOCUS_HOLD_SEC))
+        self.assertEqual(self.minutes(), [540, 540])
+        self.assertIn("com.granola.app",
+                      [a["bundle"] for _, _, a in wp.focus_windows(DAY)])
+
+    def test_the_last_activation_of_the_day_is_never_a_flash(self):
+        # Nothing follows it, so nothing can prove it was given back. Judging
+        # it a flash would silently drop whatever was open at the end of every
+        # day that ended in Granola.
+        self.write(self.samples(9 * 3600, 1, bundle="com.granola.app",
                                 app="Granola"))
-        self.assertEqual(self.minutes(), list(range(540, 545)))
-        self.assertEqual(wp.focus_apps(DAY, 9 * 3600, 9 * 3600 + 300),
-                         ["Granola"])
+        self.assertEqual(self.minutes(), [540])
 
     def test_every_self_raising_app_is_one_the_allow_list_names(self):
         # The narrow rule only ever tightens the broad one. A bundle here that
@@ -210,49 +245,33 @@ class TestCredit(FocusCase):
 
 
 class TestIdle(FocusCase):
-    """The gate ships OFF (FOCUS_IDLE_GATES). These force it on, because what
-    they cover is the RULE -- what the gate does when something asks for it --
-    and that has to keep working whichever way the switch is set. What the
-    switch itself does is TestIdleGateOff, below, against the real constant.
+    """The input gate: an activation counts only if somebody is at the machine.
+
+    The gate is what separates a person reaching for a window from a window
+    arriving on its own, and it is the only thing standing between the allow
+    list and an app left in front all night.
     """
 
-    def setUp(self):
-        super().setUp()
-        self.orig_gate = wp.FOCUS_IDLE_GATES
-        wp.FOCUS_IDLE_GATES = True
-
-    def tearDown(self):
-        wp.FOCUS_IDLE_GATES = self.orig_gate
-        super().tearDown()
-
-    def test_idle_beyond_the_threshold_stops_credit(self):
-        # Every sample reports more idle than the threshold allows: the app is
-        # frontmost, the machine is unattended, nothing is earned.
-        self.write(self.samples(9 * 3600, 11, idle=wp.FOCUS_IDLE_SEC + 30))
+    def test_an_activation_on_an_untouched_machine_earns_nothing(self):
+        # Something brought Slack to the front while the idle reading was
+        # already deep past the threshold. Nobody did that.
+        self.write(self.samples(9 * 3600, 1, idle=wp.FOCUS_IDLE_SEC + 30))
         self.assertEqual(self.minutes(), [])
 
-    def test_grace_runs_to_the_threshold_then_stops(self):
-        # Input at 09:00:00, then nothing. Idle climbs 30s per heartbeat, so
-        # the windows closed by idle <= 120 are credited and the rest are not.
-        # This is the reading pause the threshold is meant to survive.
-        rows = [{"day": DAY, "t": hms(9 * 3600 + i * 30), "app": "Slack",
-                 "bundle": SLACK, "idle": i * 30} for i in range(11)]
-        self.write(rows)
-        # Credited through the sample at idle=120 (09:02:00), not past it.
-        self.assertEqual(self.minutes(), [540, 541])
+    def test_the_threshold_is_inclusive(self):
+        # Exactly at the line still counts: the constant names the longest
+        # pause that is still reading, so the pause itself has to fit inside.
+        self.write(self.samples(9 * 3600, 1, idle=wp.FOCUS_IDLE_SEC))
+        self.assertEqual(self.minutes(), [540])
 
-    def test_the_closing_sample_decides_not_the_opening_one(self):
-        # The whole window was unattended, but the row that OPENS it still
-        # reports idle 0 -- it was written the instant before the person left.
-        # Judging on the opening row would credit the first minutes of every
-        # absence; judging on the closing row is what makes the span honest.
-        self.write([
-            {"day": DAY, "t": "09:00:00", "app": "Slack", "bundle": SLACK,
-             "idle": 0},
-            {"day": DAY, "t": "09:00:30", "app": "Slack", "bundle": SLACK,
-             "idle": 150},
-        ])
-        self.assertEqual(self.minutes(), [])
+    def test_a_later_touch_does_not_rescue_an_earlier_activation(self):
+        # Coming back at 09:30 says nothing about 09:00. Each activation is
+        # judged on the reading it was written with, so evidence cannot travel
+        # backwards -- which is how an evening of absence used to be redeemed
+        # by the next morning's first keystroke.
+        self.write(self.samples(9 * 3600, 1, idle=wp.FOCUS_IDLE_SEC + 600))
+        self.write(self.switches(9 * 3600 + 1800, ["dev.zed.Zed"]))
+        self.assertEqual(self.minutes(), [570])
 
 
 class TestUntouchedFocus(FocusCase):
@@ -266,7 +285,7 @@ class TestUntouchedFocus(FocusCase):
     same rate all night.
     """
 
-    def test_an_untouched_window_earns_nothing(self):
+    def test_an_untouched_evening_earns_nothing(self):
         self.write(self.samples(9 * 3600, 11, idle=wp.FOCUS_IDLE_SEC + 30))
         self.assertEqual(self.minutes(), [])
 
@@ -291,24 +310,28 @@ class TestUntouchedFocus(FocusCase):
                 self.tearDown()
 
     def test_the_touch_that_ends_an_absence_starts_earning_again(self):
-        # The gate withholds; it does not blacklist. Coming back to the same
-        # untouched window is ordinary work from the first sample that shows
-        # input, with no residue from the hours before it.
+        # The gate withholds; it does not blacklist. Reaching for the machine
+        # again is an ordinary activation, with no residue from the hours
+        # before it and none of them redeemed either.
         self.write(self.samples(9 * 3600, 11, idle=wp.FOCUS_IDLE_SEC + 600))
-        self.write(self.samples(9 * 3600 + 300, 11))
-        self.assertEqual(self.minutes(), [545, 546, 547, 548, 549])
+        self.write(self.switches(9 * 3600 + 300, ["dev.zed.Zed", SLACK],
+                                 step=60))
+        self.assertEqual(self.minutes(), [545, 546])
 
     def test_reading_inside_the_grace_still_earns(self):
         # Two minutes of no input is reading, not leaving -- the gate opens at
         # FOCUS_IDLE_SEC precisely so a pause between keystrokes costs nothing.
         self.write(self.samples(9 * 3600, 11, idle=wp.FOCUS_IDLE_SEC - 1))
-        self.assertEqual(self.minutes(), [540, 541, 542, 543, 544])
+        self.assertEqual(self.minutes(), [540])
 
-    def test_the_retroactive_gate_still_ships_off(self):
-        # The switch this did NOT turn on: barring a window because the sample
-        # that CLOSED it reads untouched. Credit is decided by the sample that
-        # opened the window, in one place.
-        self.assertFalse(wp.FOCUS_IDLE_GATES)
+    def test_holding_the_front_all_night_is_still_one_event(self):
+        # The 2026-09-02 shape end to end: one touch, then eighty rows with the
+        # idle climbing. The touch is real and earns its activation; the eighty
+        # rows behind it are the subscription this removed.
+        rows = [{"day": DAY, "t": hms(9 * 3600 + i * 30), "app": "Slack",
+                 "bundle": SLACK, "idle": i * 30} for i in range(80)]
+        self.write(rows)
+        self.assertEqual(self.minutes(), [540])
 
     def test_the_apps_that_do_not_count_are_still_refused(self):
         # The allow list is a separate reason and outlives the gate: an
@@ -319,49 +342,56 @@ class TestUntouchedFocus(FocusCase):
 
 
 class TestTruncation(FocusCase):
-    def test_a_gap_longer_than_the_cap_credits_neither_side(self):
-        # The machine slept from 09:00:30 to 11:00:00. Two samples bracket two
-        # hours of absence; crediting between them is the `visit_duration`
-        # trap, and is exactly what FOCUS_MAX_GAP_SEC exists to refuse.
+    """What used to need a cap, and now needs none.
+
+    The span model had to refuse a pair of rows too far apart, because the time
+    between them was the credit -- two rows bracketing a two-hour sleep would
+    have billed the sleep. A point has no reach, so the whole class of
+    truncation bug is gone rather than guarded against.
+    """
+
+    def test_a_sleep_between_two_activations_earns_nothing_between_them(self):
+        # The machine slept from 09:00 to 11:00. Two acts, two points, and
+        # nothing in between for either of them to claim.
         self.write([
             {"day": DAY, "t": "09:00:00", "app": "Slack", "bundle": SLACK,
              "idle": 0},
-            {"day": DAY, "t": "09:00:30", "app": "Slack", "bundle": SLACK,
-             "idle": 0},
-            {"day": DAY, "t": "11:00:00", "app": "Slack", "bundle": SLACK,
-             "idle": 0},
-            {"day": DAY, "t": "11:00:30", "app": "Slack", "bundle": SLACK,
-             "idle": 0},
+            {"day": DAY, "t": "11:00:00", "app": "Zed",
+             "bundle": "dev.zed.Zed", "idle": 0},
         ])
-        # 09:00 and 11:00 only -- the two hours between them earn nothing.
         self.assertEqual(self.minutes(), [540, 660])
 
-    def test_gap_exactly_at_the_cap_still_counts(self):
+    def test_a_name_does_not_carry_across_a_sleep(self):
+        # Labelling has the reach credit no longer does, so it keeps a cap of
+        # its own: Slack was in front when the machine slept and must not put
+        # its name on the two hours before somebody came back.
         self.write([
             {"day": DAY, "t": "09:00:00", "app": "Slack", "bundle": SLACK,
              "idle": 0},
-            {"day": DAY, "t": hms(9 * 3600 + wp.FOCUS_MAX_GAP_SEC),
-             "app": "Slack", "bundle": SLACK, "idle": 0},
+            {"day": DAY, "t": "11:00:00", "app": "Zed",
+             "bundle": "dev.zed.Zed", "idle": 0},
         ])
-        self.assertEqual(self.minutes(), [540, 541])
+        self.assertEqual(wp.focus_apps(DAY, 10 * 3600, 11 * 3600), [])
 
     def test_rows_from_another_day_are_ignored(self):
         self.write(self.samples(9 * 3600, 11))
         self.write([{"day": "2026-03-05", "t": "09:00:00", "app": "Slack",
                      "bundle": SLACK, "idle": 0}])
-        self.assertEqual(self.minutes(), list(range(540, 545)))
+        self.assertEqual(self.minutes(), [540])
 
     def test_missing_log_is_not_an_error(self):
         # A machine that has never run the bar has no log. That is a day with
         # no focus evidence, not a crash.
         self.assertEqual(self.minutes("2026-01-01"), [])
 
-    def test_out_of_order_rows_are_sorted_before_pairing(self):
-        # Five heartbeats 30s apart run 09:00:00 to 09:02:00. Written
-        # backwards, they must still pair up as neighbours -- unsorted, every
-        # pair would have a negative span and earn nothing.
-        rows = self.samples(9 * 3600, 5)
+    def test_out_of_order_rows_are_sorted_before_activations_are_read(self):
+        # Written backwards, Slack -> Zed must still read as Slack first.
+        # Unsorted, the run would be split at the wrong place and both apps
+        # would be credited twice.
+        rows = self.switches(9 * 3600, [SLACK, "dev.zed.Zed"], step=60)
         self.write(list(reversed(rows)))
+        self.assertEqual([a["bundle"] for a in wp.focus_activations(DAY)],
+                         [SLACK, "dev.zed.Zed"])
         self.assertEqual(self.minutes(), [540, 541])
 
 
@@ -379,9 +409,14 @@ class TestApps(FocusCase):
 
 
 class TestAppByMinute(FocusCase):
-    def test_covers_exactly_the_credited_minutes(self):
+    def test_labels_the_minutes_an_activation_reaches_over(self):
+        # Labelling and credit answer different questions now: one activation
+        # earns one point and still names every minute it held the foreground
+        # for. A period built from other evidence needs that name.
         self.write(self.samples(9 * 3600, 11))
-        self.assertEqual(sorted(wp.focus_app_by_minute(DAY)), self.minutes())
+        self.assertEqual(self.minutes(), [540])
+        self.assertEqual(sorted(wp.focus_app_by_minute(DAY)),
+                         list(range(540, 550)))
 
     def test_a_minute_goes_to_whichever_app_held_most_of_it(self):
         # Zed holds 09:00:00-09:00:20, Slack holds 09:00:20-09:01:00.
@@ -459,27 +494,39 @@ class TestLastFocusInput(FocusCase):
         return wp.last_focus_input(day)
 
     def test_a_single_sample_is_enough(self):
-        # The case focus_for() cannot serve: one row, no successor. It still
-        # carries a complete claim -- somebody touched this machine at 09:00:00
-        # with Slack in front -- and the live dot has nothing else to go on
-        # until the next heartbeat, thirty seconds away.
         self.write(self.samples(9 * 3600, 1))
+        self.assertEqual(self.at().strftime("%H:%M:%S"), "09:00:00")
+
+    def test_a_row_that_earned_nothing_can_still_anchor_the_dot(self):
+        # The two questions pulling apart, in one log: an activation on an
+        # untouched machine earns no credit, and the machine WAS touched
+        # 09:00:00, five minutes before the row was written. The day should
+        # not count it; the dot should still know when it happened.
+        self.write([{"day": DAY, "t": "09:05:00", "app": "Slack",
+                     "bundle": SLACK, "idle": 300}])
         self.assertEqual(self.minutes(), [])
         self.assertEqual(self.at().strftime("%H:%M:%S"), "09:00:00")
 
-    def test_keeps_seconds_where_focus_for_floors_to_the_minute(self):
-        # The screenshot case, reproduced from the log that produced it: the
-        # newest sample was 09:01:47 and focus_for()'s newest minute was
-        # 09:01:00. Measured at 09:02:05 that is 18s of quiet against 65s --
-        # either side of the one-minute unfocused cutoff.
-        self.write([
-            {"day": DAY, "t": "09:01:12", "app": "Slack", "bundle": SLACK,
-             "idle": 0},
-            {"day": DAY, "t": "09:01:47", "app": "Slack", "bundle": SLACK,
-             "idle": 0},
-        ])
-        self.assertEqual(wp.focus_for(DAY)[-1].strftime("%H:%M:%S"), "09:01:00")
-        self.assertEqual(self.at().strftime("%H:%M:%S"), "09:01:47")
+    def test_the_live_reading_outranks_the_log(self):
+        # The heartbeat that used to keep the dot fresh now lives in
+        # presence.json, so a person typing in an app they opened an hour ago
+        # -- no new activation anywhere -- must still read as present.
+        self.write(self.samples(9 * 3600, 1))
+        with open(wp.PRESENCE_PATH, "w") as fh:
+            json.dump({"day": DAY, "t": "10:30:00", "app": "Slack",
+                       "bundle": SLACK, "idle": 4}, fh)
+        self.assertEqual(self.minutes(), [540])
+        self.assertEqual(self.at().strftime("%H:%M:%S"), "10:29:56")
+
+    def test_a_live_reading_from_another_day_is_not_this_day(self):
+        # The file is overwritten, never rotated, so at 00:01 it still holds
+        # yesterday. Carrying that into today would hand every morning an
+        # anchor from the night before.
+        self.write(self.samples(9 * 3600, 1))
+        with open(wp.PRESENCE_PATH, "w") as fh:
+            json.dump({"day": "2026-03-03", "t": "23:50:00", "app": "Slack",
+                       "bundle": SLACK, "idle": 0}, fh)
+        self.assertEqual(self.at().strftime("%H:%M:%S"), "09:00:00")
 
     def test_idle_is_subtracted_so_an_absence_cannot_hold_the_dot(self):
         # A row reading 300 at 09:05:00 says the last input was 09:00:00, and
@@ -525,30 +572,34 @@ class TestFocusWindows(FocusCase):
     but has no app against it.
     """
 
-    def test_the_three_readers_agree_on_what_counts(self):
-        # A run that counts, then a hole longer than one sample may vouch for,
-        # then a run that counts. Every reader must see the same two windows.
-        self.write(self.samples(9 * 3600, 3)
-                   + self.samples(9 * 3600 + 600, 3))
-        windows = list(wp.focus_windows(DAY))
-        self.assertEqual([(lo, hi) for lo, hi, _ in windows],
-                         [(32400, 32430), (32430, 32460),
-                          (33000, 33030), (33030, 33060)])
-        # focus_apps() spans the same seconds, so the gap is absent from it too.
-        self.assertEqual(wp.focus_apps(DAY, 0, 86400), ["Slack"])
+    def test_a_window_runs_from_its_activation_to_the_next(self):
+        # Slack at 09:00, Obsidian at 09:05. One window each, and the first
+        # ends exactly where the second begins.
+        self.write(self.switches(9 * 3600, [SLACK, "md.obsidian"], step=300))
+        self.assertEqual([(lo, hi) for lo, hi, _ in wp.focus_windows(DAY)],
+                         [(32400, 32700), (32700, 32700 + wp.FOCUS_LABEL_MAX_SEC)])
 
-    def test_the_window_is_named_by_the_app_that_held_it(self):
-        # The EARLIER row names the window; the later one only closes it.
-        # Reading the app off the closing row would label every stretch with
-        # whatever you switched to next.
-        self.write([
-            {"day": DAY, "t": "09:00:00", "app": "Slack", "bundle": SLACK,
-             "idle": 0},
-            {"day": DAY, "t": "09:00:30", "app": "Obsidian",
-             "bundle": "md.obsidian", "idle": 0},
-        ])
-        self.assertEqual([a["app"] for _, _, a in wp.focus_windows(DAY)],
-                         ["Slack"])
+    def test_the_window_is_named_by_the_app_that_opened_it(self):
+        # The activation names its window; the next one only ends it. Reading
+        # the name off the closing row would label every stretch with whatever
+        # you switched to next.
+        self.write(self.switches(9 * 3600, [SLACK, "md.obsidian"]))
+        self.assertEqual([a["bundle"] for _, _, a in wp.focus_windows(DAY)],
+                         [SLACK, "md.obsidian"])
+
+    def test_a_window_nothing_replaces_stops_describing_the_day(self):
+        # The last activation of the day has no successor. Left unbounded it
+        # would put one app's name on every minute until midnight.
+        self.write(self.samples(9 * 3600, 1))
+        (lo, hi, _), = wp.focus_windows(DAY)
+        self.assertEqual(hi - lo, wp.FOCUS_LABEL_MAX_SEC)
+
+    def test_a_window_the_day_never_counted_is_never_labelled(self):
+        # Credit and labelling are separate, but not independent: an
+        # activation nobody made names nothing either, or a period would be
+        # described by an app the day refused to count.
+        self.write(self.samples(9 * 3600, 4, idle=wp.FOCUS_IDLE_SEC + 30))
+        self.assertEqual(list(wp.focus_windows(DAY)), [])
 
 
 class TestChromeTab(FocusCase):
@@ -616,16 +667,18 @@ class TestChromeTab(FocusCase):
     def test_a_tab_switch_mid_morning_splits_the_credit(self):
         """The whole point: two Chrome runs, one counted and one not.
 
-        Four windows, not three: the window a sample opens is named by that
-        sample, so the doc's last row still holds the thirty seconds up to the
-        switch. That is the same rule every other app is credited under.
+        Two activations, because Chrome is keyed by its tab as well as by
+        itself -- leaving the doc for Hacker News is a switch even though the
+        bundle never changed. One of them counts.
         """
         self.write(self.chrome(9 * 3600, 4, "Rubrik AI / RAC Policy",
                                "https://docs.google.com/document/d/1BgD"))
         self.write(self.chrome(9 * 3600 + 120, 4, "Hacker News",
                                "https://news.ycombinator.com/"))
+        self.assertEqual([a["t"] for a in wp.focus_activations(DAY)],
+                         ["09:00:00", "09:02:00"])
         self.assertEqual([wp.focus_name(a) for _, _, a in wp.focus_windows(DAY)],
-                         ["Rubrik AI / RAC Policy"] * 4)
+                         ["Rubrik AI / RAC Policy"])
 
     def test_a_named_app_still_counts_without_any_tab(self):
         """The Chrome branch must not have made the allow list conditional."""

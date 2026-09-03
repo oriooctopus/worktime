@@ -229,14 +229,23 @@ func notifyEntryLogged() {
 // deliberately stays at app granularity to avoid asking for that.
 let FOCUS_DIR = ("~/.claude/stats/worktime/focus" as NSString).expandingTildeInPath
 
-// A row is written when the frontmost app changes, and otherwise every
-// FOCUS_HEARTBEAT_SEC. The heartbeat is what makes an interrupted span
-// truncate honestly: the probe credits the stretch between consecutive rows
-// only while they stay close together, so a machine that sleeps for two hours
-// leaves a two-hour hole between rows and earns nothing for it. Without the
-// heartbeat a single row would sit there claiming the whole absence -- the
-// same trap `visit_duration` falls into in the Chrome exporter.
-let FOCUS_HEARTBEAT_SEC = 30.0
+// A row is written when the front thing changes, and at no other time. The
+// log is a record of switches.
+//
+// It used to also tick every thirty seconds, because the probe credited the
+// span between consecutive rows and needed the span to stay short: without a
+// heartbeat one row would sit there claiming a two-hour sleep. That made
+// being in front a subscription -- an app left in front billed at the same
+// rate all night, and on 2026-09-02 forty-one minutes of untouched Slack
+// became forty-one minutes of work. The probe now credits the ACTIVATION and
+// nothing else, so there is no span to truncate and no reason to tick.
+//
+// What the heartbeat also carried was the live idle reading, which is a
+// genuinely continuous thing and now goes to PRESENCE_PATH: one file,
+// overwritten, no history. Two signals that were sharing a channel because
+// they happened to be sampled together.
+let PRESENCE_PATH = ("~/.claude/stats/worktime/presence.json" as NSString)
+    .expandingTildeInPath
 
 // Chrome's active tab, as (title, url).
 //
@@ -307,7 +316,7 @@ func chromeActiveTab() -> (title: String, url: String)? {
 
 
 final class FocusLog {
-    private var lastBundle: String?
+    private var lastKey: String?
     private var lastWrite = Date.distantPast
     private var handle: FileHandle?
     private var handleDay = ""
@@ -338,10 +347,6 @@ final class FocusLog {
     func sample(now: Date = Date()) {
         let app = NSWorkspace.shared.frontmostApplication
         let bundle = app?.bundleIdentifier ?? ""
-        let changed = bundle != lastBundle
-        let due = now.timeIntervalSince(lastWrite) >= FOCUS_HEARTBEAT_SEC
-        guard changed || due else { return }
-
         let day = Self.dayfmt.string(from: now)
         var row: [String: Any] = [
             "day": day,
@@ -363,13 +368,46 @@ final class FocusLog {
             row["tab"] = tab.title
             row["url"] = tab.url
         }
+
+        // The live reading goes out on every poll, switch or not. It is what
+        // the dot reads, and it is the one thing here that really is
+        // continuous.
+        writePresence(row)
+
+        // Chrome is keyed by its tab as well as by itself, because Chrome
+        // earns per PAGE: leaving a document for a PR inside the same window
+        // is a switch by every measure the probe cares about, and comparing
+        // bundles alone would file it as no event at all.
+        let key = bundle == CHROME_BUNDLE
+            ? bundle + "\u{1}" + ((row["tab"] as? String) ?? "")
+            : bundle
+        guard key != lastKey else { return }
+
         guard let data = try? JSONSerialization.data(withJSONObject: row),
               var line = String(data: data, encoding: .utf8)
         else { return }
         line += "\n"
         write(line, day: day)
-        lastBundle = bundle
+        lastKey = key
         lastWrite = now
+    }
+
+    /// The current front app and idle reading, overwritten in place.
+    ///
+    /// Not appended and not history: the only question it answers is "as of
+    /// right now, when did somebody last touch this machine with something
+    /// work-shaped in front of it", which the focus log answered as a side
+    /// effect of ticking. Written whole to a temp path and moved into place,
+    /// so a reader mid-write sees the previous file rather than half of this
+    /// one.
+    private func writePresence(_ row: [String: Any]) {
+        guard let data = try? JSONSerialization.data(withJSONObject: row)
+        else { return }
+        let tmp = PRESENCE_PATH + ".tmp"
+        guard (try? data.write(to: URL(fileURLWithPath: tmp))) != nil
+        else { return }
+        try? FileManager.default.removeItem(atPath: PRESENCE_PATH)
+        try? FileManager.default.moveItem(atPath: tmp, toPath: PRESENCE_PATH)
     }
 
     // One file per day, opened once and held. Appending through a fresh
