@@ -522,8 +522,8 @@ class TestFocusWindows(FocusCase):
         self.write([
             {"day": DAY, "t": "09:00:00", "app": "Slack", "bundle": SLACK,
              "idle": 0},
-            {"day": DAY, "t": "09:00:30", "app": "Obsidian",
-             "bundle": "md.obsidian", "idle": 0},
+            {"day": DAY, "t": "09:00:30", "app": "Zed",
+             "bundle": "dev.zed.Zed", "idle": 0},
         ])
         self.assertEqual([a["app"] for _, _, a in wp.focus_windows(DAY)],
                          ["Slack"])

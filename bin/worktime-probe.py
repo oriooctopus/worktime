@@ -1094,7 +1094,14 @@ FOCUS_MAX_GAP_SEC = 90
 # bounded, and wrong in the direction of undercounting, where the exclude
 # list's failure invented work that never happened.
 #
-# One large absence, deliberate, for a reason older than this list:
+# Two deliberate absences:
+#
+# Obsidian, because the vault is one app over two lives. The same window holds
+# meeting notes and the grocery list, and being frontmost cannot say which, so
+# an evening spent in personal notes read as an evening of work. Chrome had the
+# same problem and got the same answer everywhere else in this file -- decide
+# per page, not per app -- but a note has no URL to test, so the honest move is
+# to count none of it. The real work done there leaves other traces anyway.
 #
 # The terminal, because it is ambiguous rather than because it is leisure. The
 # same Ghostty window is the front app whether the work is on this Mac or on
@@ -1107,7 +1114,6 @@ FOCUS_INCLUDE = {
     "com.tinyspeck.slackmacgap",  # Slack
     "us.zoom.xos",                # Zoom
     "dev.zed.Zed",                # Zed
-    "md.obsidian",                # Obsidian
     "com.granola.app",            # Granola
 }
 
