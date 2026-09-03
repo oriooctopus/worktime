@@ -1956,9 +1956,22 @@ def activity_rows(day: str) -> list[dict]:
     # current time, not baked in here. This result is memoised behind a
     # fingerprint that only changes when the underlying files do, so a "4m"
     # written at write time would still say "4m" an hour later.
+    #
+    # Resolved through LOCAL, like every other day-anchored construction here.
+    # A naive strptime().timestamp() reads the ambient C-library zone instead,
+    # and that is precisely the zone this file never trusts: under the sandbox
+    # some callers run in it answers UTC, which shifts every `at` by the whole
+    # offset -- four hours in EDT -- so the widget ages a thing that just
+    # happened as "4h" while the clock time beside it stays right.
     for a in out:
-        a["at"] = datetime.strptime(f"{day} {a['t']}", "%Y-%m-%d %H:%M").timestamp()
+        a["at"] = stamp_epoch(day, a["t"])
     return out
+
+
+def stamp_epoch(day: str, t: str) -> float:
+    """A day plus an "HH:MM" wall-clock string as an absolute instant."""
+    return (datetime.strptime(f"{day} {t[:5]}", "%Y-%m-%d %H:%M")
+            .replace(tzinfo=LOCAL).timestamp())
 
 
 # How many sessions the grouped view lists. Fewer than the raw list because a
