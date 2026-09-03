@@ -1046,8 +1046,14 @@ FOCUS_DIR = os.path.join(STATE, "focus")
 # honest default is to stop counting rather than to keep crediting silence.
 FOCUS_IDLE_SEC = 120
 
-# Whether an untouched window is barred from EARNING focus credit, as opposed
-# to being subtracted from time already earned. Off.
+# Whether a window the LATER sample reports as untouched is barred from credit,
+# as opposed to being subtracted from time already earned. Off.
+#
+# Not to be confused with the input gate in focus_counts(), which is on and
+# does bar untouched windows. That one reads the earlier sample -- the app that
+# held the window -- and asks whether anybody was there when it took the
+# front. This asks the closing sample to retroactively cancel a window already
+# credited, which is the three-state shape described below.
 #
 # These were two separate consequences of one reading, which made "am I idle?"
 # a three-state question: counted, cut, or silently never credited. The third
@@ -1122,13 +1128,12 @@ FOCUS_INCLUDE = {
 # it until the human came back at 13:12, and the day gained six minutes and a
 # whole session row named after an app nobody had touched.
 #
-# Neither of the global idle switches catches this: FOCUS_IDLE_GATES is off on
-# purpose, and IDLE_SUBTRACTS is off because HID idle cannot tell reading from
-# leaving. Both of those readings are about time a PERSON chose an app and then
-# stopped typing in it -- the ambiguity they refuse to spend minutes on. A
-# window that raised itself was never chosen, so there is no ambiguity to
-# protect and the narrow rule is safe where the global one is not: these
-# bundles earn only on samples that also show recent input.
+# The input gate in focus_counts() now covers the long absence for every app,
+# and this set is what remains: the SHORT flash. Granola taking the front for a
+# single heartbeat while somebody types in another window reads as attended --
+# the idle is one second, because a person really is at the machine, just not
+# here. What separates that from a window somebody opened is that this one was
+# never chosen, so it has to survive a heartbeat before any of it counts.
 FOCUS_SELF_RAISING = {
     "com.granola.app",            # Granola
 }
@@ -1154,8 +1159,12 @@ FOCUS_SELF_RAISING = {
 CHROME_BUNDLE = "com.google.Chrome"
 
 
-def focus_counts(sample: dict) -> bool:
-    """Whether the app in this sample earns foreground credit at all.
+def focus_app(sample: dict) -> bool:
+    """Whether the app in this sample is one whose foreground means work.
+
+    Membership only -- it says nothing about whether anybody was there. The
+    two questions were one function until a night with Slack left in front
+    billed forty-one minutes to a machine nobody had touched.
 
     Title and URL are tested separately rather than as one string because
     is_work_url() reads everything before the first "?" as the address, and
@@ -1165,11 +1174,32 @@ def focus_counts(sample: dict) -> bool:
     """
     bundle = sample.get("bundle")
     if bundle != CHROME_BUNDLE:
-        if bundle in FOCUS_SELF_RAISING:
-            return sample.get("idle", 0) <= FOCUS_IDLE_SEC
         return bundle in FOCUS_INCLUDE
     return (_work_site_hit(sample.get("tab", ""))
             or _work_site_hit(sample.get("url", "")))
+
+
+def focus_counts(sample: dict) -> bool:
+    """Whether the app in this sample earns foreground credit.
+
+    A work app in front, and somebody at the machine within the last
+    FOCUS_IDLE_SEC. The second half is what makes putting an app in front an
+    EVENT rather than a subscription: the foreground does not renew itself,
+    so a window holding still earns two minutes and then stops, and the next
+    keystroke starts it again.
+
+    Without it, being frontmost was the one piece of evidence here that a
+    person did not have to be present to produce. Every other input is a thing
+    somebody DID -- a prompt, a send, a meeting they sat in -- and stops
+    arriving when they leave. Focus keeps arriving at the same rate all night,
+    which is why an untouched screen used to bill like a working one.
+
+    The cost is the case the gate cannot see: reading a long thread, typing
+    nothing, for more than two minutes. That is a real loss and it is the
+    right one to take -- an unattended machine reads identically, is far more
+    common, and inflates a day by tens of minutes rather than deflating it.
+    """
+    return focus_app(sample) and sample.get("idle", 0) <= FOCUS_IDLE_SEC
 
 
 def focus_name(sample: dict) -> str:
@@ -1188,7 +1218,7 @@ def focus_name(sample: dict) -> str:
 def self_raised(prev: dict | None, sample: dict) -> bool:
     """Whether this sample is the moment a self-raising app put itself in front.
 
-    The idle gate in focus_counts() catches the long absence, and misses the
+    The input gate in focus_counts() catches the long absence, and misses the
     short one it is the same bug as: Granola flashing to the front for a single
     heartbeat between two Chrome samples while somebody types somewhere else.
     The idle reading there is one second, because a person really is at the
@@ -1349,7 +1379,11 @@ def last_focus_input(day: str) -> datetime | None:
     base = datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=LOCAL)
     best = None
     for r in focus_rows(day):
-        if not focus_counts(r):
+        # focus_app(), not focus_counts(): this asks WHEN somebody last typed,
+        # and a stale row answers it as well as a fresh one -- t minus its own
+        # idle reading is the same moment either way. Gating on idle here would
+        # only drop rows that agree with the ones kept.
+        if not focus_app(r):
             continue
         # Clamped at the day boundary: an idle reading spans midnight after a
         # night with the machine left on, and the day's own log is the wrong

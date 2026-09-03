@@ -255,44 +255,66 @@ class TestIdle(FocusCase):
         self.assertEqual(self.minutes(), [])
 
 
-class TestIdleGateOff(FocusCase):
-    """What ships: idle no longer withholds credit, only the one binary
-    question remains.
+class TestUntouchedFocus(FocusCase):
+    """Being in front is an event, not a subscription.
 
-    Being untouched used to have two separate consequences -- time cut from
-    the day, and time that quietly never arrived. The second had no row
-    anywhere to explain it, so a minute that was simply never credited was
-    indistinguishable from one that was never worked.
+    On 2026-09-02 the machine was woken at 21:22, Slack came to the front, and
+    nothing was touched again until 22:02. The log holds eighty consecutive
+    Slack samples with the idle reading climbing 2 -> 2397, and the day billed
+    forty-one minutes of it. Every other input here is something a person DID
+    and stops arriving when they leave; the foreground kept arriving at the
+    same rate all night.
     """
 
-    def test_the_gate_ships_off(self):
-        self.assertFalse(wp.FOCUS_IDLE_GATES)
-
-    def test_an_untouched_window_still_earns_its_minutes(self):
-        # The same log as test_idle_beyond_the_threshold_stops_credit, run
-        # against the shipped switch instead of a forced one.
+    def test_an_untouched_window_earns_nothing(self):
         self.write(self.samples(9 * 3600, 11, idle=wp.FOCUS_IDLE_SEC + 30))
+        self.assertEqual(self.minutes(), [])
+
+    def test_no_app_is_named_for_a_span_nobody_was_present_for(self):
+        # A minute credited by focus_for() that focus_app_by_minute() refuses
+        # to label is a counted minute with no app against it, and a span
+        # labelled without being counted names a session after nobody. Same
+        # log, all three answers.
+        self.write(self.samples(9 * 3600, 11, idle=wp.FOCUS_IDLE_SEC + 30))
+        self.assertEqual(wp.focus_app_by_minute(DAY), {})
+        self.assertEqual(wp.focus_apps(DAY, 9 * 3600, 9 * 3600 + 600), [])
+
+    def test_the_gate_applies_to_every_app_the_list_names(self):
+        # Not a rule about Slack. An untouched Zed or Obsidian left in front
+        # overnight is the identical absence.
+        for bundle in sorted(wp.FOCUS_INCLUDE):
+            with self.subTest(bundle=bundle):
+                self.setUp()
+                self.write(self.samples(9 * 3600, 11, bundle=bundle,
+                                        idle=wp.FOCUS_IDLE_SEC + 30))
+                self.assertEqual(self.minutes(), [])
+                self.tearDown()
+
+    def test_the_touch_that_ends_an_absence_starts_earning_again(self):
+        # The gate withholds; it does not blacklist. Coming back to the same
+        # untouched window is ordinary work from the first sample that shows
+        # input, with no residue from the hours before it.
+        self.write(self.samples(9 * 3600, 11, idle=wp.FOCUS_IDLE_SEC + 600))
+        self.write(self.samples(9 * 3600 + 300, 11))
+        self.assertEqual(self.minutes(), [545, 546, 547, 548, 549])
+
+    def test_reading_inside_the_grace_still_earns(self):
+        # Two minutes of no input is reading, not leaving -- the gate opens at
+        # FOCUS_IDLE_SEC precisely so a pause between keystrokes costs nothing.
+        self.write(self.samples(9 * 3600, 11, idle=wp.FOCUS_IDLE_SEC - 1))
         self.assertEqual(self.minutes(), [540, 541, 542, 543, 544])
 
-    def test_the_gate_is_off_everywhere_or_nowhere(self):
-        # A minute credited by focus_for() that focus_app_by_minute() then
-        # refuses to label is a counted minute with no app against it, which
-        # is what a half-applied switch produces. Same log, both answers.
-        self.write(self.samples(9 * 3600, 11, idle=wp.FOCUS_IDLE_SEC + 30))
-        labelled = wp.focus_app_by_minute(DAY)
-        self.assertEqual(sorted(labelled), self.minutes())
-        self.assertEqual(set(labelled.values()), {"Slack"})
-
-    def test_the_apps_that_held_an_untouched_span_are_still_named(self):
-        self.write(self.samples(9 * 3600, 11, idle=wp.FOCUS_IDLE_SEC + 30))
-        self.assertEqual(wp.focus_apps(DAY, 9 * 3600, 9 * 3600 + 600), ["Slack"])
+    def test_the_retroactive_gate_still_ships_off(self):
+        # The switch this did NOT turn on: barring a window because the sample
+        # that CLOSED it reads untouched. Credit is decided by the sample that
+        # opened the window, in one place.
+        self.assertFalse(wp.FOCUS_IDLE_GATES)
 
     def test_the_apps_that_do_not_count_are_still_refused(self):
-        # Removing the gate must not have removed the allow list with it: an
-        # untouched hour of Chrome earns nothing for a reason of its own.
+        # The allow list is a separate reason and outlives the gate: an
+        # attended hour of Chrome on a leisure page still earns nothing.
         self.write(self.samples(9 * 3600, 11, bundle="com.google.Chrome",
-                                app="Google Chrome",
-                                idle=wp.FOCUS_IDLE_SEC + 30))
+                                app="Google Chrome"))
         self.assertEqual(self.minutes(), [])
 
 
