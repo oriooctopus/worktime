@@ -6,6 +6,7 @@
 // reach are the ones that quietly go wrong. main.swift imports AppKit and ends
 // in a running application, so nothing in it can be compiled into a test
 // binary; this can, and tests/activity_session_tests.swift does exactly that.
+import CoreGraphics
 import Foundation
 
 // The same evidence as `activities`, folded into the periods it happened in.
@@ -84,6 +85,50 @@ func sessionStrings(_ s: ActSession) -> (top: String, what: String) {
         what = String(what.prefix(SESSION_WHAT_CHARS - 1)) + "…"
     }
     return (top, what)
+}
+
+// How far the events panel stands off the menu.
+//
+// A real submenu has no such gap and cannot be given one -- AppKit places it
+// itself, flush against the parent, and exposes no offset. That flush edge is
+// what a menu wants when the submenu is part of the same object being
+// navigated; this panel is a side note about one row, and the seam made the
+// two windows read as one confusing wide menu whose left half had different
+// rules. The gap is the whole reason this is a panel we place rather than a
+// submenu the OS places.
+let POPOVER_GAP: CGFloat = 10
+
+// Kept off the screen edge by this much when the panel has to be clamped, so a
+// panel pushed against the side of the display still reads as a floating thing
+// rather than as something cut off by it.
+let POPOVER_MARGIN: CGFloat = 6
+
+// Where the events panel goes for a given row.
+//
+// Beside the menu, on the side with room: the menu bar item sits wherever it
+// sits, so a panel that always opened left would be half off screen for
+// somebody whose dot is near the left edge -- the same flip a submenu does,
+// which is why the arrow on the row has to be able to point either way.
+//
+// Top-aligned with the row that opened it rather than centred on it: the panel
+// is usually much taller than the row, and centring put its middle next to the
+// row while its first line -- the newest event, the one being asked about --
+// floated somewhere above, pointing at nothing.
+func popoverFrame(row: NSRect, menu: NSRect, size: NSSize, screen: NSRect) -> NSRect {
+    var x = menu.minX - POPOVER_GAP - size.width
+    if x < screen.minX + POPOVER_MARGIN {
+        x = menu.maxX + POPOVER_GAP
+    }
+    // Clamped last, so a panel too wide for either side ends up on screen
+    // rather than in the correct relationship with a menu nobody can see it
+    // next to.
+    x = min(max(x, screen.minX + POPOVER_MARGIN),
+            screen.maxX - POPOVER_MARGIN - size.width)
+
+    var y = row.maxY - size.height
+    y = min(max(y, screen.minY + POPOVER_MARGIN),
+            screen.maxY - POPOVER_MARGIN - size.height)
+    return NSRect(x: x, y: y, width: size.width, height: size.height)
 }
 
 // The last line of a session's submenu, when the probe's cap kept some of its

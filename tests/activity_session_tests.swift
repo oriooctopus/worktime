@@ -104,6 +104,52 @@ let whole = session(n: 1, rows: [
 check(sessionMoreLine(whole) == nil,
       "a complete submenu claimed there was more: \"\(sessionMoreLine(whole) ?? "")\"")
 
+// -- where the events panel goes -------------------------------------------
+
+// A screen 1600 wide, a menu 300 wide sitting a third of the way across it,
+// and a row near the top of that menu.
+let screen = NSRect(x: 0, y: 0, width: 1600, height: 1000)
+let menuRect = NSRect(x: 500, y: 500, width: 300, height: 400)
+let rowRect = NSRect(x: 500, y: 860, width: 300, height: 34)
+let panel = NSSize(width: 460, height: 200)
+
+// The gap is the entire reason this is a panel rather than a submenu, which
+// AppKit places flush and offers no way to offset.
+let left = popoverFrame(row: rowRect, menu: menuRect, size: panel, screen: screen)
+check(left.maxX == menuRect.minX - POPOVER_GAP,
+      "the panel sat \\(menuRect.minX - left.maxX)pt from the menu, not \\(POPOVER_GAP)")
+
+// Top-aligned with the row that opened it: the panel is taller than the row,
+// and centring left its first line -- the newest event, the one being asked
+// about -- pointing at nothing.
+check(left.maxY == rowRect.maxY,
+      "the panel's top was \\(left.maxY), the row's \\(rowRect.maxY)")
+
+// A menu near the left edge has no room on that side, so the panel goes to the
+// other one rather than half off the display.
+let cornered = popoverFrame(row: NSRect(x: 20, y: 860, width: 300, height: 34),
+                            menu: NSRect(x: 20, y: 500, width: 300, height: 400),
+                            size: panel, screen: screen)
+check(cornered.minX == 320 + POPOVER_GAP,
+      "a cornered panel opened at \\(cornered.minX) instead of beside the menu")
+
+// Whatever side it lands on, it stays on the display.
+for m in [menuRect, NSRect(x: 20, y: 500, width: 300, height: 400),
+          NSRect(x: 1200, y: 500, width: 300, height: 400)] {
+    let f = popoverFrame(row: NSRect(x: m.minX, y: 860, width: 300, height: 34),
+                         menu: m, size: panel, screen: screen)
+    check(f.minX >= screen.minX && f.maxX <= screen.maxX,
+          "a panel ran off the side: \\(f)")
+}
+
+// A session long enough to be taller than the screen is pushed down to fit
+// rather than starting level with its row and running off the top.
+let tall = popoverFrame(row: NSRect(x: 500, y: 980, width: 300, height: 34),
+                        menu: menuRect, size: NSSize(width: 460, height: 900),
+                        screen: screen)
+check(tall.minY >= screen.minY && tall.maxY <= screen.maxY,
+      "a tall panel ran off the screen: \\(tall)")
+
 // -- the menu key ---------------------------------------------------------
 
 // The key has to cover what the submenu draws, not just the two visible lines:

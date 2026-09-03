@@ -628,11 +628,16 @@ final class SessionHover {
     // menu owns the views, this object is rebuilt with them, and both are
     // discarded together on the next build.
     var rows: [NSView] = []
+    // Called with the row that was entered, so the events panel can follow the
+    // pointer. Nil for the raw list, which answers a hover by marking its own
+    // rows and opens nothing.
+    var onEnter: ((Int?, NSView?) -> Void)?
 
-    func enter(_ id: Int?) {
+    func enter(_ id: Int?, from view: NSView? = nil) {
         guard id != session else { return }
         session = id
         for r in rows { r.needsDisplay = true }
+        onEnter?(id, view)
     }
 }
 
@@ -855,10 +860,15 @@ final class SessionRowView: NSView {
             owner: self, userInfo: nil))
     }
 
-    // The fill lands on mouseEntered, which is the moment the pointer arrives
-    // -- the submenu still waits out the OS's own hover delay before it opens,
-    // and without this the row gave no sign at all during that wait.
-    override func mouseEntered(with _: NSEvent) { hover?.enter(session) }
+    // The fill and the panel both land on mouseEntered, the moment the
+    // pointer arrives. The submenu this replaced sat behind the OS's hover
+    // delay, so a row gave no sign at all for the half second before its
+    // events appeared.
+    //
+    // `self` goes along so whoever opens the panel knows which row to stand
+    // beside; the view is the only thing that knows where on screen it ended
+    // up.
+    override func mouseEntered(with _: NSEvent) { hover?.enter(session, from: self) }
     override func mouseExited(with _: NSEvent) { hover?.enter(nil) }
 
     required init?(coder: NSCoder) { fatalError("not used") }
@@ -869,44 +879,6 @@ final class SessionRowView: NSView {
         hoverFill().setFill()
         bounds.fill()
     }
-}
-
-// The events one session collapsed, as a submenu rather than as a tooltip.
-//
-// A tooltip was the first shape this took and it lands ON the list it is
-// describing: the rows either side of the one being read disappear under it,
-// which is the opposite of what hovering a row in a list is for. A submenu
-// opens beside the menu, leaves the day visible next to it, and is the shape
-// the OS already uses for "this row has more behind it" -- including the hover
-// to open it, which is what was being asked for in the first place.
-//
-// Same three columns as the raw list, for the same reason the raw list has
-// them: this IS the raw list, scoped to one session. The one difference is the
-// first column, which holds the clock time rather than an age -- inside a
-// stretch that ended an hour ago, what each event is being read against is the
-// others and the range on the parent row, not the present moment.
-func sessionSubmenu(_ s: ActSession) -> NSMenu {
-    let sub = NSMenu()
-    let times = s.rows.map(\.t)
-    let timeWidth = columnWidth(times)
-    let kindWidth = columnWidth(s.rows.map(\.kind))
-    for r in s.rows {
-        let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-        item.view = ActivityRowView(Activity(t: r.t, at: 0, kind: r.kind,
-                                             what: r.what, n: r.n),
-                                    width: 420, age: r.t,
-                                    ageWidth: timeWidth, kindWidth: kindWidth)
-        sub.addItem(item)
-    }
-    // What the payload's cap left out, said out loud: a submenu showing twenty
-    // of a hundred would contradict the event count on the row it hangs off,
-    // which is the number it is read against.
-    if let line = sessionMoreLine(s) {
-        let more = NSMenuItem(title: line, action: nil, keyEquivalent: "")
-        more.isEnabled = false
-        sub.addItem(more)
-    }
-    return sub
 }
 
 func addPeriodItem(_ p: Period, to menu: NSMenu) {
@@ -1005,6 +977,9 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // rows. Held here only so it outlives build() and is replaced by the next
     // one, alongside the views it drives.
     var hover: SessionHover?
+    // One panel for the app's lifetime -- see SessionPopover for why it is a
+    // panel and not the submenu it replaced.
+    let popover = SessionPopover()
     let focusLog = FocusLog()
     var audioTimer: Timer?
     var detector = CallDetector(minCallSec: MIN_CALL_SEC, settleSec: SETTLE_SEC)
@@ -1302,14 +1277,31 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let hover = SessionHover()
             self.hover = hover
             if grouped {
-                for (i, s) in status.sessions.enumerated() {
+                let sessions = status.sessions
+                // Opening the panel is the menu's job, not the row's: only
+                // this level knows the menu's own window, and the panel has to
+                // be placed against that rather than against the row alone.
+                hover.onEnter = { [weak self] id, view in
+                    guard let self else { return }
+                    guard let id, id < sessions.count, let view,
+                          let window = view.window, let screen = window.screen
+                    else {
+                        self.popover.hide()
+                        return
+                    }
+                    self.popover.show(sessions[id],
+                                      row: window.convertToScreen(
+                                          view.convert(view.bounds, to: nil)),
+                                      menu: window.frame,
+                                      screen: screen.visibleFrame)
+                }
+                for (i, s) in sessions.enumerated() {
                     let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
                     let view = SessionRowView(s, width: 300)
                     view.session = i
                     view.hover = hover
                     hover.rows.append(view)
                     item.view = view
-                    item.submenu = sessionSubmenu(s)
                     m.addItem(item)
                 }
             } else {
@@ -1436,7 +1428,17 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func menuWillOpen(_: NSMenu) { menuIsOpen = true }
-    func menuDidClose(_: NSMenu) { menuIsOpen = false }
+
+    // The panel is a window of our own, so nothing takes it away when the menu
+    // goes: without this it would be left floating over the desktop, beside a
+    // menu that is no longer there. A row's mouseExited normally closes it
+    // first, but a menu dismissed by a click elsewhere or by Escape never
+    // delivers one.
+    func menuDidClose(_: NSMenu) {
+        menuIsOpen = false
+        popover.hide()
+        hover?.enter(nil)
+    }
 
     // The probe shells out to prompt-count and Slack, so a poll can take a
     // second or two. On the main thread that freezes the menu bar for everyone.
