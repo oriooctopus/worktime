@@ -110,6 +110,12 @@ inflated a day, because an exclude list is right only about the apps somebody
 thought to name. The allow list's own cost is that a new tool earns nothing
 until it is added -- a quieter failure, and one that errs low.
 
+Obsidian is left out despite being where the notes are, because the vault is
+one app over two lives: the same window holds meeting notes and the grocery
+list, and being frontmost cannot say which. Chrome has that problem too and
+answers it per page rather than per app, but a note has no URL to test on, so
+none of it counts.
+
 The terminal is left out for a different reason than the streaming apps.
 It is not leisure, it is ambiguous: the same window is frontmost whether the
 work is on this Mac or on the Linux desktop, and desktop work is subtracted

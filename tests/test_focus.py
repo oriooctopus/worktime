@@ -26,6 +26,7 @@ spec.loader.exec_module(wp)
 
 DAY = "2026-03-04"
 SLACK = "com.tinyspeck.slackmacgap"
+ZED = "dev.zed.Zed"
 
 
 def hms(sec):
@@ -573,9 +574,9 @@ class TestFocusWindows(FocusCase):
     """
 
     def test_a_window_runs_from_its_activation_to_the_next(self):
-        # Slack at 09:00, Obsidian at 09:05. One window each, and the first
+        # Slack at 09:00, Zed at 09:05. One window each, and the first
         # ends exactly where the second begins.
-        self.write(self.switches(9 * 3600, [SLACK, "md.obsidian"], step=300))
+        self.write(self.switches(9 * 3600, [SLACK, ZED], step=300))
         self.assertEqual([(lo, hi) for lo, hi, _ in wp.focus_windows(DAY)],
                          [(32400, 32700), (32700, 32700 + wp.FOCUS_LABEL_MAX_SEC)])
 
@@ -583,9 +584,9 @@ class TestFocusWindows(FocusCase):
         # The activation names its window; the next one only ends it. Reading
         # the name off the closing row would label every stretch with whatever
         # you switched to next.
-        self.write(self.switches(9 * 3600, [SLACK, "md.obsidian"]))
+        self.write(self.switches(9 * 3600, [SLACK, ZED]))
         self.assertEqual([a["bundle"] for _, _, a in wp.focus_windows(DAY)],
-                         [SLACK, "md.obsidian"])
+                         [SLACK, ZED])
 
     def test_a_window_nothing_replaces_stops_describing_the_day(self):
         # The last activation of the day has no successor. Left unbounded it
