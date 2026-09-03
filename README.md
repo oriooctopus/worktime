@@ -311,13 +311,19 @@ own marked `not counted` rather than disappearing from the tally.
 
 Hovering any row in the raw list brackets every other row from the same
 session, so the grouping the sessions view gives is readable without leaving
-the list. Each session row opens a submenu (hover the `›`) listing its own events — up to
+the list. Each session row opens a panel beside the menu (hover the `‹`) listing its own events — up to
 twenty of them, in the same three columns the raw list uses, ending in a line
 saying how many the cap left out. Grouping is what makes the day readable and
-also what puts the evidence out of reach; the submenu is the only place one
+also what puts the evidence out of reach; the panel is the only place one
 session's rows can be read, since toggling back gives the newest ten events of
-the whole day rather than of that stretch. It opens beside the menu rather than
-over it, which a tooltip could not do.
+the whole day rather than of that stretch.
+
+It is a panel the app places (`bin/worktime-bar/SessionPopover.swift`) rather
+than a real submenu, for one reason: AppKit puts a submenu flush against its
+parent and offers no offset, and the two windows meeting at a seam read as one
+wide menu whose halves obeyed different rules. The cost is that it can't be
+walked with the arrow keys — nothing in it is a target, so what's lost is
+moving a selection through items that were never selectable.
 
 ## Ending a meeting when the call ends
 
