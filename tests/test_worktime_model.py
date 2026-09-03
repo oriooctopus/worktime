@@ -34,7 +34,7 @@ def _load(name, path):
 wp = _load("wp", os.path.join(ROOT, "bin", "worktime-probe.py"))
 
 
-def build(stamps, firsts=(), mode="focused"):
+def build(stamps, mode="focused"):
     """Run the real period builder over raw second-of-day stamps.
 
     Calls into the probe rather than re-implementing it. An earlier version of
@@ -46,7 +46,7 @@ def build(stamps, firsts=(), mode="focused"):
     tests what actually ships.
     """
     tl = [(0, mode)]
-    present = wp.build_bouts(sorted(stamps), set(firsts), tl)
+    present = wp.build_bouts(sorted(stamps), tl)
     merged = wp.merge_spans(present, tl)
     mins = [[s // 60, e // 60] for s, e in merged]
     gaps = [b[0] - a[1] for a, b in zip(mins, mins[1:]) if b[0] > a[1]]
@@ -101,25 +101,13 @@ class PeriodModel(unittest.TestCase):
         mins, _, _sec = build([HH(10, 0)])
         self.assertEqual(mins[0][0], (HH(10, 0) - wp.LEAD_SEC) // 60)
 
-    def test_session_first_prompt_gets_extra_lead(self):
-        # Asserted in seconds: published minutes are floored, so a 20-second
-        # difference is invisible there.
-        _, _, plain = build([HH(10, 0)])
-        _, _, first = build([HH(10, 0)], firsts=[HH(10, 0)])
-        self.assertEqual(plain[0][0] - first[0][0], wp.SESSION_LEAD_SEC,
-                         "opening a conversation buys exactly the extra lead")
-
-    def test_continuing_a_conversation_gets_no_extra_lead(self):
+    def test_the_lead_is_flat(self):
+        # Asserted in seconds: published minutes are floored, so the lead is
+        # invisible there. Opening a conversation used to buy an extra 20s on
+        # top; every prompt now gets the same twenty.
         _, _, plain = build([HH(10, 0)])
         self.assertEqual(HH(10, 0) - plain[0][0], wp.LEAD_SEC)
-
-    def test_session_lead_also_respects_the_gap_floor(self):
-        for extra_sec in range(310, 700, 7):
-            t0 = HH(10, 0)
-            t1 = t0 + extra_sec
-            _, gaps, _sec = build([t0, t1], firsts=[t1])
-            for g in gaps:
-                self.assertGreaterEqual(g, wp.GAP_AFTER)
+        self.assertEqual(wp.LEAD_SEC, 20)
 
     def test_both_rules_hold_across_every_silence(self):
         # The pair that used to contradict each other: a >5m silence must
@@ -186,13 +174,16 @@ class FocusModes(unittest.TestCase):
         mins, _, _ = build(stamps, mode="unfocused")
         self.assertEqual(len(mins), 8, "each isolated prompt is its own bout")
 
-    def test_unfocused_lone_prompt_costs_the_minimum(self):
-        # No ramp yet, so no lead: the whole span is the MIN_PERIOD floor,
-        # against 80s for the same prompt in focused mode.
-        _, _, sec = build([HH(10, 0)], mode="unfocused")
-        self.assertEqual(sec[0][1] - sec[0][0], wp.MIN_PERIOD_SEC)
+    def test_a_lone_prompt_costs_the_minimum_in_either_mode(self):
+        # Unfocused: no ramp yet, so no lead at all. Focused: LEAD + TAIL is
+        # forty seconds, under the floor. Since the lead came down to twenty the
+        # floor dominates both, so a lone prompt is a minute whatever the mode
+        # -- the modes separate on sustained bouts, not on single prompts.
+        _, _, unf = build([HH(10, 0)], mode="unfocused")
         _, _, foc = build([HH(10, 0)], mode="focused")
-        self.assertEqual(foc[0][1] - foc[0][0], wp.LEAD_SEC + wp.TAIL_SEC)
+        self.assertEqual(unf[0][1] - unf[0][0], wp.MIN_PERIOD_SEC)
+        self.assertEqual(foc[0][1] - foc[0][0], wp.MIN_PERIOD_SEC)
+        self.assertLess(wp.LEAD_SEC + wp.TAIL_SEC, wp.MIN_PERIOD_SEC)
 
     def test_a_sustained_unfocused_session_widens_to_the_full_cutoff(self):
         # Ten minutes of prompting every 45s earns the ramp, after which a
@@ -247,7 +238,7 @@ class FocusModes(unittest.TestCase):
         morning = [HH(9, 0) + i * 240 for i in range(6)]
         afternoon = [HH(15, 0) + i * 240 for i in range(6)]
         tl = [(0, "focused"), (HH(12, 0), "unfocused")]
-        merged = wp.merge_spans(wp.build_bouts(morning + afternoon, set(), tl), tl)
+        merged = wp.merge_spans(wp.build_bouts(morning + afternoon, tl), tl)
         before = [p for p in merged if p[0] < HH(12, 0)]
         after = [p for p in merged if p[0] >= HH(12, 0)]
         self.assertEqual(len(before), 1, "the focused morning stays one period")
@@ -257,7 +248,7 @@ class FocusModes(unittest.TestCase):
         self.assertEqual(wp.mode_timeline("1970-01-01"), [(0, "focused")])
 
 
-def build_desk(stamps, desktop, firsts=(), mode="focused"):
+def build_desk(stamps, desktop, mode="focused"):
     """The real pipeline including desktop subtraction, as the snapshot runs it.
 
     Mirrors write_vault_snapshot's order: bouts, merge, THEN subtract. The
@@ -266,7 +257,7 @@ def build_desk(stamps, desktop, firsts=(), mode="focused"):
     Marks and meetings are exempt there and are out of scope here.
     """
     tl = [(0, mode)]
-    present = wp.build_bouts(sorted(stamps), set(firsts), tl)
+    present = wp.build_bouts(sorted(stamps), tl)
     merged = wp.merge_spans(present, tl)
     merged = wp.subtract_spans(
         merged, wp.desktop_holes(desktop, {s // 60 for s in stamps}, tl))
@@ -435,7 +426,7 @@ class IdleExclusion(unittest.TestCase):
         # machine was untouched for the middle of it.
         stamps = [HH(10, 0), HH(10, 4)]
         tl = [(0, "focused")]
-        merged = wp.merge_spans(wp.build_bouts(stamps, set(), tl), tl)
+        merged = wp.merge_spans(wp.build_bouts(stamps, tl), tl)
         before = sum(e - s for s, e in merged)
         # The absence sits strictly inside, so both remnants survive and the
         # only thing removed is the silence itself -- no interaction with the
@@ -449,7 +440,7 @@ class IdleExclusion(unittest.TestCase):
     def test_a_claim_protects_the_silence_it_answered(self):
         stamps = [HH(10, 0), HH(10, 4)]
         tl = [(0, "focused")]
-        merged = wp.merge_spans(wp.build_bouts(stamps, set(), tl), tl)
+        merged = wp.merge_spans(wp.build_bouts(stamps, tl), tl)
         kept = self._with(
             [(10, 4, 0, 210)], claims=[(HH(10, 0), HH(10, 24))],
             fn=lambda: wp.subtract_spans(merged, wp.idle_cut(self.DAY, [])))

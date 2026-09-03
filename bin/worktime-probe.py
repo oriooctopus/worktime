@@ -108,9 +108,10 @@ GAP_AFTER = 5
 # day's thirty-five periods came to read "08:01-08:01 0m".
 #
 # So: last prompt + TAIL, floored at MIN_PERIOD. With the lead below, a lone
-# focused prompt is eighty seconds. Small enough that it cannot inflate a day
-# the way a five-minute credit did -- a hundred lone prompts buy just over two
-# hours, and a hundred lone prompts is not a real day.
+# focused prompt carries forty seconds of padding and so measures the one-minute
+# floor. Small enough that it cannot inflate a day the way a five-minute credit
+# did -- a hundred lone prompts buy well under two hours, and a hundred lone
+# prompts is not a real day.
 TAIL_SEC = 20
 
 # And what a period gets BEFORE its first prompt. A prompt is not typed
@@ -121,12 +122,13 @@ TAIL_SEC = 20
 # Without that clamp a 5m20s silence would render as a 4m gap, which is the
 # exact contradiction the old five-minute grace period produced -- a dashboard
 # showing gaps shorter than the gap threshold it claims to use.
-LEAD_SEC = 60
-
-# Extra lead when a period opens on the first prompt of a conversation, on top
-# of LEAD_SEC. Starting a conversation costs more than continuing one: there is
-# a page to read and a question to frame before anything gets typed.
-SESSION_LEAD_SEC = 20
+#
+# Twenty seconds, flat -- the same as the tail, and applied whether or not the
+# prompt opens a conversation. A minute of credit for writing was generous
+# enough that lone prompts carried real weight on their own; twenty seconds
+# covers the act of sending without paying for time that may not have been
+# spent here.
+LEAD_SEC = 20
 
 # The least a period can measure, in either mode. A bout whose padding gets
 # clamped away -- by a tight silence on both sides, or by an unfocused ramp that
@@ -271,7 +273,7 @@ def chain_bouts(stamps: list[int],
     return bouts, split_at
 
 
-def build_bouts(stamps: list[int], firsts: set[int],
+def build_bouts(stamps: list[int],
                 timeline: list[tuple[int, str]]) -> list[list[int]]:
     """Sorted second-of-day stamps to padded work spans. Pure -- no I/O.
 
@@ -293,7 +295,7 @@ def build_bouts(stamps: list[int], firsts: set[int],
       * a gap must never be DISPLAYED shorter than the cutoff that made it
 
     A 5m10s silence has only 10 seconds to spare between those. Spending the
-    full 80s of padding there would show a 4m gap; a hard floor on the start
+    full 40s of padding there would show a 4m gap; a hard floor on the start
     instead (the first attempt) shoved the period past its own prompt and
     published 0m periods. So each pair of adjacent bouts gets exactly the slack
     its silence affords, split tail-first, and neither rule bends.
@@ -304,13 +306,13 @@ def build_bouts(stamps: list[int], firsts: set[int],
     tail_used = [TAIL_SEC] * len(raw)
     budgets = [0] * len(raw)
     for i in range(len(raw)):
-        want = LEAD_SEC + (SESSION_LEAD_SEC if raw[i][0] in firsts else 0)
+        want = LEAD_SEC
         # In unfocused mode the lead is earned on the same ramp as the cutoff.
-        # A minute of writing credited before the first prompt is a fair reading
-        # of a bout that turned into real work and a poor one for a prompt fired
-        # off between other things -- and with the full lead always applied, a
-        # lone unfocused prompt would still bank 80 seconds, so the mode would
-        # hardly move the day's total however short its cutoff got.
+        # Credit before the first prompt is a fair reading of a bout that turned
+        # into real work and a poor one for a prompt fired off between other
+        # things -- and with the full lead always applied, a lone unfocused
+        # prompt would still bank its padding, so the mode would hardly move the
+        # day's total however short its cutoff got.
         if mode_at(timeline, raw[i][0]) == "unfocused":
             want = int(want * min(1.0, (raw[i][1] - raw[i][0])
                                   / (UNFOCUSED_RAMP_MIN * 60)))
@@ -928,20 +930,6 @@ def end_session(at_last: bool = False) -> dict:
 def to_min(hhmm: str) -> int:
     h, m = hhmm.split(":")
     return int(h) * 60 + int(m)
-
-
-def session_first_stamps(day: str) -> set[int]:
-    """Seconds-of-day at which each conversation's first prompt was sent.
-
-    Read from the same per-session `times` lists prompts_for() flattens, so the
-    two can never disagree about which stamp opened a conversation.
-    """
-    out = set()
-    for sess in full_day(day).get("sessions", []):
-        times = sess.get("times") or []
-        if times:
-            out.add(sec_of(min(times)))
-    return out
 
 
 APPROVALS = os.path.join(STATE, "approvals.jsonl")
@@ -2599,7 +2587,7 @@ def write_vault_snapshot(day: str, events: list[datetime]) -> None:
                            for t in prompts_for(day))
 
     tl = mode_timeline(day)
-    present = build_bouts(stamps, session_first_stamps(day), tl)
+    present = build_bouts(stamps, tl)
 
     # Manual marks are presence, unioned in the same way meetings are. They
     # carry no tail or lead: a mark has declared bounds and needs neither.
