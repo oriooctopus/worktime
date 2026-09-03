@@ -84,7 +84,7 @@ PROJECT_ROOTS = wc.PROJECT_ROOTS
 
 def find_transcript(session_id: str) -> str | None:
     for root, _dirs, files in itertools.chain.from_iterable(
-        os.walk(p) for p in PROJECT_ROOTS
+        os.walk(p) for p in PROJECT_ROOTS + wc.devpod_project_roots()
     ):
         if f"{session_id}.jsonl" in files:
             return os.path.join(root, f"{session_id}.jsonl")
@@ -343,7 +343,7 @@ def count_for_day(day: str, summarize: bool = False, full: bool = False) -> dict
     sessions_hits: list[tuple[dict, list[str]]] = []  # for optional summarization
     total = 0
     for root, _dirs, files in itertools.chain.from_iterable(
-        os.walk(p) for p in PROJECT_ROOTS
+        os.walk(p) for p in PROJECT_ROOTS + wc.devpod_project_roots()
     ):
         for fname in files:
             if not fname.endswith(".jsonl"):

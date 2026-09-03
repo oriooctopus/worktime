@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.oliver.devpod-heartbeat-poll</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/bin/python3</string>
+		<string>/Users/oliver/.claude/bin/devpod-heartbeat-poll.py</string>
+	</array>
+	<key>StartInterval</key>
+	<integer>20</integer>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardErrorPath</key>
+	<string>/tmp/devpod-heartbeat-poll.err</string>
+	<key>StandardOutPath</key>
+	<string>/tmp/devpod-heartbeat-poll.log</string>
+</dict>
+</plist>

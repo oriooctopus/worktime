@@ -1393,6 +1393,26 @@ def last_focus_input(day: str) -> datetime | None:
             best = at
     return base + timedelta(seconds=best) if best is not None else None
 
+
+# Local mirror of the devpod prompt-heartbeat gist, written by
+# devpod-heartbeat-poll.py on its own schedule -- the live dot polls every 5s
+# and cannot hit GitHub's API on every poll, so this is read-only here, same
+# as every other externally-sourced signal (Slack, calendar, Chrome). A live-
+# dot freshness signal only: it feeds status()'s immediate verdict, never
+# events_for()/prompts_for(), so it can never inflate a period's prompt count
+# or double count a prompt the file mirror also picks up later.
+DEVPOD_HEARTBEAT_FILE = os.path.join(STATE, "devpod-heartbeat.json")
+
+
+def latest_devpod_heartbeat() -> datetime | None:
+    try:
+        with open(DEVPOD_HEARTBEAT_FILE) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return None
+    times = [datetime.fromisoformat(t) for t in data.values() if t]
+    return max(times).astimezone(LOCAL) if times else None
+
 # Where the bar records that a person answered an idle prompt. Only the claims
 # are written: the idle stretches themselves are already in the focus log, and
 # deriving them here rather than having the app report them keeps one account
@@ -3268,7 +3288,7 @@ def activity_fingerprint(day: str) -> str:
     session already causes through its transcript.
     """
     parts = []
-    for root_dir in PROMPT_ROOTS:
+    for root_dir in PROMPT_ROOTS + wc.devpod_project_roots():
         for root, _dirs, files in os.walk(root_dir):
             for f in files:
                 if f.endswith(".jsonl"):
@@ -3370,28 +3390,34 @@ def status() -> dict:
     now_m = now.hour * 60 + now.minute
     last, stamps, all_acts = live_activity(day)
 
-    # Folded in here and nowhere else, for the reason given on
-    # last_focus_input(): live_activity()'s `last` comes from focus_for(),
-    # which floors to the minute and needs a closing sample, so it can report
-    # ~90s of quiet while somebody is actively typing in Slack. This is the
-    # same shape as the raw prompt timestamps it sits beside -- a point act at
-    # second resolution -- and like them it moves only the dot.
-    touched = last_focus_input(day)
-
-    # Sends are not in events_for() -- focus superseded them -- but the live
-    # dot is the one consumer focus cannot fully serve: a message typed into a
-    # window that has been frontmost for a while is a keystroke like any other,
-    # while a send made in the seconds after switching apps can land between
-    # focus samples. Live only, for the same reason as everything else here.
-    sent = last_slack_send(day)
-    if sent and (touched is None or sent > touched):
-        touched = sent
-
-    if touched and (last is None or touched > last):
-        last = touched
-        t_m = touched.hour * 60 + touched.minute
-        if t_m not in stamps:
-            stamps = sorted(stamps + [t_m])
+    # Everything that can be fresher than live_activity()'s `last`, folded in
+    # here and nowhere else. Each exists because the signal it corrects is
+    # cached or coarsened for a reason that is right for the day's arithmetic
+    # and wrong for a dot polled every five seconds:
+    #
+    #   focus  -- focus_for() credits whole minutes and needs a closing sample,
+    #             so it reports up to ~90s of quiet while somebody is typing.
+    #   slack  -- search.messages is cached for SLACK_TTL_SEC; the desktop
+    #             client writes its own log the instant a message is sent.
+    #   devpod -- the prompt file mirror runs on a multi-minute schedule, so a
+    #             prompt typed on a devpod is minutes old before it lands.
+    #
+    # None of them reaches events_for() or prompts_for(), so none can lengthen
+    # a period or inflate a prompt count. Kept as one loop rather than three
+    # near-identical blocks: they answer the same question and drifted apart
+    # the moment they were written separately.
+    for fresher in (last_focus_input(day), last_slack_send(day),
+                    latest_devpod_heartbeat()):
+        if not fresher or fresher.strftime("%Y-%m-%d") != day:
+            continue
+        if last is None or fresher > last:
+            last = fresher
+        # Added to stamps even when it is not the newest: a real moment of
+        # activity belongs in the bout live_cutoff() measures, whichever
+        # signal happened to see it.
+        f_m = fresher.hour * 60 + fresher.minute
+        if f_m not in stamps:
+            stamps = sorted(stamps + [f_m])
 
     quiet_sec = (now - last).total_seconds() if last else None
     quiet = quiet_sec / 60 if quiet_sec is not None else None

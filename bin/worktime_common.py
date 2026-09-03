@@ -25,6 +25,7 @@ compatible: chrome-work-blocks.py runs on the Linux box, which is 3.8, so no
 `X | None` annotations -- those are a TypeError at def time, not at call time.
 """
 
+import glob
 import json
 import os
 import re
@@ -50,6 +51,23 @@ PROJECT_ROOTS = [
     os.path.expanduser("~/.claude/projects"),
     os.path.expanduser("~/.claude-personal/projects"),
 ]
+
+# A third source of prompts: devpod-prompt-sync.py mirrors each active
+# devpod's own ~/.claude/projects here as ~/.claude-devpod/<alias>/projects,
+# since a prompt typed while working on a devpod never touches this machine's
+# ~/.claude/projects at all. Kept out of PROJECT_ROOTS itself (rather than
+# appended to it) because which devpods exist changes between runs, while
+# PROJECT_ROOTS is relied on elsewhere as a single stable list object;
+# consumers that walk PROJECT_ROOTS must also call devpod_project_roots() and
+# walk both, the same "must walk both" rule PROJECT_ROOTS itself exists for.
+DEVPOD_PROJECTS_ROOT = os.path.expanduser("~/.claude-devpod")
+
+
+def devpod_project_roots():
+    """Local mirror project dirs, one per devpod last synced by
+    devpod-prompt-sync.py. Pods that no longer exist keep their mirror (and
+    their prompts stay counted) until the sync script prunes it."""
+    return sorted(glob.glob(os.path.join(DEVPOD_PROJECTS_ROOT, "*", "projects")))
 
 PROFILE_PATH = os.path.expanduser("~/.config/worktime/profile.json")
 

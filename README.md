@@ -204,7 +204,10 @@ draws a coloured dot; it never recomputes state itself.
   `bin/` directly). Every prompt sent to Claude Code is evidence of presence,
   including from worktime's own background-job sessions: it walks both the
   normal `~/.claude/projects` and the separate `~/.claude-personal/projects`
-  those run under.
+  those run under, plus `~/.claude-devpod/<alias>/projects` for every devpod
+  `bin/devpod-prompt-sync.py` has mirrored (see below) — a prompt typed over
+  SSH on a devpod never touches this Mac's own `~/.claude/projects`, so
+  without the mirror a whole benchmark or eval session reads as idle.
 - **Attended foreground time** — which app was frontmost and how long since the
   last mouse or key event, sampled every 5 seconds by the menu bar app into
   `~/.claude/stats/worktime/focus/<date>.jsonl`. This is what counts Slack
@@ -387,6 +390,43 @@ picking one:
 Either closes an open mark and cuts a meeting that would otherwise run past
 that minute, in one step. A cut written when no meeting is running is inert:
 `effective_meeting_end` only applies a cut to the meeting it landed inside.
+
+## Devpod prompts
+
+`bin/devpod-prompt-sync.py` mirrors every active devpod's `~/.claude/projects`
+to `~/.claude-devpod/<alias>/projects`, which `prompt-count.py` and the
+probe's cache fingerprint both walk alongside the two local roots. Run on a
+schedule (`deploy/launchd/com.oliver.devpod-prompt-sync.plist`, every 5
+minutes) rather than triggered by a hook, since nothing on this Mac runs when
+a prompt is sent on a devpod. Destroyed devpods (absent from `devpod list`)
+have their mirror pruned on the next sync; already-counted days are
+unaffected since `prompt-count.py` only scans by file mtime.
+
+Devpods are discovered fresh each run via `devpod list --json` — there is no
+fixed alias list to maintain.
+
+For the live dot rather than the day total, `bin/devpod-prompt-heartbeat.py`
+is a devpod-side `UserPromptSubmit` hook that pushes `{hostname: now}` to a
+private gist within seconds of a prompt, over the pod's own already-
+authenticated git SSH key (gists are per-account, not per-repo, so no new
+credential is needed). `bin/devpod-heartbeat-poll.py` mirrors that gist to a
+local file on its own schedule
+(`deploy/launchd/com.oliver.devpod-heartbeat-poll.plist`, every 20s) for
+`worktime-probe.py`'s `status()` to read — the live dot polls every 5s and
+can't hit GitHub's API directly on every poll. This is a freshness signal
+only: it can move the live dot, never a period's prompt count or the day
+total, since those still come solely from the file mirror above.
+
+**Deployment note:** `devpod-prompt-sync.py` and `devpod-heartbeat-poll.py`
+(and the `worktime_common.py` the former imports) must be **copied**, not
+symlinked, into `~/.claude/bin/` for their launchd jobs to work — macOS
+blocks a bare launchd-spawned `python3` from reading through a symlink that
+resolves into `~/Documents`, even though the same script runs fine from an
+interactive shell or as a Claude Code hook. Re-copy after editing either
+file. Both also depend on `gcloud`/`gh`, which on this Mac only exist inside
+the sdmain buildenv (`polaris/.buildenv/bin`) — a launchd job's minimal `PATH`
+doesn't have that, so both scripts prepend it explicitly rather than relying
+on `PATH`.
 
 ## Building the menu bar app
 
