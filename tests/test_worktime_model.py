@@ -1459,6 +1459,67 @@ class RecentActivities(unittest.TestCase):
             wp.ACTIVITY_DIR = old
 
 
+class LiveCutoffMeasuresTheSameRunAsTheSilence(unittest.TestCase):
+    """The unfocused cutoff has to be earned by the run `last` belongs to.
+
+    The dot compares the silence since the newest EVENT against the width the
+    current bout has earned. If the bout is chained from a narrower set of
+    signals than `last` is drawn from, a browsing-only minute lands in one and
+    not the other: it refreshes the silence clock, cannot open a bout of its
+    own, and the ramp goes on quoting the five minutes an hour-old prompt run
+    earned. On screen that reads "4m since last activity - 2m left of 5m" at
+    the start of a session that should be holding a one-minute cutoff.
+    """
+
+    def _live(self, browse_at):
+        from datetime import datetime
+        base = datetime.strptime(DAY, "%Y-%m-%d").replace(tzinfo=wp.LOCAL)
+
+        def at(h, m):
+            return base.replace(hour=h, minute=m)
+
+        # 22:09-22:47 of prompting: enough to earn the full five minutes.
+        prompts = [at(22, 9 + i) for i in range(39)]
+        browse = [at(*browse_at)] if browse_at else []
+        d = tempfile.mkdtemp()
+        saved = {n: getattr(wp, n) for n in
+                 ("STATUS_CACHE", "events_for", "prompts_for", "focus_for",
+                  "slack_for", "full_day", "approval_rows_for",
+                  "github_rows_for", "mode_now", "mode_timeline")}
+        try:
+            wp.STATUS_CACHE = os.path.join(d, "status-cache.json")
+            wp.events_for = lambda _d: sorted(prompts + browse)
+            wp.prompts_for = lambda _d: prompts
+            wp.focus_for = lambda _d: []
+            wp.slack_for = lambda _d: []
+            wp.full_day = lambda _d: {"sessions": []}
+            wp.approval_rows_for = lambda _d: []
+            wp.github_rows_for = lambda _d: []
+            wp.mode_now = lambda: "unfocused"
+            wp.mode_timeline = lambda _d: [(0, "unfocused")]
+            last, stamps, ev_stamps, _ = wp.live_activity(DAY)
+            return last, stamps, wp.live_cutoff(DAY, [m * 60 for m in ev_stamps])
+        finally:
+            for n, f in saved.items():
+                setattr(wp, n, f)
+
+    def test_a_browse_after_the_run_ends_starts_a_fresh_one_minute_cutoff(self):
+        # 22:55 is eight minutes past the last prompt -- past any cutoff, so
+        # the earned run is over and the browse opens a bout of its own.
+        last, stamps, cutoff = self._live((22, 55))
+        self.assertEqual((last.hour, last.minute), (22, 55))
+        # The browse is not a prompt and not focus, so it stays out of the
+        # stamps marks_for() closes on -- that split is the point.
+        self.assertNotIn(22 * 60 + 55, stamps)
+        self.assertEqual(cutoff, wp.UNFOCUSED_GAP_START * 60)
+
+    def test_the_earned_width_still_stands_while_the_run_is_live(self):
+        # Same day without the stray browse: the 38-minute run is the last
+        # bout, and it has earned the full cutoff.
+        _, _, cutoff = self._live(None)
+        self.assertEqual(cutoff, wp.GAP_AFTER * 60)
+
+
 class StatusCacheVersion(unittest.TestCase):
     def test_cache_from_an_older_build_is_a_miss_not_a_crash(self):
         # The v1 payload has no "acts" key. Indexing it would raise on the
@@ -1482,13 +1543,14 @@ class StatusCacheVersion(unittest.TestCase):
             wp.full_day = lambda _d: {"sessions": []}
             wp.approval_rows_for = lambda _d: []
             wp.github_rows_for = lambda _d: []
-            last, stamps, acts = wp.live_activity(DAY)
+            last, stamps, ev_stamps, acts = wp.live_activity(DAY)
         finally:
             for n, f in saved.items():
                 setattr(wp, n, f)
         # Recomputed from the stubs rather than served from the old file.
         self.assertIsNone(last)
         self.assertEqual(stamps, [])
+        self.assertEqual(ev_stamps, [])
         self.assertEqual(acts, [])
         self.assertEqual(json.load(open(path))["v"], wp.STATUS_CACHE_V)
 
