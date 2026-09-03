@@ -243,9 +243,9 @@ draws a coloured dot; it never recomputes state itself.
 **How it decides working vs not working:**
 
 A prompt run chains prompts closer together than `GAP_AFTER` (5 minutes in
-focused mode) into one work period. The period starts 60 seconds before its
-first prompt (80 seconds if it opens a new conversation) and ends 20 seconds
-after its last one, floored at one minute total. In unfocused mode the gap
+focused mode) into one work period. The period starts 20 seconds before its
+first prompt and ends 20 seconds after its last one, floored at one minute
+total. In unfocused mode the gap
 threshold ramps from 1 minute up to 5 over the first 10 minutes of the bout,
 so a sparse stream of prompts between meetings doesn't inflate the day.
 
