@@ -157,6 +157,13 @@ enumerate one at a time:
   not. With one Google account there is nothing to tell apart, so leave it
   unset.
 
+A third rule needs no configuration: `myworkday.com` is work for everyone,
+whoever they work for. Workday serves every customer from the same host and
+puts the tenant somewhere in the path, so whether the employer's name appears
+at all is an accident of the page — and the export row for a task with a long
+title truncates the address away entirely, leaving only the `- Workday` suffix
+the title carries, which the probe matches too.
+
 ## Thresholds
 
 In `work-domains.json`. Defaults: `gap_sec` 180 (browsing breaks run 4-7

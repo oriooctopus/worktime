@@ -1587,14 +1587,30 @@ GITHUB_TITLE = re.compile(r"·\s*Pull Re|·\s*scaledata/|/pull/\d+", re.I)
 # defeat the point of tracking that domain at all.
 GITHUB_AUTH = re.compile(r"/saml/|/login/oauth/", re.I)
 
+# Workday has the same problem GITHUB_TITLE was written for, from the other
+# end. Its addresses are already work by host (ALWAYS_WORK_HOSTS), but the
+# 80-character export row spends its budget on the title and truncates the URL
+# away: "Self Assessment: FY27 OPE Mid-Year Check-In: Oliver Ullman - Workday
+# — https://w" is a real row, and nothing left in it is a Workday address.
+# What survives is the suffix Workday puts on every page title, so that is
+# what the row has to be matched on.
+#
+# Anchored to the end of the title -- the em dash the exporter puts before the
+# URL, or the end of a live tab title -- so it means the page named itself
+# Workday, not that the word happened to appear in a headline.
+WORKDAY_TITLE = re.compile(r"-\s*workday\s*(?:—|$)", re.I)
+
 
 def _work_site_hit(text: str) -> bool:
     """True if `text` (a URL, or an export detail that may carry one) is
-    evidence of work: a GitHub code page that isn't a login redirect, or a
-    visit that is work in its own right (see worktime_common.is_work_url)."""
+    evidence of work: a GitHub code page that isn't a login redirect, a
+    Workday page named by its title, or a visit that is work in its own right
+    (see worktime_common.is_work_url)."""
     lowered = text.lower()
     if "github.com" in lowered or GITHUB_TITLE.search(text):
         return not GITHUB_AUTH.search(text)
+    if WORKDAY_TITLE.search(text):
+        return True
     return wc.is_work_url(text, WORK_URL_KEYWORDS, GOOGLE_WORK_ACCOUNT)
 
 
@@ -1620,6 +1636,9 @@ def _live_url_filter() -> tuple[str, list]:
     """
     clauses = ["urls.url LIKE '%github.com%'"]
     params = []
+    for host in wc.ALWAYS_WORK_HOSTS:
+        clauses.append("urls.url LIKE ?")
+        params.append("%{}%".format(host))
     for keyword in WORK_URL_KEYWORDS:
         clauses.append("urls.url LIKE ?")
         params.append("%{}%".format(keyword))

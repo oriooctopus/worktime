@@ -653,6 +653,23 @@ class TestChromeTab(FocusCase):
             "bundle": wp.CHROME_BUNDLE, "tab": "rubrik stock price - Google Search",
             "url": "https://www.google.com/search?q=rubrik+stock+price"}))
 
+    def test_a_workday_page_counts(self):
+        self.assertTrue(wp.focus_counts({
+            "bundle": wp.CHROME_BUNDLE, "tab": "Manage Absence - Workday",
+            "url": "https://wd5.myworkday.com/rubrik/d/inst/13102/x.htmld"}))
+
+    def test_a_workday_title_counts_when_the_url_is_truncated_away(self):
+        """The real export row: 80 characters spent, no address left in it."""
+        self.assertTrue(wp._work_site_hit(
+            "Self Assessment: FY27 OPE Mid-Year Check-In: Oliver Ullman - "
+            "Workday — https://w"))
+
+    def test_a_headline_mentioning_workday_is_not_work(self):
+        """Why the title rule is anchored: the word has to end the title."""
+        self.assertFalse(wp._work_site_hit(
+            "The four-day workday is coming - Hacker News — "
+            "https://news.ycombinator.com/item?id=1"))
+
     def test_a_sample_written_before_the_field_existed_earns_nothing(self):
         """Old rows, and any machine that declined the Automation prompt."""
         self.write(self.samples(9 * 3600, 20, bundle=wp.CHROME_BUNDLE,

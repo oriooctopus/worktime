@@ -163,6 +163,19 @@ def dashboard_dir(env=None, profile_path=None):
 # time and go stale the moment a new tool appeared.
 DEFAULT_WORK_URL_KEYWORDS = ("rubrik",)
 
+# Hosts that are work for everybody, whoever they work for, and so are not
+# somebody's keyword to configure. The employer-name rule reaches internal
+# tools because their addresses carry the company's name; a hosted HR system
+# is the case it cannot reach. Workday serves every customer from
+# myworkday.com and puts the tenant somewhere in the path, so whether the
+# company's name appears at all is an accident of the page: the home screen
+# is /rubrik/d/home.htmld and counts, while the export row for a task with a
+# long title truncates to "... - Workday — https://w" and does not. Nobody
+# opens their employer's Workday for fun -- the reviews, the time off and the
+# expenses in it are all the job -- so the host settles it and the path stops
+# mattering.
+ALWAYS_WORK_HOSTS = ("myworkday.com",)
+
 # Google serves every signed-in account from the same hostnames and separates
 # them only by the account index in the path: the second account you added is
 # /u/1, and Gmail, Calendar, Drive and Docs all carry it. So a work Google
@@ -224,8 +237,9 @@ def google_account_index(url):
 
 
 def is_work_url(url, keywords=None, work_account=None):
-    """True if `url` is work on its own: it names a work keyword, or it is a
-    Google page signed in as the work account.
+    """True if `url` is work on its own: it sits on a host that is work for
+    everyone, it names a work keyword, or it is a Google page signed in as the
+    work account.
 
     Keywords are matched against the address only, never the query string.
     Googling "rubrik stock price" puts the employer's name in ?q= and nowhere
@@ -241,6 +255,8 @@ def is_work_url(url, keywords=None, work_account=None):
     if SEARCH_RESULTS.search(lowered):
         return False
     address = lowered.split("?")[0].split("#")[0]
+    if any(h in address for h in ALWAYS_WORK_HOSTS):
+        return True
     keywords = work_url_keywords() if keywords is None else keywords
     if any(k in address for k in keywords):
         return True
