@@ -13,13 +13,13 @@
     <!-- Menu-bar-only: no Dock icon, no app switcher entry. -->
     <key>LSUIElement</key><true/>
     <key>NSHighResolutionCapable</key><true/>
-    <!-- Required to ask Chrome for the front tab. Without this key macOS does
-         not deny the Apple Event after asking -- it never asks: the app is
-         refused before any dialog appears, osascript exits non-zero, and
-         chromeActiveTab() reads that as "Chrome has no windows open". The
-         focus log then records every Chrome row with no tab and no url, so
-         the browser earns nothing however work-shaped the page is. Three days
-         of focus logs carried zero tab fields for exactly this reason. -->
+    <!-- The string macOS shows when it asks whether Worktime may read the
+         front Chrome tab. Apple requires the key of anything that sends an
+         Apple Event, and the prompt is unexplained without it.
+
+         It is not what was breaking tab capture, though the empty focus log
+         made it look that way -- see the delimiter comment in main.swift for
+         what actually was. -->
     <key>NSAppleEventsUsageDescription</key><string>Worktime reads the title and address of the front Chrome tab, so a work page in the foreground counts as work and a personal one does not.</string>
 </dict>
 </plist>
