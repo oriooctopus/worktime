@@ -20,6 +20,7 @@ import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PANEL = os.path.join(ROOT, "bin", "worktime-bar", "TrackPanel.swift")
+MAIN = os.path.join(ROOT, "bin", "worktime-bar", "main.swift")
 SUITE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                      "track_panel_tests.swift")
 
@@ -45,6 +46,27 @@ class TrackPanelSuite(unittest.TestCase):
             self.skipTest("no window server in this session")
         self.assertEqual(run.returncode, 0,
                          f"track panel tests failed:\n{run.stdout}{run.stderr}")
+
+    def test_reopening_asks_whether_a_panel_is_visible(self):
+        """The guard in front of opening a second panel, read from the source.
+
+        A source check rather than a behavioural one because the only way to
+        exercise it for real is to build the whole menu bar app and press the
+        hot key twice, which needs Accessibility a test runner does not have.
+        It is pinned anyway, because this is the bug that killed the shortcut
+        on the day it shipped and it is completely silent: `trackPanel != nil`
+        is true of a panel that was cancelled minutes ago, so the first cancel
+        was the last time the panel ever appeared. The key still fired, the
+        app still came to the front, and nothing was logged anywhere.
+        """
+        src = open(MAIN).read()
+        self.assertIn("trackPanel?.isOnScreen == true", src,
+                      "showTrackPanel must ask whether a panel is VISIBLE "
+                      "before declining to open one -- holding a reference to "
+                      "a withdrawn panel is not the same thing")
+        self.assertNotIn("if trackPanel != nil", src,
+                         "a bare nil check here means a cancelled panel "
+                         "blocks every later double press")
 
 
 if __name__ == "__main__":

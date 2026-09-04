@@ -1721,17 +1721,24 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
     // to the probe, which owns the arithmetic -- the panel neither knows nor
     // decides where the minutes land.
     @objc func showTrackPanel() {
-        if trackPanel != nil {
-            // Already up. Raising it is the whole response: opening a second
+        // Asked of the window, not of this reference. Holding a TrackPanel is
+        // not the same as one being on screen -- a cancelled panel is a live
+        // object with nothing visible -- and testing the reference is how the
+        // shortcut broke the first time: cancel it once and every later double
+        // press took this branch, activating the app and showing nothing.
+        if trackPanel?.isOnScreen == true {
+            // Genuinely up. Raising it is the whole response: opening a second
             // one would put two half-typed counts on screen and bank whichever
             // got its return key first.
             NSApp.activate(ignoringOtherApps: true)
             return
         }
-        trackPanel = TrackPanel { [weak self] minutes, mode in
+        trackPanel = TrackPanel(onClose: { [weak self] in
+            self?.trackPanel = nil
+        }, onTrack: { [weak self] minutes, mode in
             self?.trackPanel = nil
             self?.trackBack(minutes: minutes, mode: mode)
-        }
+        })
     }
 
     // Runs the claim and reports what actually landed, which is not always

@@ -21,9 +21,10 @@ import AppKit
 // It lives in its own file for the same reason the countdown does: a test can
 // build one, set its fields and press its button without also standing up the
 // menu bar app around it.
-final class TrackPanel: NSObject, NSTextFieldDelegate {
+final class TrackPanel: NSObject, NSTextFieldDelegate, NSWindowDelegate {
     private let panel: NSPanel
     private let onTrack: (Int, String) -> Void
+    private let onClose: () -> Void
 
     /// The minute count and the overlap rule, held rather than looked up so a
     /// test that mis-wires them fails instead of quietly finding nothing.
@@ -57,8 +58,11 @@ final class TrackPanel: NSObject, NSTextFieldDelegate {
     /// mode mapping and the button, none of which needs a window on screen --
     /// and a suite that puts a keyboard-taking panel in front of whatever the
     /// machine is doing, four times a run, is worse than no suite at all.
-    init(present: Bool = true, onTrack: @escaping (Int, String) -> Void) {
+    init(present: Bool = true,
+         onClose: @escaping () -> Void = {},
+         onTrack: @escaping (Int, String) -> Void) {
         self.onTrack = onTrack
+        self.onClose = onClose
 
         panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 320, height: 148),
                         styleMask: [.titled, .closable, .utilityWindow],
@@ -70,6 +74,11 @@ final class TrackPanel: NSObject, NSTextFieldDelegate {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
 
         super.init()
+        // Set so the titlebar's close button is not a way of withdrawing the
+        // panel that nothing hears about. orderOut() does not send this --
+        // cancelTapped calls onClose itself -- so the two paths are covered
+        // once each rather than twice or not at all.
+        panel.delegate = self
 
         let prompt = NSTextField(labelWithString: "Minutes to track:")
         prompt.font = NSFont.systemFont(ofSize: 12)
@@ -172,7 +181,22 @@ final class TrackPanel: NSObject, NSTextFieldDelegate {
         onTrack(n, picked)
     }
 
-    @objc func cancelTapped() { close() }
+    @objc func cancelTapped() {
+        close()
+        onClose()
+    }
+
+    /// Whether the panel is actually in front of somebody.
+    ///
+    /// The question the caller has to ask before opening another one, and it
+    /// is deliberately not "have I ever made one". A withdrawn panel is still
+    /// a live object, so a caller holding one and testing for its existence
+    /// concludes the panel is up when the screen is empty -- which is exactly
+    /// how the shortcut died the first time: cancelling it once left the
+    /// reference standing and every later double press silently did nothing.
+    var isOnScreen: Bool { panel.isVisible }
 
     func close() { panel.orderOut(nil) }
+
+    func windowWillClose(_: Notification) { onClose() }
 }
