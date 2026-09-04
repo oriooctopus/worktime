@@ -283,8 +283,18 @@ let CHROME_BUNDLE = "com.google.Chrome"
 // timer -- and with it the menu, the countdown and the dot -- indefinitely.
 let CHROME_TAB_TIMEOUT_SEC = 2.0
 
-// Whether the Automation refusal has already been reported this launch.
-var chromeTabDenied = false
+// Whether a failed tab read has already been reported this launch.
+var chromeTabFailureReported = false
+
+func reportChromeTabFailure(_ text: String) {
+    guard !chromeTabFailureReported else { return }
+    chromeTabFailureReported = true
+    let detail = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    FileHandle.standardError.write(Data(
+        ("worktime-bar: cannot read the front Chrome tab, so no browser page "
+         + "can count. Chrome said: \(detail.isEmpty ? "<nothing>" : detail)\n")
+        .utf8))
+}
 
 func chromeActiveTab() -> (title: String, url: String)? {
     let p = Process()
@@ -292,9 +302,24 @@ func chromeActiveTab() -> (title: String, url: String)? {
     // Tab-separated so the two halves survive a title containing any
     // punctuation a separator might otherwise be mistaken for; a tab is the
     // one character a page title reliably does not carry.
-    p.arguments = ["-e", "tell application \"Google Chrome\" to get "
-        + "(title of active tab of front window) & tab & "
-        + "(URL of active tab of front window)"]
+    //
+    // The delimiter is built in its own statement, OUTSIDE the tell block,
+    // and this is the whole reason tab capture has never once worked. Inside
+    // `tell application "Google Chrome"`, `tab` is not AppleScript's tab
+    // character -- it is Chrome's own `tab` class, which the terminology of
+    // the application being told shadows it with, and concatenating a class
+    // into a string yields the word: every reply came back as
+    // "Inbox - Gmailtabhttps://mail.google.com/...". The Swift side then
+    // split on "\t", found one component, failed its own guard and returned
+    // nil, so every Chrome sample was written with no tab and no url. Exit
+    // status 0 throughout -- the script did exactly what it was asked.
+    p.arguments = [
+        "-e", "set delim to ASCII character 9",
+        "-e", "tell application \"Google Chrome\" to set answer to "
+            + "(title of active tab of front window) & delim & "
+            + "(URL of active tab of front window)",
+        "-e", "return answer",
+    ]
     let out = Pipe()
     p.standardOutput = out
     // Both streams down one pipe. Two pipes would need two readers to avoid
@@ -317,30 +342,29 @@ func chromeActiveTab() -> (title: String, url: String)? {
 
     guard let text = String(data: data, encoding: .utf8) else { return nil }
     // A non-zero exit is the ordinary answer to "what is the front window?"
-    // when Chrome has no windows open. It is also what a refused Apple Event
-    // looks like, and treating the two alike is how the browser went three
-    // days earning nothing without anybody noticing: every Chrome row in the
-    // focus log carried no tab and no url, which reads exactly like a machine
-    // whose owner never opened a browser.
+    // when Chrome has no windows open, and it is also what a refused Apple
+    // Event looks like. Whatever it is, say it once per launch rather than
+    // folding it into the no-windows case: a silent nil here is
+    // indistinguishable in the focus log from a machine whose owner never
+    // opened a browser, which is exactly how a delimiter bug survived every
+    // day it ran.
     //
-    // So the refusal says so, once per launch. Once, because it cannot fix
-    // itself from here -- the grant lives in System Settings and the poll
-    // would otherwise repeat the same line every few seconds until somebody
-    // went there.
+    // Once, because none of it can be fixed from here -- a refusal is granted
+    // in System Settings, not by retrying -- and the poll would otherwise
+    // repeat the line every few seconds.
     if p.terminationStatus != 0 {
-        if !chromeTabDenied, text.contains("-1743") || text.contains("Not authorized") {
-            chromeTabDenied = true
-            FileHandle.standardError.write(Data(
-                ("worktime-bar: not allowed to read the front Chrome tab, so no "
-                 + "browser page can count. Grant it in System Settings > "
-                 + "Privacy & Security > Automation > Worktime > Google Chrome.\n")
-                .utf8))
-        }
+        reportChromeTabFailure(text)
         return nil
     }
+    // A reply that does not split in two is the shape this bug had, and it
+    // came back exit 0 -- so silence here is what let it run unnoticed. The
+    // reply says what it was instead.
     let parts = text.trimmingCharacters(in: .whitespacesAndNewlines)
         .components(separatedBy: "\t")
-    guard parts.count == 2, !parts[1].isEmpty else { return nil }
+    guard parts.count == 2, !parts[1].isEmpty else {
+        reportChromeTabFailure(text)
+        return nil
+    }
     return (parts[0], parts[1])
 }
 
