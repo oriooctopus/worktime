@@ -401,6 +401,26 @@ Either closes an open mark and cuts a meeting that would otherwise run past
 that minute, in one step. A cut written when no meeting is running is inert:
 `effective_meeting_end` only applies a cut to the meeting it landed inside.
 
+And either records the minute itself, in `session-end.json`, which for a long
+time it did not — so on the ordinary afternoon the item exists for, with nothing
+marked and nothing scheduled, both of the steps above were inert and the click
+changed nothing anybody could see. The dot stayed green, because prompting was
+what was holding it green, and the period ran straight on through the minute the
+day had just been declared over at: the menu showed `08:34–08:46 · now` on a
+session ended at 08:40. The declaration is a record in its own right now, and it
+does two things nothing else could:
+
+- **It breaks the period there.** `split_at_session_ends` cuts the merged spans
+  at the declared minute, after the merge so the rejoining cannot undo it. A
+  split, not a truncation — minutes worked after the declaration are still work,
+  and the day total is unchanged by clicking it. The piece after a break is
+  dropped when no event falls inside it, because that piece is the `TAIL_SEC`
+  buffer and publishing it would leave a phantom period made of nothing.
+- **It puts the dot out.** `status` reads it below the mark and the meeting and
+  above the quiet cutoff: a declaration ends the run it was made in, but it is
+  not a lock on the rest of the day. Starting a mark, a meeting beginning, or
+  simply prompting again all speak for themselves afterwards.
+
 **Link with Last Session** is the opposite statement: not that a stretch is
 over, but that it never stopped. A step away the tracker saw nothing in — a
 corridor conversation, a whiteboard, a call taken on the phone — comes back as
