@@ -31,6 +31,7 @@ Usage:
 from __future__ import annotations  # 3.8 can parse the annotations
 
 import hashlib
+import http.client
 import json
 import os
 import re
@@ -549,6 +550,13 @@ SLACK_DIR = os.path.join(STATE, "slack")
 # cache is permanent and backfill costs one request per day, once, forever.
 SLACK_TTL_SEC = 240
 SLACK_TEXT_CHARS = 200
+# The whole fetch, not one request. The menu bar kills a probe that has not
+# answered in 30s and paints the dot red, so a search that walks ten pages at
+# 30s each could spend five minutes earning that red -- while a perfectly good
+# cached copy of the day sat on disk unread. Whatever is fetched by the
+# deadline is abandoned in favour of the stale copy, which costs one refresh
+# interval of missing sends and nothing else.
+SLACK_FETCH_BUDGET_SEC = 12
 
 # Slack's wire format wraps links and mentions in angle brackets:
 # <https://x|label>, <https://x>, <@U123>, <#C123|name>. Escaped for HTML and
@@ -613,7 +621,13 @@ def _slack_fetch(day: str) -> list[dict]:
     # rather than this machine's; every match is re-filtered by local date
     # below, which is what actually decides membership.
     rows, page, pages = [], 1, 1
+    deadline = time.monotonic() + SLACK_FETCH_BUDGET_SEC
     while page <= pages and page <= 10:
+        left = deadline - time.monotonic()
+        if left <= 0:
+            raise TimeoutError(
+                f"slack search.messages over {SLACK_FETCH_BUDGET_SEC}s budget"
+                f" at page {page}")
         q = urllib.parse.urlencode({
             "query": f"from:@{SLACK_USER} after:{shift_day(day, -1)}"
                      f" before:{shift_day(day, 1)}",
@@ -622,7 +636,7 @@ def _slack_fetch(day: str) -> list[dict]:
         req = urllib.request.Request(
             "https://slack.com/api/search.messages?" + q,
             headers={"Authorization": f"Bearer {tok}"})
-        d = json.loads(urllib.request.urlopen(req, timeout=30).read())
+        d = json.loads(urllib.request.urlopen(req, timeout=left).read())
         if not d.get("ok"):
             raise RuntimeError(f"slack search.messages failed: {d.get('error')}")
         msgs = d.get("messages", {}) or {}
@@ -661,7 +675,13 @@ def slack_for(day: str) -> list[dict]:
         return json.load(open(path))
     try:
         rows = _slack_fetch(day)
-    except (urllib.error.URLError, TimeoutError, OSError, RuntimeError, ValueError):
+    except (urllib.error.URLError, TimeoutError, OSError, RuntimeError,
+            ValueError, http.client.HTTPException):
+        # http.client.HTTPException is here for IncompleteRead: search.messages
+        # hands back a truncated body often enough that leaving it out of this
+        # tuple was, on its own, minutes of red dot -- the exception escaped
+        # past the stale copy this handler exists to serve and killed the probe.
+        #
         # A blip must not erase a day that was already fetched -- serving the
         # stale copy is strictly better than publishing a day with the Slack
         # evidence silently missing. With nothing cached there is nothing to
