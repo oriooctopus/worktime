@@ -506,18 +506,21 @@ to claim and with nothing to distinguish it from a real one.
 and re-signs it, then prints the `launchctl kickstart` line to restart it. The
 app is several files now, so `swiftc main.swift` is no longer the whole build.
 
-### A red dot right after a rebuild is a permissions stall, not a bug
+### A red dot that outlasts one poll is usually a stalled read, not a bug
 
-Red means one thing: the probe did not answer inside `PROBE_TIMEOUT_SEC`. The
-way that happens after a rebuild is worth writing down, because nothing about
-it looks like permissions from the outside.
+Red means one thing: the probe did not answer inside `PROBE_TIMEOUT_SEC`. One
+way that happens is worth writing down, because nothing about it looks like
+permissions from the outside.
 
-The signature is ad-hoc, so every build gives the app a new identity, and
-macOS has to make a fresh Files-and-Folders decision for it. While that
-decision is outstanding, `open()` on anything under `~/Documents` does not
-fail -- it BLOCKS. Measured from a child of the app: `/tmp` and `~/.claude`
-opened in 0.00s in the same process where `~/Documents/...` never returned at
-all and took the 30s kill with it. Since the probe itself lives under
+What is measured: `open()` on anything under `~/Documents`, from a child of
+this app, does not fail -- it BLOCKS. `/tmp` and `~/.claude` opened in 0.00s in
+the same process where `~/Documents/...` never returned at all and took the 30s
+kill with it. What is inferred: that macOS was withholding a
+Files-and-Folders decision, the signature being ad-hoc and every build giving
+the app a new identity to decide about. That is the leading suspect and not
+more -- it began within minutes of a relaunch and cleared on its own, and a
+later rebuild did not reproduce it, so the trigger is not pinned down. Since
+the probe itself lives under
 `~/Documents` (the `~/.claude/bin` symlink points into this repo) every poll
 died in its first `open`, five polls a minute, for as long as the decision was
 pending. The bar's log fills with `probe ["status"] exit 15` and nothing else,
@@ -525,10 +528,9 @@ because there is no stderr from a process killed before it ran a line.
 
 It clears on its own once the decision lands, and then the same paths open in
 0.00s again. If it does not clear, grant the app access to the folder (or Full
-Disk Access) in System Settings -> Privacy & Security; expect to redo that
-after a rebuild for as long as the signature stays ad-hoc. A stable signing
-identity is the fix that would end it, at the cost of needing one in the
-keychain.
+Disk Access) in System Settings -> Privacy & Security. If it turns out to
+recur per build, a stable signing identity is the fix that would end it, at the
+cost of needing one in the keychain.
 
 `exit 15` (SIGTERM, the watchdog) and `exit 1` (a traceback) are worth telling
 apart in that log: 15 is a stall like this one, 1 is the probe genuinely
