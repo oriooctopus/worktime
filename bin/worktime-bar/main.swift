@@ -159,6 +159,29 @@ struct Status {
     var sessions: [ActSession] = []
 }
 
+// Every probe run goes through here, one at a time. The probe is not a cheap
+// pure reader: it recomputes the day from every transcript on disk and writes
+// the status cache, so two running together do the same expensive work twice
+// and race on the same file. Worse, they compound -- on 2026-09-04 this app
+// was found with fifteen `probe status` children alive at once, the oldest 65
+// seconds old, because every 5s poll launched another regardless of whether
+// the previous one had answered. Past a certain point each probe is slow
+// BECAUSE of the others, so the pile never drains on its own: the menu goes
+// minutes stale and a clicked row waits behind the whole queue. That is
+// exactly what "the menu is slow to open and clicking an option does nothing"
+// looks like from outside.
+//
+// Serial rather than merely capped, because the order is part of the meaning:
+// a "mark" followed by a status read has to see the mark.
+let probeQueue = DispatchQueue(label: "worktime.probe", qos: .utility)
+
+// The wall against a probe that never returns, for the same reason
+// CHROME_TAB_TIMEOUT_SEC exists: on a serial queue one wedged child is every
+// later probe blocked behind it, including the one a click is waiting on.
+// Generous rather than tight -- a genuinely cold run that has to re-read every
+// transcript on disk takes several seconds and is not a fault.
+let PROBE_TIMEOUT_SEC = 30.0
+
 func runProbe(_ args: [String]) -> String? {
     let p = Process()
     p.executableURL = URL(fileURLWithPath: PYTHON)
@@ -171,9 +194,13 @@ func runProbe(_ args: [String]) -> String? {
         FileHandle.standardError.write("probe launch failed: \(error)\n".data(using: .utf8)!)
         return nil
     }
+    let killer = DispatchWorkItem { if p.isRunning { p.terminate() } }
+    DispatchQueue.global().asyncAfter(deadline: .now() + PROBE_TIMEOUT_SEC,
+                                      execute: killer)
     let data = out.fileHandleForReading.readDataToEndOfFile()
     let edata = err.fileHandleForReading.readDataToEndOfFile()
     p.waitUntilExit()
+    killer.cancel()
     // Logged, not swallowed. A silent non-zero exit is what let a blind poll
     // sit on screen looking like a confident idle reading.
     guard p.terminationStatus == 0 else {
@@ -380,6 +407,9 @@ func chromeActiveTab() -> (title: String, url: String)? {
 
 
 final class FocusLog {
+    // Where the osascript round trip and both file writes happen. Serial, so
+    // the log stays in sampled order and the state below needs no lock.
+    private let queue = DispatchQueue(label: "worktime.focus", qos: .utility)
     private var lastKey: String?
     private var lastWrite = Date.distantPast
     private var handle: FileHandle?
@@ -417,21 +447,53 @@ final class FocusLog {
     // the app it names instead, which is the authoritative answer to "what
     // just came forward" -- frontmostApplication is a second reading of the
     // same instant and there is no reason to prefer it.
+    // Everything this reads about the running system is read here, on
+    // whichever thread asked -- which is always main, because both callers are
+    // an AppKit notification and a main-mode timer. Everything it then DOES
+    // with those readings happens on `queue`.
+    //
+    // The split is not tidiness. Asking Chrome for its tab is an osascript
+    // round trip, ~130ms on a healthy browser and up to CHROME_TAB_TIMEOUT_SEC
+    // on a wedged one, and it used to run right here: a sample on the main
+    // thread every 5s while Chrome was in front, plus one per app switch. A
+    // profile of the running app on 2026-09-04 found the main thread inside
+    // that one read for 30% of its wall time. A menu bar click landing in that
+    // window has nowhere to go until the browser answers, which is what "slow
+    // to open, slow to respond" was.
+    //
+    // It was also re-entrant, which is worse than slow: Process.waitUntilExit
+    // spins the run loop, the run loop delivers the next activation
+    // notification, and that notification called straight back into sample()
+    // from inside sample(), interleaving two rows' writes.
     func sample(now: Date = Date(),
                 app: NSRunningApplication? = NSWorkspace.shared.frontmostApplication)
     {
+        // Read now, not on the queue. These are facts about THIS instant and
+        // the queue may not reach them for a moment; an idle reading taken
+        // late is a different reading, and frontmostApplication asked later is
+        // a different app.
         let bundle = app?.bundleIdentifier ?? ""
+        let name = app?.localizedName ?? ""
+        let idle = Int(Self.idleSeconds().rounded())
+        queue.async { self.record(now: now, bundle: bundle, name: name, idle: idle) }
+    }
+
+    // The serial half. Every piece of this object's mutable state -- lastKey,
+    // lastWrite, the open file handle -- is touched here and nowhere else, so
+    // there is no lock and no interleaving, and rows land in the order they
+    // were sampled.
+    private func record(now: Date, bundle: String, name: String, idle: Int) {
         let day = Self.dayfmt.string(from: now)
         var row: [String: Any] = [
             "day": day,
             "t": Self.stamp.string(from: now),
-            "app": app?.localizedName ?? "",
+            "app": name,
             "bundle": bundle,
             // Rounded, not thresholded. The threshold is the probe's to choose
             // and lives beside its other thresholds; duplicating it here would
             // give the two halves separate definitions of "away" that could
             // drift apart without either one looking wrong.
-            "idle": Int(Self.idleSeconds().rounded()),
+            "idle": idle,
         ]
         // Only Chrome carries these, and only when the tab could be read. The
         // probe treats their absence as "not a page worth counting", which is
@@ -1126,6 +1188,9 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
     // started and immediately ended by one press. While the menu is up it owns
     // the chord and the hot key stands down.
     var menuIsOpen = false
+    // Holds the poll to one probe at a time. See SingleFlight for what the
+    // unguarded version did.
+    lazy var poll = SingleFlight { [weak self] in self?.runStatusProbe() }
 
     // The Carbon handler is a bare C function pointer and cannot capture, so
     // it reaches the app through the `bar` global rather than through self.
@@ -1610,8 +1675,19 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
 
     // The probe shells out to prompt-count and Slack, so a poll can take a
     // second or two. On the main thread that freezes the menu bar for everyone.
+    //
+    // Coalesced as well as serialized -- see SingleFlight. Everything that
+    // wants a fresh reading calls this; whether that becomes a subprocess is
+    // the guard's decision.
+    //
+    // Main-thread only, which every caller already is: the poll timer,
+    // menuNeedsUpdate, the Refresh row, and the completion hop of every action.
     func refresh() {
-        DispatchQueue.global(qos: .utility).async {
+        poll.request()
+    }
+
+    private func runStatusProbe() {
+        probeQueue.async {
             guard let out = runProbe(["status"]),
                   let d = out.data(using: .utf8),
                   let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any]
@@ -1627,6 +1703,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
                     s.state = "broken"
                     s.why = "probe did not answer"
                     self.apply(s)
+                    self.poll.finish()
                 }
                 return
             }
@@ -1682,7 +1759,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
                                           n: r["n"] as? Int ?? 1)
                            })
             }
-            DispatchQueue.main.async { self.apply(s) }
+            DispatchQueue.main.async { self.apply(s); self.poll.finish() }
         }
     }
 
@@ -1711,7 +1788,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
     // menu's rendering of it from disagreeing.
     @objc func toggleShift() {
         let running = status.state == "marked"
-        DispatchQueue.global(qos: .utility).async {
+        probeQueue.async {
             _ = runProbe(running ? ["unmark", "last"] : ["mark"])
             DispatchQueue.main.async { self.refresh() }
         }
@@ -1723,13 +1800,17 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
     // dialog that takes the caret to ask what you are doing is an interruption
     // of the very work it is trying to record.
     @objc func logEntry() {
-        DispatchQueue.global(qos: .utility).async {
+        probeQueue.async {
             // Only claims what actually happened. runProbe reports its own
             // failure to stderr; a banner saying the minute was logged when
             // the write never landed would be worse than no banner at all,
             // because it is the thing being trusted instead of checking.
             guard runProbe(["note"]) != nil else { return }
-            notifyEntryLogged()
+            // Off the probe queue: the banner is an osascript of its own, and
+            // holding a serial queue that every poll and every clicked row now
+            // waits behind, for the sake of a notification nothing depends on,
+            // would trade the pileup for a smaller one.
+            DispatchQueue.global(qos: .utility).async { notifyEntryLogged() }
             DispatchQueue.main.async { self.refresh() }
         }
     }
@@ -1794,13 +1875,16 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
     // it, and a person who cannot see which rule ran cannot tell they picked
     // the wrong one.
     func trackBack(minutes: Int, mode: String) {
-        DispatchQueue.global(qos: .utility).async {
+        probeQueue.async {
             guard let out = runProbe(["track", String(minutes), mode]),
                   let data = out.data(using: .utf8),
                   let r = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
             else { return }
             let claimed = r["claimed"] as? Int ?? 0
-            notifyTracked(claimed: claimed, asked: minutes)
+            // Off the probe queue, same as the entry banner.
+            DispatchQueue.global(qos: .utility).async {
+                notifyTracked(claimed: claimed, asked: minutes)
+            }
             DispatchQueue.main.async { self.refresh() }
         }
     }
@@ -1818,7 +1902,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
 
     @objc func pickMode(_ sender: NSMenuItem) {
         guard let name = sender.representedObject as? String else { return }
-        DispatchQueue.global(qos: .utility).async {
+        probeQueue.async {
             _ = runProbe(["mode", name])
             DispatchQueue.main.async { self.refresh() }
         }
@@ -1837,7 +1921,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
                 "end session: row carried no minute choice\n".data(using: .utf8)!)
             return
         }
-        DispatchQueue.global(qos: .utility).async {
+        probeQueue.async {
             _ = runProbe(atLast ? ["end_session", "last"] : ["end_session"])
             DispatchQueue.main.async { self.refresh() }
         }
@@ -1850,7 +1934,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
     // list -- so this passes no minute and cannot name a different one than
     // the title advertised.
     @objc func linkLastSession() {
-        DispatchQueue.global(qos: .utility).async {
+        probeQueue.async {
             _ = runProbe(["link_last"])
             DispatchQueue.main.async { self.refresh() }
         }
@@ -1865,7 +1949,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
     }
 
     @objc func endMeetingEarly() {
-        DispatchQueue.global(qos: .utility).async {
+        probeQueue.async {
             _ = runProbe(["meeting_end"])
             DispatchQueue.main.async { self.refresh() }
         }
