@@ -522,7 +522,8 @@ def chrome_events(history_path):
         try:
             rows = list(
                 conn.execute(
-                    "SELECT v.visit_time, u.url, u.title, v.originator_cache_guid "
+                    "SELECT v.id, v.from_visit, v.visit_time, v.transition, "
+                    "u.url, u.title, v.originator_cache_guid "
                     "FROM visits v JOIN urls u ON v.url = u.id "
                     "ORDER BY v.visit_time"
                 )
@@ -532,8 +533,17 @@ def chrome_events(history_path):
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
+    # Visits a page generated for itself -- a background tab re-authenticating
+    # or reloading -- are not activity, and they arrive three and four at a
+    # time, so left in they both invent activity and bury the real rows.
+    user_initiated = wc.user_initiated_visit_ids(
+        [(vid, from_visit, visit_time, transition)
+         for vid, from_visit, visit_time, transition, _, _, _ in rows])
+
     raw_by_day = {}
-    for visit_time, url, title, guid in rows:
+    for vid, _from, visit_time, _transition, url, title, guid in rows:
+        if vid not in user_initiated:
+            continue
         epoch = webkit_to_epoch(visit_time)
         day, time_str = local_day_time_from_epoch(epoch)
         # This profile's History has NOT reliably distinguished a "Mac" vs a

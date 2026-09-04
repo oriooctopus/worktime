@@ -293,14 +293,91 @@ def read_history(path, sql, params):
     Chrome holds the database open, so it is copied first -- about 0.04s for
     58MB, which is what makes reading it from a five-second poll affordable.
     """
+    return read_history_queries(path, [(sql, params)])[0]
+
+
+def read_history_queries(path, queries):
+    """Run several queries against ONE copy of Chrome's History.
+
+    The copy is the whole cost of reading it, so a caller needing two answers
+    about the same moment -- the visits to work pages, and the redirect chains
+    that say which of them somebody made -- asks for both here rather than
+    paying it twice on a five-second poll.
+    """
     tmp_dir = tempfile.mkdtemp(prefix="worktime-history-")
     try:
         tmp = os.path.join(tmp_dir, "History")
         shutil.copy2(path, tmp)
         conn = sqlite3.connect(tmp)
         try:
-            return list(conn.execute(sql, params))
+            return [list(conn.execute(sql, params)) for sql, params in queries]
         finally:
             conn.close()
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+# --------------------------------------------------------------------------
+# Chrome visit transitions
+# --------------------------------------------------------------------------
+
+# Bits from Chrome's PageTransition (page_transition_types.h). Only the two
+# that separate a navigation somebody performed from a hop generated on its
+# way matter here.
+CHAIN_START = 0x10000000
+REDIRECT_QUALIFIERS = 0xC0000000  # CLIENT_REDIRECT | SERVER_REDIRECT
+
+# How far apart two visits can be and still belong to one redirect chain.
+# Chrome writes a chain's hops within the same second; 30s is slack, not a
+# judgement call. It is the whole load-bearing part of the test below: a
+# keepalive's first hop *does* carry a from_visit, but it points at the visit
+# that opened the tab hours ago.
+REDIRECT_CHAIN_SEC = 30
+
+
+def user_initiated_visit_ids(rows, window_sec=REDIRECT_CHAIN_SEC):
+    """The ids of the visits in `rows` that a person actually navigated to.
+
+    `rows` are (id, from_visit, visit_time, transition) tuples, visit_time in
+    Chrome's microseconds. The set comes back rather than a filtered list so a
+    caller can apply it to a differently-shaped row of its own.
+
+    A visit counts when it starts a chain (CHAIN_START -- every navigation a
+    person performs has it, typed or clicked), or when it is a redirect hop
+    that lands within `window_sec` of the chain's start. Anything else is a
+    chain nobody started: a background tab a page decided to reload or
+    re-authenticate on its own. Google Docs does this to an open tab every few
+    minutes and GitHub does it to a pull request, and each round wrote three
+    or four visits indistinguishable from reading the page.
+
+    The window is measured from the hop back to the chain's root, not between
+    consecutive hops. Per-hop would readmit exactly what this exists to
+    exclude: a tab refreshing itself every 20s chains each refresh to the last
+    one, so a root from this morning stays reachable all day.
+    """
+    by_id = {row[0]: row for row in rows}
+    kept = set()
+
+    for row in rows:
+        vid, _, when, _ = row
+        current = row
+        seen = set()
+        while True:
+            cid, from_visit, _, transition = current
+            if transition & CHAIN_START:
+                kept.add(vid)
+                break
+            if not transition & REDIRECT_QUALIFIERS or cid in seen:
+                break
+            seen.add(cid)
+            parent = by_id.get(from_visit)
+            if parent is None:
+                # The root is outside the rows we were given, which for a
+                # window of a day or more means it is not seconds old.
+                break
+            gap = (when - parent[2]) / 1e6
+            if not 0 <= gap <= window_sec:
+                break
+            current = parent
+
+    return kept

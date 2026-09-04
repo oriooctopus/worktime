@@ -1650,19 +1650,33 @@ def github_live_rows(day: str) -> list[tuple[datetime, str]]:
 
     base = datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=LOCAL)
     url_filter, url_params = _live_url_filter()
-    raw = wc.read_history(
-        path,
-        """SELECT visits.visit_time, urls.url, urls.title
-             FROM visits JOIN urls ON urls.id = visits.url
-            WHERE visits.visit_time BETWEEN ? AND ?
-              AND ({})
-         ORDER BY visits.visit_time""".format(url_filter),
-        [wc.chrome_micros(base), wc.chrome_micros(base + timedelta(days=1))]
-        + url_params)
+    day_start = wc.chrome_micros(base)
+    day_end = wc.chrome_micros(base + timedelta(days=1))
+    # Whether a visit is one somebody made cannot be read off the visit alone
+    # -- it is a property of the redirect chain it belongs to, and a chain's
+    # earlier hops are on whatever URL redirected here, which the prefilter
+    # has every reason to have dropped. So the chains are read separately and
+    # unfiltered, widened by the chain window so one starting just before
+    # midnight is still whole. Both queries share the one copy of the DB,
+    # which is the only part of this that costs anything.
+    margin = timedelta(seconds=wc.REDIRECT_CHAIN_SEC)
+    raw, chains = wc.read_history_queries(path, [
+        ("""SELECT visits.id, visits.visit_time, urls.url, urls.title
+              FROM visits JOIN urls ON urls.id = visits.url
+             WHERE visits.visit_time BETWEEN ? AND ?
+               AND ({})
+          ORDER BY visits.visit_time""".format(url_filter),
+         [day_start, day_end] + url_params),
+        ("""SELECT id, from_visit, visit_time, transition FROM visits
+             WHERE visit_time BETWEEN ? AND ? ORDER BY visit_time""",
+         [wc.chrome_micros(base - margin),
+          wc.chrome_micros(base + timedelta(days=1) + margin)]),
+    ])
+    user_initiated = wc.user_initiated_visit_ids(chains)
 
     rows = []
-    for stamp, url, title in raw:
-        if not _work_site_hit(url):
+    for vid, stamp, url, title in raw:
+        if vid not in user_initiated or not _work_site_hit(url):
             continue
         when = wc.chrome_time(stamp, LOCAL)
         # Title only when there is one. The URL is the fallback rather than a

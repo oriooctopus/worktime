@@ -715,13 +715,21 @@ class GithubLiveHistory(unittest.TestCase):
             c.execute("CREATE TABLE urls (id INTEGER PRIMARY KEY, url TEXT, "
                       "title TEXT)")
             c.execute("CREATE TABLE visits (id INTEGER PRIMARY KEY, "
-                      "url INTEGER, visit_time INTEGER)")
-            for i, (hh, mm, url, title) in enumerate(rows, start=1):
+                      "url INTEGER, visit_time INTEGER, "
+                      "from_visit INTEGER DEFAULT 0, "
+                      "transition INTEGER DEFAULT 0)")
+            for i, row in enumerate(rows, start=1):
+                hh, mm, url, title = row[:4]
+                # CHAIN_START|CHAIN_END: a page this person opened, unless the
+                # row says otherwise. What separates that from a tab reloading
+                # itself is covered in tests/test_visit_transitions.py.
+                from_visit, transition = (row[4:] or (0, 0x30000000))
                 when = datetime.strptime(self.DAY, "%Y-%m-%d").replace(
                     hour=hh, minute=mm, tzinfo=wp.LOCAL)
                 micros = wp.wc.chrome_micros(when)
                 c.execute("INSERT INTO urls VALUES (?,?,?)", (i, url, title))
-                c.execute("INSERT INTO visits VALUES (?,?,?)", (i, i, micros))
+                c.execute("INSERT INTO visits VALUES (?,?,?,?,?)",
+                          (i, i, micros, from_visit, transition))
             c.commit()
             c.close()
         return root
@@ -838,6 +846,19 @@ class GithubLiveHistory(unittest.TestCase):
             (9, 5, "https://github.com/a/b/pull/1", "")]})
         self.assertEqual([d for _w, d in rows],
                          ["https://github.com/a/b/pull/1"])
+
+    def test_a_document_tab_reauthenticating_itself_is_not_evidence(self):
+        # 2026-09-03: an open Google Docs tab re-authenticated every few
+        # minutes all evening, and each round wrote visits to a work URL that
+        # read exactly like the document being read. The morning visit that
+        # opened the tab is real; the 20:00 round off it is not.
+        rows = self._rows({"Profile 2": [
+            (9, 30, "https://docs.google.com/document/u/1/d/x", "Doc"),
+            (20, 0, "https://docs.google.com/document/u/1/d/x", "Doc",
+             1, 0x40000000),
+            (20, 0, "https://docs.google.com/document/u/1/d/x", "Doc",
+             2, 0x60000000)]})
+        assert [w.strftime("%H:%M") for w, _d in rows] == ["09:30"]
 
     def test_the_read_is_memoised_until_chrome_writes_again(self):
         # It sits behind a five-second poll, so re-copying a 58MB database on

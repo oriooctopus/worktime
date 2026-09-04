@@ -110,8 +110,18 @@ def make_imessage_snapshot(dir_path, filename, records):
         json.dump(records, f)
 
 
+# CHAIN_START|CHAIN_END -- a navigation somebody made, which is what every
+# fixture visit is unless it says otherwise.
+PLAIN_VISIT = 0x30000000
+
+
 def make_chrome_history(path, visits):
-    """visits: list of (visit_time_webkit_int, url, title, originator_cache_guid)"""
+    """visits: list of (visit_time_webkit_int, url, title, originator_cache_guid)
+
+    A visit may carry two more fields, (from_visit, transition), for the tests
+    that care which visits a person actually made; they default to a plain
+    navigation with no referring visit.
+    """
     if os.path.exists(path):
         os.remove(path)
     conn = sqlite3.connect(path)
@@ -122,13 +132,17 @@ def make_chrome_history(path, visits):
     )
     conn.execute(
         "CREATE TABLE visits(id INTEGER PRIMARY KEY AUTOINCREMENT, url INTEGER, "
-        "visit_time INTEGER, originator_cache_guid TEXT)"
+        "visit_time INTEGER, from_visit INTEGER DEFAULT 0, "
+        "transition INTEGER DEFAULT 0, originator_cache_guid TEXT)"
     )
-    for i, (vt, url, title, guid) in enumerate(visits):
+    for i, visit in enumerate(visits):
+        vt, url, title, guid = visit[:4]
+        from_visit, transition = (visit[4:] or (0, PLAIN_VISIT))
         conn.execute("INSERT INTO urls (id, url, title) VALUES (?, ?, ?)", (i + 1, url, title))
         conn.execute(
-            "INSERT INTO visits (url, visit_time, originator_cache_guid) VALUES (?, ?, ?)",
-            (i + 1, vt, guid),
+            "INSERT INTO visits (url, visit_time, from_visit, transition, "
+            "originator_cache_guid) VALUES (?, ?, ?, ?, ?)",
+            (i + 1, vt, from_visit, transition, guid),
         )
     conn.commit()
     conn.close()
@@ -797,6 +811,50 @@ def test_chrome_collapse_within_anchor_window(paths):
     content = read_day(paths, date(2026, 8, 25))
     rows = [l for l in content.splitlines() if "| chrome |" in l]
     assert len(rows) == 2
+
+
+def test_chrome_a_tab_reauthenticating_itself_is_not_activity(paths):
+    # 2026-09-03: a Google Docs tab left open re-authenticated every few
+    # minutes from 19:29 to 21:13, three visits a round, and the evening read
+    # as 36 minutes of work. Each round's first hop names the visit that
+    # opened the tab that morning as its parent, so the chain is hours old
+    # and nobody started it now.
+    base = local_epoch(2026, 8, 25, 9, 0, 0, -4)
+    opened = epoch_to_webkit(base)
+    keepalive = epoch_to_webkit(base + 8 * 3600)
+    visits = [
+        (opened, "https://docs.google.com/document/d/1", "Doc", "", 0, PLAIN_VISIT),
+        (keepalive, "https://docs.google.com/document/d/1", "Doc", "", 1, 0x40000000),
+        (keepalive, "https://docs.google.com/document/u/1/d/1", "Doc", "", 2, 0x80000000),
+        (keepalive, "https://docs.google.com/document/d/1", "Doc", "", 3, 0x60000000),
+    ]
+    make_chrome_history(str(paths["chrome_history"]), visits)
+    days = [date(2026, 8, 25)]
+    rc = ae.run(paths, days, local_epoch(2026, 8, 25, 23, 0, 0, -4))
+    assert rc == 0
+    rows = [l for l in read_day(paths, date(2026, 8, 25)).splitlines()
+            if "| chrome |" in l]
+    assert len(rows) == 1
+    assert "| 09:00 |" in rows[0]
+
+
+def test_chrome_the_destination_of_a_real_click_survives(paths):
+    # The other half: a click that redirects writes hops too, and the last of
+    # them is the page that was actually read. Dropping those would cost the
+    # title of everything reached through a redirect.
+    base = local_epoch(2026, 8, 25, 9, 0, 0, -4)
+    visits = [
+        (epoch_to_webkit(base), "https://a.com/go", "Go", "", 0, 0x10000000),
+        (epoch_to_webkit(base + 1), "https://a.com/here", "Here", "", 1, 0xA0000000),
+    ]
+    make_chrome_history(str(paths["chrome_history"]), visits)
+    days = [date(2026, 8, 25)]
+    rc = ae.run(paths, days, local_epoch(2026, 8, 25, 12, 0, 0, -4))
+    assert rc == 0
+    rows = [l for l in read_day(paths, date(2026, 8, 25)).splitlines()
+            if "| chrome |" in l]
+    assert len(rows) == 2
+    assert "Here" in rows[1]
 
 
 def test_chrome_collapse_boundary_60s_is_inclusive(paths):
