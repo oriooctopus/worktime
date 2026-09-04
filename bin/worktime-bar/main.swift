@@ -839,6 +839,99 @@ func hoverFill() -> NSColor {
     NSColor.controlAccentColor.withAlphaComponent(0.13)
 }
 
+// A checkable row that does NOT close the menu when it is clicked.
+//
+// An ordinary NSMenuItem with an action dismisses the whole dropdown on the
+// click, which is exactly wrong for this one: which of the two lists to read
+// is a question about what is on screen right now, and answering it by taking
+// the screen away means every look at the other view costs a reopen. A menu
+// item with a custom view gets the mouse events itself and AppKit dismisses
+// nothing, so the list flips under the pointer with the menu still up -- which
+// is the only way the two views can be compared at all.
+//
+// It draws its own checkmark, highlight and shortcut hint, because a
+// view-backed item draws none of what NSMenuItem would have drawn for it.
+final class ToggleRowView: NSView {
+    private let check = NSTextField(labelWithString: "\u{2713}")
+    private let label = NSTextField(labelWithString: "")
+    private let hint = NSTextField(labelWithString: "")
+    // Full menu-selection blue, unlike the activity rows' wash: this row IS
+    // clickable, so the OS's "a click acts on this" fill is the honest one
+    // here, where on those rows it would have been a false promise.
+    private var highlighted = false
+    var onClick: (() -> Void)?
+
+    init(title: String, on: Bool, hint hintText: String, width: CGFloat) {
+        super.init(frame: NSRect(x: 0, y: 0, width: width, height: 20))
+
+        check.font = NSFont.systemFont(ofSize: 11, weight: .semibold)
+        check.isHidden = !on
+        label.stringValue = title
+        label.font = NSFont.systemFont(ofSize: 13)
+        hint.stringValue = hintText
+        hint.font = NSFont.systemFont(ofSize: 13)
+
+        for f in [check, label, hint] {
+            f.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(f)
+        }
+        NSLayoutConstraint.activate([
+            check.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 5),
+            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 20),
+            hint.leadingAnchor.constraint(greaterThanOrEqualTo: label.trailingAnchor,
+                                          constant: 8),
+            hint.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
+            check.centerYAnchor.constraint(equalTo: centerYAnchor),
+            label.centerYAnchor.constraint(equalTo: centerYAnchor),
+            hint.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+        colorize()
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    // Same reason as the activity rows: menu rows are laid out after they are
+    // made, so an area added against the initial frame covers the wrong strip.
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        for a in trackingAreas { removeTrackingArea(a) }
+        addTrackingArea(NSTrackingArea(
+            rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            owner: self, userInfo: nil))
+    }
+
+    override func mouseEntered(with _: NSEvent) { setHighlighted(true) }
+    override func mouseExited(with _: NSEvent) { setHighlighted(false) }
+
+    private func setHighlighted(_ on: Bool) {
+        guard on != highlighted else { return }
+        highlighted = on
+        colorize()
+        needsDisplay = true
+    }
+
+    // The label colours are switched by hand because a view's own NSTextFields
+    // are never recoloured by AppKit: on the blue fill they would otherwise
+    // stay dark on dark, which the other rows avoid only by never being
+    // selected in the first place.
+    private func colorize() {
+        check.textColor = highlighted ? .selectedMenuItemTextColor : .labelColor
+        label.textColor = highlighted ? .selectedMenuItemTextColor : .labelColor
+        hint.textColor = highlighted ? .selectedMenuItemTextColor : .tertiaryLabelColor
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        guard highlighted else { return }
+        NSColor.selectedContentBackgroundColor.setFill()
+        bounds.fill()
+    }
+
+    override func mouseUp(with _: NSEvent) { onClick?() }
+
+    func setOn(_ on: Bool) { check.isHidden = !on }
+}
+
 final class ActivityRowView: NSView {
     // Set when this row belongs to a session the list also knows about; nil
     // when the payload carried no grouping, in which case hovering marks
@@ -1166,6 +1259,16 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
     // rows. Held here only so it outlives build() and is replaced by the next
     // one, alongside the views it drives.
     var hover: SessionHover?
+    // The two lists, both in the menu at once with one of them hidden, and the
+    // two items that say which is which. Held so the toggle can flip the
+    // visibility of rows that are already on screen instead of rebuilding the
+    // menu around them -- an open menu does not survive being emptied.
+    // Replaced on every build; emptied when the day has no activity at all, so
+    // nothing here can outlive the items it names.
+    var rawItems: [NSMenuItem] = []
+    var sessionItems: [NSMenuItem] = []
+    var activityHeader: NSMenuItem?
+    var activityToggle: ToggleRowView?
     // One panel for the app's lifetime -- see SessionPopover for why it is a
     // panel and not the submenu it replaced.
     let popover = SessionPopover()
@@ -1430,12 +1533,14 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         // menu that changes without the probe's answer changing at all, so
         // keying on the activity alone would hold "1m" on screen indefinitely.
         let ages = status.activities.map { activityAge($0) }
-        // Both views' strings go in the key, not just the one on screen: the
-        // toggle changes which is drawn without changing anything the probe
-        // said, so a key built from the visible view alone would match on the
-        // click that flips it and leave the old list up.
-        let key = ([worked, symbol, why, status.state, status.mode,
-                    grouped ? "grouped" : "raw"]
+        // Both views' strings go in the key, and which of the two is showing is
+        // deliberately NOT in it: both lists are built every time and one of
+        // them is hidden, so the toggle changes no item this key describes. It
+        // used to be in here, back when flipping meant rebuilding -- and that
+        // is exactly what a rebuild costs: emptying an open menu dismisses it
+        // half a second later, which is the whole reason the flip now hides
+        // rows instead.
+        let key = ([worked, symbol, why, status.state, status.mode]
                    + periods.map { p in
                        let s = periodStrings(p)
                        return s.top + "\u{1}" + s.what
@@ -1453,6 +1558,13 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
 
         let m = menu
         m.removeAllItems()
+        // Dropped with the items they point at. A day with no activity builds
+        // no list at all, and holding last build's rows would leave the toggle
+        // flipping items that are no longer in any menu.
+        rawItems = []
+        sessionItems = []
+        activityHeader = nil
+        activityToggle = nil
         let w = NSMenuItem(title: worked, action: nil, keyEquivalent: "")
         w.isEnabled = false
         m.addItem(w)
@@ -1482,73 +1594,95 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         // checked row under the header switches between them, and the header
         // says which is showing so the list is never ambiguous about it.
         if !status.activities.isEmpty {
-            let head = NSMenuItem(title: grouped ? "Recent activity — sessions"
-                                                 : "Recent activity",
-                                  action: nil, keyEquivalent: "")
+            let head = NSMenuItem(title: "", action: nil, keyEquivalent: "")
             head.isEnabled = false
             m.addItem(head)
+            activityHeader = head
+            // A view row rather than a plain item, so clicking it leaves the
+            // menu up -- see ToggleRowView. The key equivalent stays on the
+            // item itself: ⌘G still works, and still closes the menu the way
+            // every other shortcut in it does.
             let toggle = NSMenuItem(title: "Group into sessions",
                                     action: #selector(toggleGrouped), keyEquivalent: "g")
-            toggle.state = grouped ? .on : .off
+            let toggleRow = ToggleRowView(title: "Group into sessions",
+                                          on: grouped, hint: "⌘G", width: 300)
+            toggleRow.onClick = { [weak self] in self?.toggleGrouped() }
+            toggle.view = toggleRow
             m.addItem(toggle)
+            activityToggle = toggleRow
 
             // One per build, and replaced with the rows it belongs to: the old
             // views go when the menu is emptied, so a hover object kept across
             // builds would be holding rows that are no longer on screen.
             let hover = SessionHover()
             self.hover = hover
-            if grouped {
-                let sessions = status.sessions
-                // Opening the panel is the menu's job, not the row's: only
-                // this level knows the menu's own window, and the panel has to
-                // be placed against that rather than against the row alone.
-                hover.onEnter = { [weak self] id, view in
-                    guard let self else { return }
-                    guard let id, id < sessions.count, let view,
-                          let window = view.window, let screen = window.screen
-                    else {
-                        self.popover.hide()
-                        return
-                    }
-                    self.popover.show(sessions[id],
-                                      row: window.convertToScreen(
-                                          view.convert(view.bounds, to: nil)),
-                                      menu: window.frame,
-                                      screen: screen.visibleFrame)
+
+            // Both lists go into the menu and one of them is hidden. Building
+            // only the view that is showing would mean the toggle had to add
+            // and remove items from a menu that is on screen, and an open menu
+            // does not survive that -- it dismisses itself a moment later.
+            // Hiding costs one extra list built per rebuild, which is a dozen
+            // labels off data already in hand.
+            let sessions = status.sessions
+            // Opening the panel is the menu's job, not the row's: only this
+            // level knows the menu's own window, and the panel has to be
+            // placed against that rather than against the row alone.
+            //
+            // Guarded on grouped because the raw rows share this hover object
+            // and now exist even while the sessions list is the one showing.
+            // Without the guard, pointing at a raw row would open a session
+            // panel beside the list that is meant to answer hovers by marking
+            // its own rows.
+            hover.onEnter = { [weak self] id, view in
+                guard let self else { return }
+                guard self.grouped, let id, id < sessions.count, let view,
+                      let window = view.window, let screen = window.screen
+                else {
+                    self.popover.hide()
+                    return
                 }
-                for (i, s) in sessions.enumerated() {
-                    let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-                    let view = SessionRowView(s, width: 300)
-                    view.session = i
-                    view.hover = hover
-                    hover.rows.append(view)
-                    item.view = view
-                    m.addItem(item)
-                }
-            } else {
-                let ageWidth = columnWidth(ages)
-                let kindWidth = columnWidth(status.activities.map(\.kind))
-                let sessions = status.activities.map(\.session)
-                for (i, (a, age)) in zip(status.activities, ages).enumerated() {
-                    let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-                    let view = ActivityRowView(a, width: 300, age: age,
-                                               ageWidth: ageWidth, kindWidth: kindWidth)
-                    view.session = a.session
-                    view.hover = hover
-                    // The list is in time order and a session is a contiguous
-                    // stretch of it, so a run's ends are simply where the
-                    // neighbour's session differs. The last row of the list
-                    // counts as an end even when its session continues past
-                    // it: the bracket has to close where the list stops,
-                    // because nothing below is there to close it.
-                    view.groupFirst = i == 0 || sessions[i - 1] != a.session
-                    view.groupLast = i == sessions.count - 1
-                        || sessions[i + 1] != a.session
-                    hover.rows.append(view)
-                    item.view = view
-                    m.addItem(item)
-                }
+                self.popover.show(sessions[id],
+                                  row: window.convertToScreen(
+                                      view.convert(view.bounds, to: nil)),
+                                  menu: window.frame,
+                                  screen: screen.visibleFrame)
             }
+            sessionItems = sessions.enumerated().map { i, s in
+                let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+                let view = SessionRowView(s, width: 300)
+                view.session = i
+                view.hover = hover
+                hover.rows.append(view)
+                item.view = view
+                m.addItem(item)
+                return item
+            }
+
+            let ageWidth = columnWidth(ages)
+            let kindWidth = columnWidth(status.activities.map(\.kind))
+            let rowSessions = status.activities.map(\.session)
+            rawItems = zip(status.activities, ages).enumerated().map { i, pair in
+                let (a, age) = pair
+                let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+                let view = ActivityRowView(a, width: 300, age: age,
+                                           ageWidth: ageWidth, kindWidth: kindWidth)
+                view.session = a.session
+                view.hover = hover
+                // The list is in time order and a session is a contiguous
+                // stretch of it, so a run's ends are simply where the
+                // neighbour's session differs. The last row of the list
+                // counts as an end even when its session continues past
+                // it: the bracket has to close where the list stops,
+                // because nothing below is there to close it.
+                view.groupFirst = i == 0 || rowSessions[i - 1] != a.session
+                view.groupLast = i == rowSessions.count - 1
+                    || rowSessions[i + 1] != a.session
+                hover.rows.append(view)
+                item.view = view
+                m.addItem(item)
+                return item
+            }
+            showActivityView()
             m.addItem(.separator())
         }
 
@@ -1907,12 +2041,30 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
     // The clicked item carries the mode name, so both rows share one action and
     // neither can drift from the title beside its own checkmark.
     // Purely a way of looking at what the last poll already returned, so this
-    // asks the probe for nothing and rebuilds straight away. The menu closes on
-    // the click, so the flipped view is what opens next time.
+    // asks the probe for nothing and changes nothing but which rows are
+    // hidden. Deliberately NOT a rebuild: emptying the menu to put the other
+    // list in dismisses it, which is what made this a one-view-per-opening
+    // choice before.
     @objc func toggleGrouped() {
         grouped.toggle()
         UserDefaults.standard.set(grouped, forKey: "activityGrouped")
-        build()
+        showActivityView()
+    }
+
+    // Applies `grouped` to rows that are already in the menu: the two lists and
+    // the two labels that name which one is being read. Called at the end of
+    // every build, so a fresh menu opens on the remembered view, and on every
+    // flip, so an open one changes under the pointer.
+    func showActivityView() {
+        for i in rawItems { i.isHidden = grouped }
+        for i in sessionItems { i.isHidden = !grouped }
+        activityHeader?.title = grouped ? "Recent activity — sessions"
+                                        : "Recent activity"
+        activityToggle?.setOn(grouped)
+        // The panel belongs to the sessions list, so leaving the sessions view
+        // has to take it with it -- the row it was opened from is now hidden
+        // and will never deliver the mouseExited that would have closed it.
+        if !grouped { popover.hide() }
     }
 
     @objc func pickMode(_ sender: NSMenuItem) {
