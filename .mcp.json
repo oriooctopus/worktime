@@ -1,0 +1,273 @@
+{
+  "mcpServers": {
+    "rogers": {
+      "command": "uvx",
+      "args": [
+        "--python", "3.12",
+        "--index-url",
+        "https://repository.rubrik.com/artifactory/api/pypi/py-mcp/simple",
+        "rogers-mcp-server@latest"
+      ]
+    },
+    "arc": {
+      "command": "uvx",
+      "args": [
+        "--python", "3.12",
+        "--index-url",
+        "https://repository.rubrik.com/artifactory/api/pypi/py-mcp/simple",
+        "arc-mcp-server@latest"
+      ]
+    },
+    "figma": {
+      "command": "uvx",
+      "args": [
+        "--python", "3.12",
+        "--index-url",
+        "https://repository.rubrik.com/artifactory/api/pypi/py-mcp/simple",
+        "figma-mcp-server@latest"
+      ]
+    },
+    "confluence": {
+      "command": "uvx",
+      "args": [
+        "--python", "3.12",
+        "--index-url",
+        "https://repository.rubrik.com/artifactory/api/pypi/py-mcp/simple",
+        "confluence-mcp-server@latest"
+      ]
+    },
+    "dovetail": {
+      "command": "uvx",
+      "args": [
+        "--python", "3.12",
+        "--index-url",
+        "https://repository.rubrik.com/artifactory/api/pypi/py-mcp/simple",
+        "dovetail-mcp-server@latest"
+      ]
+    },
+    "gcloud": {
+      "command": "uvx",
+      "args": [
+        "--python", "3.12",
+        "--index-url",
+        "https://repository.rubrik.com/artifactory/api/pypi/py-mcp/simple",
+        "gcloud-mcp-server@latest"
+      ]
+    },
+    "logz": {
+      "command": "uvx",
+      "args": [
+        "--python", "3.12",
+        "--index-url",
+        "https://repository.rubrik.com/artifactory/api/pypi/py-mcp/simple",
+        "logz-mcp-server@latest"
+      ]
+    },
+    "jira": {
+      "command": "uvx",
+      "args": [
+        "--python", "3.12",
+        "--index-url",
+        "https://repository.rubrik.com/artifactory/api/pypi/py-mcp/simple",
+        "jira-mcp-server@latest"
+      ]
+    },
+    "github": {
+      "command": "uvx",
+      "args": [
+        "--python", "3.12",
+        "--index-url",
+        "https://repository.rubrik.com/artifactory/api/pypi/py-mcp/simple",
+        "github-mcp-server@latest"
+      ]
+    },
+    "google-drive": {
+      "command": "uvx",
+      "args": [
+        "--python", "3.12",
+        "--index-url",
+        "https://repository.rubrik.com/artifactory/api/pypi/py-mcp/simple",
+        "google-drive-mcp-server@latest"
+      ]
+    },
+    "rsc-launch-pad": {
+      "command": "uvx",
+      "args": [
+        "--python", "3.12",
+        "--index-url",
+        "https://repository.rubrik.com/artifactory/api/pypi/py-mcp/simple",
+        "rsc-launch-pad-mcp-server@latest"
+      ]
+    },
+    "snowflake": {
+      "command": "uvx",
+      "args": [
+        "--python", "3.12",
+        "--index-url",
+        "https://repository.rubrik.com/artifactory/api/pypi/py-mcp/simple",
+        "snowflake-mcp-server@latest"
+      ]
+    },
+    "pagerduty": {
+      "command": "uvx",
+      "args": [
+        "--python", "3.12",
+        "--index-url",
+        "https://repository.rubrik.com/artifactory/api/pypi/py-mcp/simple",
+        "pagerduty-mcp-server@latest"
+      ]
+    },
+    "azure": {
+      "command": "uvx",
+      "args": [
+        "--python", "3.12",
+        "--index-url",
+        "https://repository.rubrik.com/artifactory/api/pypi/py-mcp/simple",
+        "azure-mcp-server@latest"
+      ]
+    },
+    "sentry-io": {
+      "command": "uvx",
+      "args": [
+        "--python", "3.12",
+        "--index-url",
+        "https://repository.rubrik.com/artifactory/api/pypi/py-mcp/simple",
+        "sentry-io-mcp-server@latest"
+      ]
+    },
+    "chronosphere": {
+      "command": "uvx",
+      "args": [
+        "--python", "3.12",
+        "--index-url",
+        "https://repository.rubrik.com/artifactory/api/pypi/py-mcp/simple",
+        "chronosphere-mcp-server@latest"
+      ]
+    },
+    "grafana": {
+      "command": "uvx",
+      "args": [
+        "--python", "3.12",
+        "--index-url",
+        "https://repository.rubrik.com/artifactory/api/pypi/py-mcp/simple",
+        "grafana-mcp-server@latest"
+      ]
+    },
+    "sherlock": {
+      "command": "uvx",
+      "args": [
+        "--python", "3.12",
+        "--index-url",
+        "https://repository.rubrik.com/artifactory/api/pypi/py-mcp/simple",
+        "sherlock-mcp-server@latest"
+      ]
+    },
+    "slack": {
+      "command": "uvx",
+      "args": [
+        "--python", "3.12",
+        "--index-url",
+        "https://repository.rubrik.com/artifactory/api/pypi/py-mcp/simple",
+        "slack-mcp-server@latest"
+      ]
+    },
+    "palladium": {
+      "command": "uvx",
+      "args": [
+        "--python", "3.12",
+        "--index-url",
+        "https://repository.rubrik.com/artifactory/api/pypi/py-mcp/simple",
+        "palladium-mcp-server@latest"
+      ]
+    },
+    "bodega": {
+      "command": "uvx",
+      "args": [
+        "--python", "3.12",
+        "--index-url",
+        "https://repository.rubrik.com/artifactory/api/pypi/py-mcp/simple",
+        "bodega-mcp-server@latest"
+      ]
+    },
+    "nutanix": {
+      "command": "uvx",
+      "args": [
+        "--python", "3.12",
+        "--index-url",
+        "https://repository.rubrik.com/artifactory/api/pypi/py-mcp/simple",
+        "nutanix-mcp-server@latest"
+      ]
+    },
+    "buildkite": {
+      "command": "uvx",
+      "args": [
+        "--python", "3.12",
+        "--index-url",
+        "https://repository.rubrik.com/artifactory/api/pypi/py-mcp/simple",
+        "buildkite-mcp-server@latest"
+      ]
+    },
+    "uff": {
+      "command": "uvx",
+      "args": [
+        "--python", "3.12",
+        "--index-url",
+        "https://repository.rubrik.com/artifactory/api/pypi/py-mcp/simple",
+        "uff-mcp-server@latest"
+      ],
+      "env": {
+        "PYTHONPATH": "${SDMAIN_ROOT}/src:${SDMAIN_ROOT}"
+      }
+    },
+    "terraform": {
+      "command": "uvx",
+      "args": [
+        "--python", "3.12",
+        "--index-url",
+        "https://repository.rubrik.com/artifactory/api/pypi/py-mcp/simple",
+        "terraform-mcp-server@latest"
+      ]
+    },
+    "oracle-triage": {
+      "command": "uvx",
+      "args": [
+        "--python", "3.12",
+        "--index-url",
+        "https://repository.rubrik.com/artifactory/api/pypi/py-mcp/simple",
+        "oracle-triage-mcp-server@latest"
+      ]
+    },
+    "glean": {
+      "type": "http",
+      "url": "https://rubrikinc-be.glean.com/mcp/enterprise-ai"
+    },
+    "endor": {
+      "command": "uvx",
+      "args": [
+        "--python", "3.12",
+        "--index-url",
+        "https://repository.rubrik.com/artifactory/api/pypi/py-mcp/simple",
+        "endor-mcp-server@latest"
+      ]
+    },
+    "archive-server": {
+      "command": "uvx",
+      "args": [
+        "--python", "3.12",
+        "--index-url",
+        "https://repository.rubrik.com/artifactory/api/pypi/py-mcp/simple",
+        "archive-server-mcp-server@latest"
+      ]
+    },
+    "graylog": {
+      "command": "uvx",
+      "args": [
+        "--python", "3.12",
+        "--index-url",
+        "https://repository.rubrik.com/artifactory/api/pypi/py-mcp/simple",
+        "graylog-mcp-server@latest"
+      ],
+      "instructions": "ONLY for Bodega infrastructure (Celery task execution logs via log_link/ThreadForTask) and Rogers production logs. Do NOT use for RSC or Polaris service investigation -- use Logz for that."
+    }
+  }
+}
