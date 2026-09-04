@@ -173,7 +173,19 @@ struct Status {
 //
 // Serial rather than merely capped, because the order is part of the meaning:
 // a "mark" followed by a status read has to see the mark.
-let probeQueue = DispatchQueue(label: "worktime.probe", qos: .utility)
+//
+// .userInitiated rather than .utility, and the difference is not politeness:
+// Darwin puts a utility-QoS thread in the throttled disk tier, and a child
+// process inherits the spawning thread's I/O policy. The probe's fingerprint
+// walks every transcript under both profile roots -- a couple of thousand
+// files -- which costs about two seconds unthrottled and was measured at 140
+// SECONDS under the throttle. Every one of those runs died on
+// PROBE_TIMEOUT_SEC, and a probe that does not answer is the red dot. So the
+// tracker spent its afternoon reporting itself broken, over a machine that was
+// merely busy, because the thing asking the question had been told its answer
+// did not matter. A dot on screen refreshing every five seconds is
+// user-initiated work by definition.
+let probeQueue = DispatchQueue(label: "worktime.probe", qos: .userInitiated)
 
 // The wall against a probe that never returns, for the same reason
 // CHROME_TAB_TIMEOUT_SEC exists: on a serial queue one wedged child is every
@@ -424,7 +436,12 @@ func chromeActiveTab() -> (title: String, url: String)? {
 final class FocusLog {
     // Where the osascript round trip and both file writes happen. Serial, so
     // the log stays in sampled order and the state below needs no lock.
-    private let queue = DispatchQueue(label: "worktime.focus", qos: .utility)
+    //
+    // .userInitiated for the same reason as probeQueue: this spawns osascript,
+    // which inherits the throttled disk tier from a utility thread, and a
+    // sampler that misses its window writes no row at all -- the minutes it
+    // was supposed to witness come out as silence.
+    private let queue = DispatchQueue(label: "worktime.focus", qos: .userInitiated)
     private var lastKey: String?
     private var lastWrite = Date.distantPast
     private var handle: FileHandle?
