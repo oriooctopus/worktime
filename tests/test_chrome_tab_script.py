@@ -24,20 +24,19 @@ import subprocess
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MAIN = os.path.join(ROOT, "bin", "worktime-bar", "main.swift")
+SOURCE = os.path.join(ROOT, "bin", "worktime-bar", "ChromeTab.swift")
 
 # The literals of `p.arguments = [ ... ]`, in order. Swift joins adjacent ones
 # with `+` inside a single element, so the elements are rebuilt by splitting on
 # the "-e" flags rather than on commas -- a part is never itself "-e".
-ARGUMENTS = re.compile(
-    r"func chromeActiveTab\(.*?p\.arguments\s*=\s*\[(.*?)\n\s*\]", re.S)
+ARGUMENTS = re.compile(r"CHROME_TAB_SCRIPT\s*=\s*\[(.*?)\n\]", re.S)
 LITERAL = re.compile(r'"((?:[^"\\]|\\.)*)"')
 
 
 def script_arguments():
     """The osascript argv the shipped bar builds, read out of the source."""
-    block = ARGUMENTS.search(open(MAIN).read())
-    assert block, "p.arguments not found in main.swift"
+    block = ARGUMENTS.search(open(SOURCE).read())
+    assert block, "CHROME_TAB_SCRIPT not found in ChromeTab.swift"
     args, current = [], None
     for raw in LITERAL.findall(block.group(1)):
         literal = raw.replace('\\"', '"').replace("\\\\", "\\")
