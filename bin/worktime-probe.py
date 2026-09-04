@@ -371,18 +371,60 @@ def merge_spans(spans: list[list[int]],
                 timeline: list[tuple[int, str]]) -> list[list[int]]:
     """Union overlapping or near-abutting presence spans, sorted by start.
 
-    Marks and meetings are declared presence and join whatever abuts them,
-    under the threshold the span they are joining has earned -- the same rule
-    chain_bouts used, so the two cannot disagree.
+    Spans are `[start, end]` for evidence -- the bouts chain_bouts already
+    chained -- or `[start, end, True]` for DECLARED presence: a manual mark or
+    a work meeting, which is somebody or something saying the time was worked
+    without leaving an event behind.
+
+    The two are joined by different rules, and that is the whole point:
+
+      * Two bouts NEVER rejoin here. chain_bouts has already ruled on the
+        silence between them under the cutoff in force at the moment it
+        happened; re-asking the question later can only overturn that ruling,
+        and it always overturned it the same way. The old threshold was
+        measured over the accumulated merged run rather than over the bout
+        that earned it, so it grew as it merged: a run past UNFOCUSED_RAMP_MIN
+        pinned the cutoff at the full GAP_AFTER and then swallowed every later
+        bout within five minutes of it. An unfocused afternoon whose dot went
+        out four separate times published as one unbroken period, which is
+        exactly the inflation unfocused mode exists to stop -- and it left the
+        live dot (which chains the un-merged way, via live_cutoff) and the
+        period list disagreeing about the same minute.
+
+        Unfocused mode means the dot takes longer to go out as a run earns it.
+        It does not mean the break is provisional. Once the dot goes out the
+        period is over, and nothing downstream may quietly sew it back up.
+
+      * Declared presence still joins what it abuts, under the threshold the
+        run it is joining has earned. A mark or a meeting is an assertion
+        about the silence around it, so it is allowed to bridge one -- that is
+        what declaring it was for.
+
+    Overlapping or abutting spans always merge, whichever kind they are:
+    that is a union, not a chaining decision, and no cutoff is consulted.
     """
     merged: list[list[int]] = []
-    for s, e in spans:
-        thr = gap_sec_for(mode_at(timeline, s),
-                          merged[-1][1] - merged[-1][0]) if merged else 0
-        if merged and s - merged[-1][1] <= thr:
-            merged[-1][1] = max(merged[-1][1], e)
-        else:
-            merged.append([s, e])
+    # Whether the component that set the current end was declared. A run that
+    # ends in a mark may bridge forward on the mark's authority; one that ends
+    # in a bout may not.
+    ends_declared: list[bool] = []
+    for span in spans:
+        s, e = span[0], span[1]
+        declared = len(span) > 2 and bool(span[2])
+        if merged and s <= merged[-1][1]:
+            if e > merged[-1][1]:
+                merged[-1][1] = e
+                ends_declared[-1] = declared
+            continue
+        if merged and (declared or ends_declared[-1]):
+            thr = gap_sec_for(mode_at(timeline, s),
+                              merged[-1][1] - merged[-1][0])
+            if s - merged[-1][1] <= thr:
+                merged[-1][1] = max(merged[-1][1], e)
+                ends_declared[-1] = declared
+                continue
+        merged.append([s, e])
+        ends_declared.append(declared)
     return merged
 
 
@@ -2984,7 +3026,7 @@ def write_vault_snapshot(day: str, events: list[datetime],
 
     # Manual marks are presence, unioned in the same way meetings are. They
     # carry no tail or lead: a mark has declared bounds and needs neither.
-    present += [[m["start"] * 60, min(m["end"] * 60, now_s)]
+    present += [[m["start"] * 60, min(m["end"] * 60, now_s), True]
                 for m in marks_for(day) if m["start"] * 60 < now_s]
 
     # Work meetings count as presence and are unioned in, so a gap the calendar
@@ -3001,7 +3043,8 @@ def write_vault_snapshot(day: str, events: list[datetime],
     # was scheduled for, so the total said an hour of work nobody did and the
     # dot and the total disagreed about the same half hour.
     cuts = read_meeting_cuts()
-    present += [[m["start"] * 60, min(effective_meeting_end(m, cuts) * 60, now_s)]
+    present += [[m["start"] * 60, min(effective_meeting_end(m, cuts) * 60, now_s),
+                 True]
                 for m in (meetings or [])
                 if m.get("counts", True) and m["start"] * 60 < now_s]
 

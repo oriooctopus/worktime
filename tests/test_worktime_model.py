@@ -248,6 +248,58 @@ class FocusModes(unittest.TestCase):
         self.assertEqual(wp.mode_timeline("1970-01-01"), [(0, "focused")])
 
 
+class BreaksAreFinal(unittest.TestCase):
+    """Once a bout ends, nothing downstream may sew it back together.
+
+    The bug this class exists for: merge_spans measured its threshold over the
+    accumulated merged run rather than over the bout that earned it, so the
+    threshold grew as it merged. An unfocused stretch of prompts two minutes
+    apart -- every one of which put the dot out, because chain_bouts split
+    every single one of them under a one-minute cutoff -- published as one
+    unbroken period, and the menu's live header (which chains the un-merged
+    way) and its period list described the same minute differently.
+    """
+
+    UNFOCUSED = [(0, "unfocused")]
+
+    def test_unfocused_bouts_the_dot_split_do_not_rejoin(self):
+        # Two minutes apart: past the one-minute cutoff a fresh unfocused bout
+        # opens with, so chain_bouts ends the period at every one of them.
+        stamps = [HH(10, 0) + i * 120 for i in range(6)]
+        bouts = wp.build_bouts(stamps, self.UNFOCUSED)
+        self.assertEqual(len(bouts), 6, "chain_bouts splits every silence")
+        merged = wp.merge_spans(bouts, self.UNFOCUSED)
+        self.assertEqual(len(merged), 6, "and the merge leaves them split")
+
+    def test_merging_does_not_earn_a_wider_threshold_than_working_did(self):
+        # The self-reinforcing shape. Six lone bouts two minutes apart are six
+        # separate periods -- but the old merge chained them into one ~12
+        # minute run first, and that run then quoted the full five-minute
+        # cutoff at the NEXT silence, one no bout in the day ever earned.
+        stamps = [HH(10, 0) + i * 120 for i in range(6)] + [HH(10, 14)]
+        merged = wp.merge_spans(
+            wp.build_bouts(stamps, self.UNFOCUSED), self.UNFOCUSED)
+        self.assertEqual(len(merged), 7)
+        self.assertLess(merged[-2][1], HH(10, 14))
+
+    def test_overlapping_spans_still_union(self):
+        # Not a chaining decision and never was: a tail that reaches into the
+        # next bout still produces one span.
+        merged = wp.merge_spans([[0, 600], [300, 900]], self.UNFOCUSED)
+        self.assertEqual(merged, [[0, 900]])
+
+    def test_a_mark_still_bridges_the_silence_it_declared(self):
+        # Declared presence keeps the old rule. A mark is somebody asserting
+        # the time was worked, so it is allowed to join what it abuts -- that
+        # is the entire reason to make one.
+        bout = wp.build_bouts([HH(10, 6)], [(0, "focused")])
+        mark = [[HH(10, 0), HH(10, 5), True]]
+        merged = wp.merge_spans(sorted(mark + bout, key=lambda p: p[0]),
+                                [(0, "focused")])
+        self.assertEqual(len(merged), 1, "the mark carries across the minute")
+        self.assertEqual(merged[0][0], HH(10, 0))
+
+
 def build_desk(stamps, desktop, mode="focused"):
     """The real pipeline including desktop subtraction, as the snapshot runs it.
 
