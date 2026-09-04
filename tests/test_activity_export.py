@@ -1130,7 +1130,7 @@ def test_period_cache_miss_when_row_set_grows(paths):
     assert counting.calls == 2  # called again for the grown period
 
 
-def test_period_summarizer_failure_falls_back_to_heuristic_uncached(paths):
+def test_period_summarizer_failure_falls_back_to_heuristic_uncached(paths, capsys):
     failing = CountingLLM(fail=True)
     paths["llm_call"] = failing
     make_whatsapp_db(
@@ -1146,6 +1146,16 @@ def test_period_summarizer_failure_falls_back_to_heuristic_uncached(paths):
     assert "summaries_llm: 0" in content
     summary = periods_rows(content)[0][2]
     assert "Esme" in summary and "×2" in summary  # heuristic text, not the LLM path
+
+    # A failed llm_call used to be swallowed by `except Exception: pass` with
+    # no trace anywhere -- assert the failure is printed to stderr so a run
+    # of real-world timeouts (RuntimeError: ask-haiku.sh exit 124) shows up
+    # in the log instead of vanishing.
+    err = capsys.readouterr().err
+    assert "activity-export: period summary failed" in err
+    assert "09:00-09:02" in err  # period start-end, matching the table's time_str labels
+    assert "RuntimeError" in err
+    assert "simulated ask-haiku failure" in err  # the actual exception message
 
     with open(paths["cache_path"]) as f:
         cache = json.load(f)

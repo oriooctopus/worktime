@@ -1449,8 +1449,20 @@ def summarize_period(period, cache, llm_call, budget, cap, now_epoch):
                 raise ValueError("empty summary after sanitize")
             cache[h] = text
             return text, True
-        except Exception:
-            pass
+        except Exception as exc:
+            # Previously a bare `except Exception: pass` -- an ask-haiku.sh
+            # timeout (RuntimeError: exit 124) silently fell back to the
+            # heuristic with zero trace anywhere, for 3 periods across
+            # several runs, before this was noticed. Print one line per
+            # failure so a run of timeouts shows up in the log even though
+            # the fallback behavior (heuristic, uncached, budget still
+            # spent) is unchanged.
+            print(
+                f"activity-export: period summary failed "
+                f"({period[0].time_str}-{period[-1].time_str}): "
+                f"{type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
     return sanitize_period_summary(heuristic_period_summary(period)), False
 
 
