@@ -343,6 +343,21 @@ func chromeActiveTab() -> (title: String, url: String)? {
     p.standardError = out
     do { try p.run() } catch { return nil }
 
+    // Exit is awaited on a semaphore rather than with waitUntilExit(), which
+    // does not block the thread -- it POLLS the current run loop until the
+    // child is done. On the main thread that drains the main queue, so an
+    // activation notification arriving while this waits used to be delivered
+    // inside it: a second sample() ran to completion in the middle of the
+    // first, wrote its row first, and left the outer one to land afterwards
+    // carrying the earlier timestamp. The focus log went out of order, which
+    // is the one thing every reader of it assumes cannot happen.
+    //
+    // Only ever a problem once activations could arrive between ticks. The
+    // 5s timer could not re-enter itself, so the reentrancy was there all
+    // along with nothing able to trigger it.
+    let exited = DispatchSemaphore(value: 0)
+    p.terminationHandler = { _ in exited.signal() }
+
     let killer = DispatchWorkItem { if p.isRunning { p.terminate() } }
     DispatchQueue.global().asyncAfter(deadline: .now() + CHROME_TAB_TIMEOUT_SEC,
                                       execute: killer)
@@ -350,7 +365,7 @@ func chromeActiveTab() -> (title: String, url: String)? {
     // child exiting, so this is the wait. Terminating the child closes the
     // pipe, so the timeout unblocks it too.
     let data = out.fileHandleForReading.readDataToEndOfFile()
-    p.waitUntilExit()
+    exited.wait()
     killer.cancel()
 
     guard let text = String(data: data, encoding: .utf8) else { return nil }
