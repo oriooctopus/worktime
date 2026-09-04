@@ -1342,6 +1342,7 @@ FOCUS_INCLUDE = {
     "us.zoom.xos",                # Zoom
     "dev.zed.Zed",                # Zed
     "com.granola.app",            # Granola
+    "com.github.GitHubClient",    # GitHub Desktop
 }
 
 # Apps on the list above that put THEMSELVES in front. For everything else,
