@@ -103,6 +103,31 @@ enum TrackPanelTests {
         panel!.close()
         panel = nil
 
+        // ...but it does have to SAY it closed, and it has to stop reporting
+        // itself as on screen. This is the bug that killed the shortcut on the
+        // day it shipped: the caller kept the cancelled panel and asked whether
+        // it held one rather than whether one was visible, so the first cancel
+        // was the last time the panel ever appeared. Nothing about that is
+        // observable from the outside -- the key still fires, the app still
+        // activates, no error is logged anywhere -- so it is pinned here.
+        var closed = 0
+        let cancelled = TrackPanel(present: false, onClose: { closed += 1 }) { _, _ in }
+        check(cancelled.isOnScreen == false, "a panel built unpresented is not on screen")
+        cancelled.cancelTapped()
+        check(closed == 1, "cancel reports the close (closed=\(closed))")
+        check(cancelled.isOnScreen == false,
+              "a cancelled panel does not claim to be on screen")
+
+        // Tracking is not a close: the caller drops the panel on the track
+        // callback, and a second onClose there would be a second attempt to
+        // drop something already gone.
+        closed = 0
+        let banked = TrackPanel(present: false, onClose: { closed += 1 }) { _, _ in }
+        banked.minutesField.stringValue = "4"
+        banked.trackButton.performClick(nil)
+        check(closed == 0, "tracking is not reported as a close (closed=\(closed))")
+        banked.close()
+
         UserDefaults.standard.removeObject(forKey: TrackPanel.minutesKey)
         UserDefaults.standard.removeObject(forKey: TrackPanel.modeKey)
 
