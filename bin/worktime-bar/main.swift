@@ -174,17 +174,18 @@ struct Status {
 // Serial rather than merely capped, because the order is part of the meaning:
 // a "mark" followed by a status read has to see the mark.
 //
-// .userInitiated rather than .utility, and the difference is not politeness:
-// Darwin puts a utility-QoS thread in the throttled disk tier, and a child
-// process inherits the spawning thread's I/O policy. The probe's fingerprint
-// walks every transcript under both profile roots -- a couple of thousand
-// files -- which costs about two seconds unthrottled and was measured at 140
-// SECONDS under the throttle. Every one of those runs died on
-// PROBE_TIMEOUT_SEC, and a probe that does not answer is the red dot. So the
-// tracker spent its afternoon reporting itself broken, over a machine that was
-// merely busy, because the thing asking the question had been told its answer
-// did not matter. A dot on screen refreshing every five seconds is
-// user-initiated work by definition.
+// .userInitiated rather than .utility, because a dot on screen refreshing
+// every five seconds is user-initiated work by definition. The hazard being
+// avoided is real but was NOT the cause of the red afternoon that prompted
+// this: a child process inherits the spawning thread's disk policy, and the
+// probe's fingerprint walk -- every transcript under both profile roots --
+// measured 140s under an explicitly throttled policy against 2.3s without
+// one, which is five times over PROBE_TIMEOUT_SEC. What the throttle would
+// cost is therefore known. Whether QoS alone imposes it is not: the tier is
+// not readable back, and raising this changed nothing about the timeouts
+// being chased at the time. Those turned out to be every open() under
+// ~/Documents stalling for the whole 30s after a rebuild -- see the
+// permissions note in README.
 let probeQueue = DispatchQueue(label: "worktime.probe", qos: .userInitiated)
 
 // The wall against a probe that never returns, for the same reason

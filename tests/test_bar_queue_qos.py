@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """The QoS of the two bar queues that spawn child processes.
 
-Darwin derives a thread's I/O tier from its QoS, and a spawned child runs at
-the tier of the thread that spawned it. Under a busy disk a utility-tier child
-is starved rather than merely slowed: the probe's fingerprint walk -- every
-transcript under both profile roots -- was measured at 140s against 2.3s for
-the same walk from a shell, and the menu bar kills a probe at
-PROBE_TIMEOUT_SEC and paints the dot red. So an afternoon of a busy machine
-came out as an afternoon of "the tracker is broken", from a queue label.
+A spawned child inherits the disk policy of the thread that spawned it, and a
+throttled child is starved rather than merely slowed: the probe's fingerprint
+walk -- every transcript under both profile roots -- measured 140s under an
+explicitly throttled policy against 2.3s without one, where the bar kills a
+probe at PROBE_TIMEOUT_SEC (30s) and paints the dot red. Whether utility QoS
+by itself imposes that tier was never confirmed, so this pins a margin rather
+than a proven fix: the queues that spawn children stay out of the tiers the
+system is documented to starve, and the 140s figure says what the downside
+would be if they did not.
 
 The tier itself is not readable back: getiopolicy_np reports only explicit
 iopolicy overrides, and returns IOPOL_IMPORTANT on a utility queue that is in
