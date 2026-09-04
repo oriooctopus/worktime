@@ -2002,8 +2002,17 @@ SESSION_TIP_N = 20
 
 
 def group_sessions(rows: list[dict], worked: list[dict],
-                   limit: int = SESSION_LIST_N) -> list[dict]:
+                   limit: int = SESSION_LIST_N,
+                   live: bool = True) -> list[dict]:
     """The same rows, divided into the day's work periods. Newest first.
+
+    `live` is whether the newest period is still running, and only it can carry
+    the "now" the widget draws. Being last in the list is not the same claim: a
+    day whose work stopped at 13:39 still has a newest period at 18:00, and
+    marking it current put "· now" on a stretch three quarters of an hour dead
+    -- beside a header that correctly said the day had gone quiet. The caller
+    decides with the same lapse test the header uses, so the two agree by
+    construction rather than by coincidence.
 
     Deliberately grouped by the periods the snapshot already recorded rather
     than by re-deriving boundaries from gaps between these rows. A second rule
@@ -2050,7 +2059,7 @@ def group_sessions(rows: list[dict], worked: list[dict],
                  "len": w["len"] if w else 0,
                  "what": (w.get("what") or "") if w else "",
                  "counted": w is not None,
-                 "current": idx is not None and idx == len(worked) - 1,
+                 "current": live and idx is not None and idx == len(worked) - 1,
                  "n": 0, "kinds": [], "rows": []}
             out.append(s)
         # Rows arrive newest first, so the oldest one seen for an uncounted run
@@ -2578,8 +2587,21 @@ def hhmm_of(m: int) -> str:
     return f"{m // 60:02d}:{m % 60:02d}"
 
 
-def write_vault_snapshot(day: str, events: list[datetime]) -> None:
+def write_vault_snapshot(day: str, events: list[datetime],
+                         fp: str | None = None) -> None:
     """Publish today's work periods where the Obsidian dashboard can read them.
+
+    `fp` is the fingerprint the caller took BEFORE it read `events`, and it is
+    what the snapshot publishes as its own. Taking it here instead -- which is
+    what this did, at the very end, beside the rest of the record -- signed the
+    file with a later state of the inputs than the periods were built from.
+    Deriving a day costs ~650ms, so any event landing inside that window got a
+    snapshot claiming to already cover it: status() compared fingerprints,
+    found a match, and left the period list frozen while the header line beside
+    it -- read live -- moved on. That is the "0m since last activity" sitting
+    above a newest period three quarters of an hour old. A fingerprint taken
+    too early only costs a redundant rebuild on the next poll, so when the
+    caller has not passed one, take it before any derivation starts.
 
     Dataview can only load paths inside the vault, so the label file in
     ~/.claude cannot be read from a note. Rather than symlink (which Obsidian's
@@ -2605,6 +2627,7 @@ def write_vault_snapshot(day: str, events: list[datetime]) -> None:
     # break under thirty minutes into the surrounding work, which is why a
     # single "2h 33m" period could contain three holes of 28, 23 and 23 minutes
     # and still be drawn as one solid block.
+    fp = activity_fingerprint(day) if fp is None else fp
     now_s = (now_local().hour * 3600 + now_local().minute * 60
              + now_local().second)
     meetings = calendar_events(day)
@@ -2907,8 +2930,9 @@ def write_vault_snapshot(day: str, events: list[datetime]) -> None:
         # reader can tell whether the file still describes the present without
         # re-deriving it. status() uses this to notice that work has happened
         # since the last check() and rebuild, which is what stops the menu bar
-        # from showing a period list up to a cron interval out of date.
-        "fp": activity_fingerprint(day),
+        # from showing a period list up to a cron interval out of date. Taken
+        # before the derivation, never after -- see the docstring.
+        "fp": fp,
         "gaps": gaps,
         "worked": worked,
         "gap_minutes": sum(g["len"] for g in gaps),
@@ -3499,6 +3523,15 @@ def status() -> dict:
         state = "idle"
         why = f"quiet {quiet:.0f}m" if quiet is not None else "nothing today"
 
+    # Whether the day's newest period is still running, which is what the menu
+    # means by "now" and by the bold row and by "still being summarized". The
+    # same lapse test the header above just applied, deliberately reused rather
+    # than re-derived: the two halves of one menu describing the same moment
+    # have to agree, and the way to guarantee that is to ask once. A mark or a
+    # meeting holds the DOT green without any event behind it, so neither is
+    # enough on its own to call a period of recorded work still open.
+    live = quiet_sec is not None and quiet_sec <= cutoff_sec
+
     # The period list, the day total and the focus figure all come from the
     # snapshot, and until now only check() ever rewrote it -- so the header line
     # above (derived live, every poll) could read "0m since last activity" while
@@ -3515,8 +3548,13 @@ def status() -> dict:
     sessions = []
     focus_pct = None
     path = snapshot_path(day)
-    if not os.path.exists(path) or json.load(open(path)).get("fp") != activity_fingerprint(day):
-        write_vault_snapshot(day, events_for(day))
+    # Taken before the events are read, and handed to the writer, so the
+    # snapshot is signed with the state of the inputs its periods were actually
+    # built from. Reversing those two is what let a rebuild publish a
+    # fingerprint that already covered an event its periods did not.
+    fp_now = activity_fingerprint(day)
+    if not os.path.exists(path) or json.load(open(path)).get("fp") != fp_now:
+        write_vault_snapshot(day, events_for(day), fp_now)
     if os.path.exists(path):
         snap = json.load(open(path))
         worked_minutes = snap.get("work_minutes", 0)
@@ -3534,13 +3572,13 @@ def status() -> dict:
                 "n_prompts": w.get("n_prompts", 0),
                 "n_slack": w.get("n_slack", 0),
                 "what": w.get("what", ""),
-                "current": i == len(worked) - 1,
+                "current": live and i == len(worked) - 1,
             })
         periods.reverse()
         # Grouped here, off the snapshot that was just brought up to date --
         # the whole point of the sessions view is that its divisions are the
         # period list's divisions, so it has to read the same copy of them.
-        sessions = group_sessions(all_acts, worked)
+        sessions = group_sessions(all_acts, worked, live=live)
 
     # Read from the same snapshot the menu bar's period list came from, not
     # recomputed here -- this is the on-disk record of the last completed
