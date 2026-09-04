@@ -23,6 +23,9 @@ Usage:
                                           the mark, cut the meeting, at this
                                           minute or at the last entry
   worktime-probe.py note [text]    -- record work this probe cannot see
+  worktime-probe.py track <n> [clip|split]  -- claim the last n minutes as
+                                          worked, stopping at work already
+                                          counted or stepping over it
 """
 
 from __future__ import annotations  # 3.8 can parse the annotations
@@ -1054,6 +1057,125 @@ def link_last_session() -> dict:
     write_vault_snapshot(day, events_for(day))
     return {"linked": True, "from": hhmm_of(start), "to": hhmm_of(now_m),
             "gap": now_m - start}
+
+
+# The note track_back() writes. Same shape of statement as LINK_NOTE: the
+# minutes needed claiming precisely because nothing was watching them, so the
+# note says where they came from rather than what they were.
+TRACK_NOTE = "tracked by hand"
+
+# How the claim behaves when it runs into work the tracker already counted.
+#
+# "clip" stops there and banks only the minutes between that period and now --
+# asking for five minutes when the last two are all that is unaccounted for
+# gets two, and does not invent the other three on top of time that is already
+# counted. It is the default because it is the reading that cannot overstate
+# the day.
+#
+# "split" keeps going instead: it steps over the period and carries the
+# remainder to the free minutes in front of it. The five minutes then land as
+# two after the period and three before it -- the same total, placed where
+# there was actually a hole to put it in.
+TRACK_MODES = ("clip", "split")
+
+
+def claim_spans(worked: list[dict], now_m: int, minutes: int,
+                split: bool) -> tuple[list[list[int]], int]:
+    """Where `minutes` of hand-declared work go, walking back from `now_m`.
+
+    Returns the spans to claim, oldest first, and how many minutes could not
+    be placed. Every span is free of `worked`: claiming a minute the tracker
+    already counted would not add to the day -- the periods are unioned -- but
+    it would silently shorten the claim, so the minutes that "went missing"
+    would be exactly the ones the person was trying to record.
+
+    The walk is what both modes are made of. From the cursor it takes the free
+    stretch behind it, up to whatever is still owed; when it hits a worked
+    period it either stops (clip) or steps to the far side of it and carries
+    on (split). One level of that is the case worth describing -- five minutes
+    asked for, two free behind a Slack period, three placed in front of it --
+    but a busy stretch can have several periods in it, and a loop is the only
+    version that does not quietly drop the remainder at the second one.
+
+    Stops at midnight rather than crossing into yesterday. A claim that ran
+    backwards over the day boundary would file minutes against a day that is
+    already summarised and closed, where nobody would look for them.
+    """
+    spans: list[list[int]] = []
+    remaining = minutes
+    cursor = now_m
+    # Newest first, and only what could possibly be behind the cursor.
+    ahead = sorted((p for p in worked if p["start"] < now_m),
+                   key=lambda p: p["end"], reverse=True)
+    i = 0
+    while remaining > 0 and cursor > 0:
+        # The newest period that begins before the cursor. Anything starting
+        # at or after it is already behind us and cannot block this stretch.
+        while i < len(ahead) and ahead[i]["start"] >= cursor:
+            i += 1
+        blocker = ahead[i] if i < len(ahead) else None
+        # A period whose end runs past the cursor -- a live one, whose end
+        # carries TAIL_SEC past the last event -- leaves no free minutes here
+        # at all, so floor lands on the cursor and the take is zero.
+        floor = min(blocker["end"], cursor) if blocker else 0
+        take = min(cursor - floor, remaining)
+        if take > 0:
+            spans.append([cursor - take, cursor])
+            remaining -= take
+            cursor -= take
+        if remaining <= 0 or blocker is None or not split:
+            break
+        cursor = blocker["start"]
+        i += 1
+    return list(reversed(spans)), remaining
+
+
+def track_back(minutes: int, mode: str = "clip") -> dict:
+    """Claim the last `minutes` as worked, around what is already counted.
+
+    The hotkey's double press. A single press says "this minute was worked",
+    which is the right size for a thought that arrives mid-task; this is for
+    the stretch that just ended -- a phone call, a conversation at somebody's
+    desk -- where the length is known and the minutes are behind you.
+
+    `mark HH:MM-HH:MM` could always have written this, and that is the point:
+    it asks for two clock times to be worked out in your head, in the minute
+    after the thing you were doing ended. The count is the number a person
+    actually has ("that was about ten minutes"), and what to do about the
+    Slack message sent halfway through it is a question they should not have
+    to answer in arithmetic.
+
+    Written as ordinary closed marks, one per span, so nothing downstream
+    needs to know this command exists: the period list, the day total and the
+    dashboard all read them the way they read any other declared stretch.
+    """
+    if mode not in TRACK_MODES:
+        return {"tracked": False, "why": f"unknown mode {mode!r}"}
+    if minutes <= 0:
+        return {"tracked": False, "why": "nothing to track"}
+    now = now_local()
+    day = now.strftime("%Y-%m-%d")
+    now_m = now.hour * 60 + now.minute
+    events = events_for(day)
+
+    # The same snapshot the menu drew its period list from, refreshed if the
+    # day has moved on since. Claiming against a stale one would step over a
+    # period that is no longer there, or clip against one that has since grown.
+    path = snapshot_path(day)
+    if not os.path.exists(path) or \
+            json.load(open(path)).get("fp") != activity_fingerprint(day):
+        write_vault_snapshot(day, events)
+    worked = json.load(open(path)).get("worked", []) if os.path.exists(path) else []
+
+    spans, unplaced = claim_spans(worked, now_m, minutes, mode == "split")
+    for start, end in spans:
+        add_mark(f"{hhmm_of(start)}-{hhmm_of(end)}", TRACK_NOTE)
+    if spans:
+        write_vault_snapshot(day, events_for(day))
+    return {"tracked": bool(spans), "mode": mode, "asked": minutes,
+            "claimed": minutes - unplaced, "unplaced": unplaced,
+            "spans": [{"start": hhmm_of(a), "end": hhmm_of(b)}
+                      for a, b in spans]}
 
 
 def to_min(hhmm: str) -> int:
@@ -3951,6 +4073,18 @@ if __name__ == "__main__":
         rec = add_note(" ".join(sys.argv[2:]))
         write_vault_snapshot(rec["day"], events_for(rec["day"]))
         print(json.dumps({"at": rec["t"][:5], "text": rec["text"]}))
+    elif cmd == "track":
+        # `track 5` claims five minutes; `track 5 split` places whatever will
+        # not fit behind the last session in front of it instead. A missing or
+        # unreadable count is refused rather than defaulted: the number IS the
+        # request here, and guessing one would bank minutes nobody asked for.
+        try:
+            n = int(sys.argv[2])
+        except (IndexError, ValueError):
+            print(json.dumps({"tracked": False, "why": "track needs a minute count"}))
+        else:
+            print(json.dumps(track_back(
+                n, sys.argv[3] if len(sys.argv) > 3 else "clip")))
     elif cmd == "status":
         # One small line for the menu bar: what the tracker thinks right now.
         print(json.dumps(status()))

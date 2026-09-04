@@ -43,7 +43,20 @@ PRESENTING = [
 
 # Constructors that show themselves unless told not to. The value is the
 # argument that suppresses it, which the call must pass.
-SELF_PRESENTING = {"CountdownPanel(": "present: false"}
+SELF_PRESENTING = {"CountdownPanel(": "present: false",
+                   "TrackPanel(": "present: false"}
+
+# Each of those, and the guard it must keep on the app side. The string search
+# above would go on passing if the parameter were renamed or dropped -- the
+# Swift suites would stop compiling, but only once somebody ran them -- so the
+# parameter's existence and its default are pinned here too. TrackPanel is the
+# sharper case of the two: it is the one surface in this app that deliberately
+# takes the keyboard, so a test that showed it would not merely appear, it
+# would swallow whatever was being typed at the time.
+PANEL_GUARDS = {
+    "CountdownPanel.swift": "orderFrontRegardless",
+    "TrackPanel.swift": "makeKeyAndOrderFront",
+}
 
 
 def swift_test_sources() -> list[str]:
@@ -89,22 +102,20 @@ class NoUIInTests(unittest.TestCase):
                                         + "\n  ".join(offenders))
 
     def test_the_suppressor_is_a_real_argument_of_the_real_type(self):
-        # The check above is a string search, so it would keep passing if the
-        # parameter were renamed or dropped from CountdownPanel -- the tests
-        # would stop compiling, but only after somebody ran them. Pin the
-        # parameter's existence and its default here, where it reads as the
-        # contract it is: visible by default for the app, suppressible for a
-        # test.
-        src = open(os.path.join(os.path.dirname(HERE), "bin", "worktime-bar",
-                                "CountdownPanel.swift")).read()
-        self.assertRegex(
-            src, r"present:\s*Bool\s*=\s*true",
-            "CountdownPanel must keep a `present: Bool = true` parameter -- "
-            "the app relies on the default, the tests rely on being able to "
-            "pass false")
-        self.assertRegex(
-            src, r"if present\s*\{[^}]*orderFrontRegardless",
-            "CountdownPanel must only order itself on screen when `present`")
+        # The contract, read as one: visible by default for the app,
+        # suppressible for a test, and the showing itself guarded by the flag
+        # rather than merely accompanied by it.
+        for name, shows in PANEL_GUARDS.items():
+            src = open(os.path.join(os.path.dirname(HERE), "bin",
+                                    "worktime-bar", name)).read()
+            self.assertRegex(
+                src, r"present:\s*Bool\s*=\s*true",
+                f"{name} must keep a `present: Bool = true` parameter -- the "
+                "app relies on the default, the tests rely on being able to "
+                "pass false")
+            self.assertRegex(
+                src, r"if present\s*\{[^}]*" + shows,
+                f"{name} must only put itself on screen when `present`")
 
 
 if __name__ == "__main__":
