@@ -723,6 +723,12 @@ def sec_of(hms: str) -> int:
 
 MARKS = os.path.join(STATE, "marks.jsonl")
 
+# The note link_last_session() writes. A linked stretch is work nobody
+# described -- the whole reason it needs claiming is that the tracker saw
+# nothing in it -- so the note says where the minutes came from rather than
+# what they were, and the period list has something to show besides a blank.
+LINK_NOTE = "linked to the last session"
+
 
 def marks_for(day: str, stamps: list[int] | None = None) -> list[dict]:
     """Manually declared work, resolved into concrete spans in minutes.
@@ -778,7 +784,22 @@ def marks_for(day: str, stamps: list[int] | None = None) -> list[dict]:
             # which is precisely what this tracker exists to catch. Expiring is
             # the safe direction: re-clicking costs a second, and the minutes
             # after the cap are still recoverable from prompts and Slack.
-            end = min(end, start + MARK_MAX_OPEN_MIN)
+            #
+            # Measured from when the mark was MADE, not from where it starts.
+            # The two are the same minute for a mark claiming time from the
+            # click forward, so this changes nothing for the ordinary case --
+            # but a mark can start in the past, either from `mark HH:MM` or
+            # from a link, and there the distinction decides whether it works
+            # at all. Capping a backdated mark from its start spends the
+            # allowance on minutes that had already elapsed when it was
+            # written: a 35-minute gap linked at 12:15 would reach only 12:10,
+            # falling five minutes short of the moment it was asked to reach,
+            # and one backdated an hour would expire before it was even made.
+            # The forgotten-mark this ceiling defends against is forgotten from
+            # the click onwards, so that is where the clock starts.
+            made = datetime.fromisoformat(r["created"])
+            end = min(end, max(start, made.hour * 60 + made.minute)
+                      + MARK_MAX_OPEN_MIN)
         is_open = r.get("end") is None
         # An open mark counts from the moment it is made, including the minute
         # it was made in. Requiring end > start hid every fresh mark until the
@@ -925,6 +946,101 @@ def end_session(at_last: bool = False) -> dict:
                     "note": r["note"]} for r in closed],
         "cuts": cuts,
     }
+
+
+def link_anchor(worked: list[dict], now_m: int, cutoff_sec: int) -> int | None:
+    """The minute "link with the last session" would join from, or None.
+
+    One definition, read by both the menu item and the action behind it. The
+    menu has to know whether the item applies before the click -- an item that
+    is always offered and sometimes silently does nothing is worse than one
+    that greys out -- and the action has to know which minute to claim from.
+    Deriving those separately is how they end up disagreeing about which period
+    counts as the last one, so they share this.
+
+    Whether the newest period is still live is the only subtle part. Prompting
+    right now means that period IS the current one, so linking has to reach
+    past it to the period before: the claimed stretch then covers the gap
+    between the two and they merge. With nothing live the newest period is
+    itself the last one and the stretch simply carries it to now.
+
+    Live is measured off the period's end against the cutoff the run in
+    progress has earned -- the same cutoff the dot answers to -- so the item
+    reaches past the current session exactly when the menu is calling one
+    current.
+
+    None means there is nothing to link to: an empty day, or a live period that
+    is the only one there is. Not an error, just the ordinary state of the
+    first session of the morning, and the item greys out for it.
+
+    The minute returned is never in the future, and does not need clamping to
+    ensure it. A period's end can sit slightly ahead of the clock, because
+    TAIL_SEC is added to its last event -- but a period ending after now is
+    live by this very test, so it is the one being reached past rather than the
+    one being anchored on, and what gets anchored on is always behind it.
+    """
+    if not worked:
+        return None
+    live = (now_m - worked[-1]["end"]) * 60 <= cutoff_sec
+    periods = worked[:-1] if live else worked
+    return periods[-1]["end"] if periods else None
+
+
+def link_last_session() -> dict:
+    """Join the last session to now, claiming the gap between them as work.
+
+    The counterpart to End Session. That one says a stretch is over; this says
+    it never stopped. A step away long enough to lapse -- a corridor
+    conversation, a whiteboard, a call taken on the phone -- leaves a hole the
+    tracker saw nothing in, and the work on either side of it comes back as two
+    sessions with a gap between. Nothing in the menu could say the hole was
+    work: `mark` starts at the current minute, so it could claim the time from
+    the click forward but never the stretch already behind it, which is the
+    only part that needs claiming.
+
+    So the mark this writes starts in the past, at the minute the last session
+    ended, and is left open. Open because the stretch it just rejoined is still
+    going -- the person is back at the desk, that is why they clicked -- and
+    closing it at the click would end the day in the act of extending it. It
+    closes the way any other mark does: the next prompt resolves it, ⌘⌥S stops
+    it, End Session ends it.
+
+    Refuses when a mark is already running, rather than appending a second one.
+    Two open marks was a real bug on the day marks shipped -- nothing in the
+    menu said the first had taken -- and here the refusal is nearly free,
+    because an open mark means the day is already held open and there is no gap
+    to bridge in the first place.
+
+    Rebuilds the snapshot like every other mutating command: the whole point is
+    that the two sessions become one in the list the person is looking at, and
+    waiting for the next check would leave them staring at the gap they just
+    told it to close.
+    """
+    now = now_local()
+    day = now.strftime("%Y-%m-%d")
+    now_m = now.hour * 60 + now.minute
+    events = events_for(day)
+
+    path = snapshot_path(day)
+    if not os.path.exists(path) or \
+            json.load(open(path)).get("fp") != activity_fingerprint(day):
+        write_vault_snapshot(day, events)
+    worked = json.load(open(path)).get("worked", []) if os.path.exists(path) else []
+
+    _last, stamps, ev_stamps, _acts = live_activity(day)
+    if next((m for m in marks_for(day, stamps)
+             if m["open"] and m["start"] <= now_m <= m["end"]), None):
+        return {"linked": False, "why": "a mark is already running"}
+
+    start = link_anchor(worked, now_m,
+                        live_cutoff(day, [m * 60 for m in ev_stamps]))
+    if start is None:
+        return {"linked": False, "why": "no earlier session to link to"}
+
+    add_mark(hhmm_of(start), LINK_NOTE)
+    write_vault_snapshot(day, events_for(day))
+    return {"linked": True, "from": hhmm_of(start), "to": hhmm_of(now_m),
+            "gap": now_m - start}
 
 
 def to_min(hhmm: str) -> int:
@@ -3533,6 +3649,7 @@ def status() -> dict:
     periods = []
     sessions = []
     focus_pct = None
+    link_from = None
     path = snapshot_path(day)
     if not os.path.exists(path) or json.load(open(path)).get("fp") != activity_fingerprint(day):
         write_vault_snapshot(day, events_for(day))
@@ -3560,6 +3677,9 @@ def status() -> dict:
         # the whole point of the sessions view is that its divisions are the
         # period list's divisions, so it has to read the same copy of them.
         sessions = group_sessions(all_acts, worked)
+        # Off the same periods the list above was drawn from, so the item can
+        # only offer a minute the person can see on screen. None greys it out.
+        link_from = link_anchor(worked, now_m, cutoff_sec)
 
     # Read from the same snapshot the menu bar's period list came from, not
     # recomputed here -- this is the on-disk record of the last completed
@@ -3578,6 +3698,12 @@ def status() -> dict:
             "gap_after_sec": cutoff_sec,
             "mode": mode_now(),
             "focus_pct": focus_pct,
+            # The minute "Link with last session" would claim from, as HH:MM,
+            # or null when there is nothing to link to. The menu greys the item
+            # out on null rather than offering a click that does nothing, and
+            # names the minute in the title so the claim is legible before it
+            # is made rather than only afterwards in the period list.
+            "link_from": hhmm_of(link_from) if link_from is not None else None,
             "periods": periods,
             # Newest first, same as `periods`. The periods say how the day was
             # divided up; this says what the divisions were made out of.
@@ -3654,6 +3780,8 @@ if __name__ == "__main__":
     elif cmd == "end_session":
         print(json.dumps(end_session(
             at_last=len(sys.argv) > 2 and sys.argv[2] == "last")))
+    elif cmd == "link_last":
+        print(json.dumps(link_last_session()))
     elif cmd == "mode":
         # Bare `mode` reads, `mode <name>` sets. Setting rebuilds the snapshot
         # so the dashboard and the menu redraw under the new rule at once

@@ -137,6 +137,11 @@ struct Status {
     var gapAfterSec: Int?
     var mode = "focused"
     var focusPct: Int?
+    // HH:MM the link item would claim from, nil when there is nothing to link
+    // to. Decided by the probe off the same periods the list is drawn from --
+    // the menu must not work out for itself which period counts as the last
+    // one, or it can name a different minute than the action then claims.
+    var linkFrom: String?
     var periods: [Period] = []
     var activities: [Activity] = []
     var sessions: [ActSession] = []
@@ -989,7 +994,7 @@ func anythingIsCapturing() -> Bool {
 
 // MARK: - The menu bar item
 
-final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate {
+final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemValidation {
     // Created in applicationDidFinishLaunching, NOT as a stored-property
     // initializer. Built at property-init time the item came back with
     // isVisible == true and a live button, yet never appeared in the menu bar:
@@ -1388,6 +1393,27 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate {
         toggle.keyEquivalentModifierMask = [.command, .option]
         m.addItem(toggle)
 
+        // Directly under the toggle because it is the toggle's other half.
+        // "Start working" claims time from the click forward, which is the
+        // wrong end of a stretch you have already walked back from: the
+        // corridor conversation is over, and the minutes worth claiming are
+        // the ones behind you. This claims those -- from where the last
+        // session ended up to now -- so the gap closes and the two sessions
+        // read as the one stretch they were.
+        //
+        // The minute is in the title rather than left to be discovered in the
+        // period list afterwards. It is a claim on time that cannot be seen
+        // being made, so it says how far back it reaches before it reaches.
+        //
+        // Greyed rather than hidden when there is nothing to link to. Hiding
+        // it would make the menu's shape depend on how the morning happened to
+        // go, and an item that comes and goes is harder to learn than one that
+        // is always in the same place and sometimes dim.
+        let link = NSMenuItem(title: status.linkFrom.map { "Link with Last Session (from \($0))" }
+                                  ?? "Link with Last Session",
+                              action: #selector(linkLastSession), keyEquivalent: "")
+        m.addItem(link)
+
         // Always present, unlike the toggle's stop, which only appears once a
         // mark is running. A mark is not the only thing that keeps the day
         // open -- a meeting runs on the calendar's schedule and prompting
@@ -1510,6 +1536,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate {
             s.gapAfterSec = j["gap_after_sec"] as? Int
             s.mode = j["mode"] as? String ?? "focused"
             s.focusPct = j["focus_pct"] as? Int
+            s.linkFrom = j["link_from"] as? String
             s.periods = (j["periods"] as? [[String: Any]] ?? []).map { p in
                 Period(start: p["start"] as? Int ?? 0,
                        end: p["end"] as? Int ?? 0,
@@ -1639,6 +1666,27 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate {
             _ = runProbe(atLast ? ["end_session", "last"] : ["end_session"])
             DispatchQueue.main.async { self.refresh() }
         }
+    }
+
+    // Link with Last Session. Claims the gap between where the last session
+    // ended and now as work, and leaves the claim open so the stretch it just
+    // rejoined keeps running. Which minute counts as "where the last session
+    // ended" is the probe's to decide -- it is the one that drew the period
+    // list -- so this passes no minute and cannot name a different one than
+    // the title advertised.
+    @objc func linkLastSession() {
+        DispatchQueue.global(qos: .utility).async {
+            _ = runProbe(["link_last"])
+            DispatchQueue.main.async { self.refresh() }
+        }
+    }
+
+    // The menu auto-enables, which ignores isEnabled on any item that has an
+    // action -- so the link row has to be greyed from here. Everything else
+    // keeps the default: items with no action grey themselves, and every other
+    // action row applies whenever the menu is open.
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        item.action == #selector(linkLastSession) ? status.linkFrom != nil : true
     }
 
     @objc func endMeetingEarly() {
