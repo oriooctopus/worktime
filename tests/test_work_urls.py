@@ -18,8 +18,8 @@ KEYWORDS = ["rubrik"]
 WORK_ACCOUNT = 1
 
 
-def is_work(url, keywords=KEYWORDS, account=WORK_ACCOUNT):
-    return wc.is_work_url(url, keywords, account)
+def is_work(url, keywords=KEYWORDS, account=WORK_ACCOUNT, ports=(3000, 3005)):
+    return wc.is_work_url(url, keywords, account, set(ports))
 
 
 # --- the keyword rule ---
@@ -101,6 +101,33 @@ def test_searching_for_workday_is_not_work():
     assert not is_work("https://www.google.com/search?q=myworkday.com+login")
 
 
+# --- the localhost dev-server rule ---
+
+def test_a_dev_server_on_a_work_port_is_work():
+    # Nothing else in the address says so: no company name, no account.
+    assert is_work("http://localhost:3000/dashboard")
+    assert is_work("http://127.0.0.1:3005/")
+
+
+def test_the_export_row_form_is_work_too():
+    # The export leads with the title, so the host is not at the start.
+    assert is_work("Sessions | localhost:3000/d/sessions")
+
+
+def test_a_local_server_on_another_port_is_not_work():
+    # A personal side project served from its own port is not the job.
+    assert not is_work("http://localhost:8118/map")
+
+
+def test_the_port_list_is_configurable():
+    assert is_work("http://localhost:4321/", ports=(4321,))
+    assert not is_work("http://localhost:3000/", ports=(4321,))
+
+
+def test_a_longer_port_that_merely_starts_with_a_work_port_is_not_work():
+    assert not is_work("http://localhost:30005/")
+
+
 # --- the Google account rule ---
 
 def test_work_account_drive_calendar_and_mail_are_work():
@@ -138,12 +165,14 @@ def test_google_account_index_reads_the_number():
 
 def test_defaults_when_the_profile_says_nothing():
     assert wc.work_url_keywords({}) == list(wc.DEFAULT_WORK_URL_KEYWORDS)
+    assert wc.work_localhost_ports({}) == set(wc.DEFAULT_WORK_LOCALHOST_PORTS)
     assert wc.google_work_account({}) is None
 
 
 def test_profile_overrides_both():
     profile = {"work_url_keywords": ["Acme"], "google_work_account": 2}
     assert wc.work_url_keywords(profile) == ["acme"]
+    assert wc.work_localhost_ports({"work_localhost_ports": [4321]}) == {4321}
     assert wc.google_work_account(profile) == 2
 
 

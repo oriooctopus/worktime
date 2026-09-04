@@ -21,7 +21,8 @@ spec.loader.exec_module(cwb)
 # handed. Spelled out here rather than defaulted inside classify(), which
 # would let a real caller silently classify with rules nobody configured.
 CFG = {"work": ["github.com/scaledata", "rubrik.com"], "ignore": ["instagram.com"],
-       "work_url_keywords": [], "google_work_account": None}
+       "work_url_keywords": [], "google_work_account": None,
+       "work_localhost_ports": [3000]}
 D = date(2026, 8, 31)
 
 

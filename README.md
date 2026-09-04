@@ -142,7 +142,7 @@ it, the exporter has to run on the machine doing the browsing.
 
 ## Work sites beyond the list
 
-Two rules in `profile.json` classify sites the `work` list would have to
+Three rules in `profile.json` classify sites the `work` list would have to
 enumerate one at a time:
 
 - **`work_url_keywords`** (default `["rubrik"]`) — any address containing one
@@ -150,6 +150,11 @@ enumerate one at a time:
   training site and the SSO portal without naming them. Matched against the
   address only, never the query string, so googling the company's name is not
   work.
+- **`work_localhost_ports`** (default `[3000, 3001, 3002, 3003, 3004, 3005]`)
+  — a dev server on one of these ports is the work app itself. Nothing in
+  `localhost:3000/dashboard` says so: no company name, no account, so the port
+  is the only evidence. Ports rather than all of `localhost`, because a
+  personal side project served from its own port is not the job.
 - **`google_work_account`** (default unset) — the account number in Google
   URLs (`drive.google.com/drive/u/1/home` is account `1`). Set it when there is
   a separate work Google account: Gmail, Calendar, Drive and Docs under that

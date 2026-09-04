@@ -7,6 +7,9 @@
   "_work_url_keywords": "Any address containing one of these words is work -- the wiki, the ticket tracker, the training site and the SSO portal, without naming each one. Matched against the address only, so searching the word is not work. Omit the key to keep the default.",
   "work_url_keywords": ["your-company"],
 
+  "_work_localhost_ports": "Ports on this machine that serve the work app in development. A tab on one of them is work: nothing else in localhost:3000/dashboard says so. Omit the key to keep the default of 3000-3005.",
+  "work_localhost_ports": [3000, 3001, 3002, 3003, 3004, 3005],
+
   "_google_work_account": "The account number in Google URLs: drive.google.com/drive/u/1/home is account 1. Set it only when a separate work Google account exists -- then that account's Gmail, Calendar, Drive and Docs count as work and the personal account's do not. With one Google account there is nothing to tell apart; omit the key.",
   "google_work_account": 1
 }

@@ -176,6 +176,19 @@ DEFAULT_WORK_URL_KEYWORDS = ("rubrik",)
 # mattering.
 ALWAYS_WORK_HOSTS = ("myworkday.com",)
 
+# A dev server on the machine is the work app itself. Nothing in the address
+# says so -- "localhost:3000/dashboard" names no company and carries no
+# account -- so the port is the only evidence, and the range the work app's
+# dev servers listen on is a fact about this machine, like the timezone.
+# Ports rather than plain "localhost": a personal side project served from
+# 8118 is not the job, and counting every local server as work would file
+# every evening spent on one as a stretch at it.
+DEFAULT_WORK_LOCALHOST_PORTS = (3000, 3001, 3002, 3003, 3004, 3005)
+
+# Both the full address and the export's "Title | localhost:3000/x" row reach
+# here, so the host is matched wherever it sits rather than only at the start.
+LOCALHOST_PORT = re.compile(r"(?:localhost|127\.0\.0\.1|\[::1\]):(\d{1,5})")
+
 # Google serves every signed-in account from the same hostnames and separates
 # them only by the account index in the path: the second account you added is
 # /u/1, and Gmail, Calendar, Drive and Docs all carry it. So a work Google
@@ -228,6 +241,15 @@ def google_work_account(profile=None):
     return None if index is None else int(index)
 
 
+def work_localhost_ports(profile=None):
+    """The localhost ports that serve the work app, as a set of ints."""
+    profile = load_profile() if profile is None else profile
+    configured = profile.get("work_localhost_ports")
+    if configured is None:
+        return set(DEFAULT_WORK_LOCALHOST_PORTS)
+    return {int(p) for p in configured}
+
+
 def google_account_index(url):
     """The /u/<n> (or ?authuser=<n>) account index in a Google URL, or None."""
     lowered = (url or "").lower()
@@ -236,10 +258,11 @@ def google_account_index(url):
     return int(match.group(1)) if match else None
 
 
-def is_work_url(url, keywords=None, work_account=None):
+def is_work_url(url, keywords=None, work_account=None, localhost_ports=None):
     """True if `url` is work on its own: it sits on a host that is work for
-    everyone, it names a work keyword, or it is a Google page signed in as the
-    work account.
+    everyone, it names a work keyword, it is a dev server on one of the work
+    app's localhost ports, or it is a Google page signed in as the work
+    account.
 
     Keywords are matched against the address only, never the query string.
     Googling "rubrik stock price" puts the employer's name in ?q= and nowhere
@@ -248,7 +271,7 @@ def is_work_url(url, keywords=None, work_account=None):
     the job. Somewhere the name is in the host or the path, you were on their
     system; in ?q= you were only typing about them.
 
-    `keywords` and `work_account` are passed in by callers that already hold
+    `keywords`, `localhost_ports` and `work_account` are passed in by callers that already hold
     the config, so a per-visit call does not re-read the profile from disk.
     """
     lowered = (url or "").lower()
@@ -259,6 +282,9 @@ def is_work_url(url, keywords=None, work_account=None):
         return True
     keywords = work_url_keywords() if keywords is None else keywords
     if any(k in address for k in keywords):
+        return True
+    ports = work_localhost_ports() if localhost_ports is None else localhost_ports
+    if any(int(m) in ports for m in LOCALHOST_PORT.findall(address)):
         return True
     if work_account is None:
         return False
