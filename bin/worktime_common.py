@@ -40,16 +40,33 @@ except ImportError:  # Python < 3.9 (the Linux box: 3.8.10)
     from backports.zoneinfo import ZoneInfo
 
 
-# Two Claude Code profiles feed this machine: interactive sessions under
-# ~/.claude, and worktime's own background jobs under ~/.claude-personal, which
-# has its own transcripts and no hooks of its own. Both hold prompts a person
-# actually typed, so both are presence, and every consumer must walk both --
-# counting one while change-detecting the other is exactly how the menu went
-# stale without appearing to.
-PROJECT_ROOTS = [
-    os.path.expanduser("~/.claude/projects"),
-    os.path.expanduser("~/.claude-personal/projects"),
-]
+# Claude Code keeps one transcript tree per profile, and this machine runs
+# several: ~/.claude for interactive sessions, ~/.claude-personal for
+# worktime's own background jobs, ~/.claude-bench for benchmark work. All of
+# them hold prompts a person actually typed, so all of them are presence, and
+# every consumer must walk all of them -- counting one while change-detecting
+# another is exactly how the menu went stale without appearing to.
+#
+# They are discovered rather than listed because the list was wrong the moment
+# a new profile appeared: a full interactive afternoon under ~/.claude-bench
+# was invisible to the tracker for no reason other than that CLAUDE_CONFIG_DIR
+# had been pointed somewhere the constant had never been told about. Nothing
+# distinguishes a profile's transcripts from ~/.claude's except the directory
+# name, so the directory name is what is matched.
+#
+# This is not a filter for real prompts: an eval harness driving the SDK writes
+# `user` rows under these same roots, and it is the `entrypoint` check in
+# prompt-count.py that keeps those out. Widening the roots only decides which
+# transcripts are looked at, never which rows count.
+PROJECT_ROOTS = sorted(
+    p
+    for p in (
+        os.path.join(os.path.expanduser("~"), name, "projects")
+        for name in os.listdir(os.path.expanduser("~"))
+        if name == ".claude" or name.startswith(".claude-")
+    )
+    if os.path.isdir(p)
+)
 
 PROFILE_PATH = os.path.expanduser("~/.config/worktime/profile.json")
 

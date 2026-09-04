@@ -744,6 +744,26 @@ class ActivityFingerprint(unittest.TestCase):
         self.assertIs(wp.PROMPT_ROOTS, wp.wc.PROJECT_ROOTS)
         self.assertIs(pc.PROJECT_ROOTS, wp.wc.PROJECT_ROOTS)
 
+    def test_every_claude_profile_on_this_machine_is_a_root(self):
+        # The roots were a hand-written list of the two profiles that existed
+        # when it was written, so when a third (~/.claude-bench) appeared, a
+        # full interactive afternoon under it read as absence -- the tracker
+        # had no way to notice a profile it had never been told about.
+        # Discovery is what makes that unrepeatable: the assertion is that
+        # nothing on disk that looks like a profile is left out.
+        home = os.path.expanduser("~")
+        on_disk = {
+            os.path.join(home, name, "projects")
+            for name in os.listdir(home)
+            if name == ".claude" or name.startswith(".claude-")
+        }
+        on_disk = {p for p in on_disk if os.path.isdir(p)}
+        self.assertEqual(set(wp.wc.PROJECT_ROOTS), on_disk)
+        # And the two known ones are still in it, so a discovery that quietly
+        # found nothing cannot pass this test by matching an empty set.
+        self.assertIn(os.path.join(home, ".claude", "projects"), on_disk)
+        self.assertIn(os.path.join(home, ".claude-personal", "projects"), on_disk)
+
 
 class GithubLiveHistory(unittest.TestCase):
     """The live read of this Mac's own Chrome history.
