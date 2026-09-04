@@ -283,6 +283,9 @@ let CHROME_BUNDLE = "com.google.Chrome"
 // timer -- and with it the menu, the countdown and the dot -- indefinitely.
 let CHROME_TAB_TIMEOUT_SEC = 2.0
 
+// Whether the Automation refusal has already been reported this launch.
+var chromeTabDenied = false
+
 func chromeActiveTab() -> (title: String, url: String)? {
     let p = Process()
     p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
@@ -294,7 +297,12 @@ func chromeActiveTab() -> (title: String, url: String)? {
         + "(URL of active tab of front window)"]
     let out = Pipe()
     p.standardOutput = out
-    p.standardError = FileHandle.nullDevice
+    // Both streams down one pipe. Two pipes would need two readers to avoid
+    // deadlocking on a full buffer, and there is nothing to tell apart:
+    // osascript writes nothing to stderr when it succeeds, so anything here
+    // on a non-zero exit is the error text -- which is the only evidence that
+    // separates a denied permission from a browser with no windows.
+    p.standardError = out
     do { try p.run() } catch { return nil }
 
     let killer = DispatchWorkItem { if p.isRunning { p.terminate() } }
@@ -307,12 +315,29 @@ func chromeActiveTab() -> (title: String, url: String)? {
     p.waitUntilExit()
     killer.cancel()
 
+    guard let text = String(data: data, encoding: .utf8) else { return nil }
     // A non-zero exit is the ordinary answer to "what is the front window?"
-    // when Chrome has no windows open, and to the permission being declined.
-    // Both mean the same thing here -- no tab to name -- so neither is worth
-    // distinguishing.
-    guard p.terminationStatus == 0,
-          let text = String(data: data, encoding: .utf8) else { return nil }
+    // when Chrome has no windows open. It is also what a refused Apple Event
+    // looks like, and treating the two alike is how the browser went three
+    // days earning nothing without anybody noticing: every Chrome row in the
+    // focus log carried no tab and no url, which reads exactly like a machine
+    // whose owner never opened a browser.
+    //
+    // So the refusal says so, once per launch. Once, because it cannot fix
+    // itself from here -- the grant lives in System Settings and the poll
+    // would otherwise repeat the same line every few seconds until somebody
+    // went there.
+    if p.terminationStatus != 0 {
+        if !chromeTabDenied, text.contains("-1743") || text.contains("Not authorized") {
+            chromeTabDenied = true
+            FileHandle.standardError.write(Data(
+                ("worktime-bar: not allowed to read the front Chrome tab, so no "
+                 + "browser page can count. Grant it in System Settings > "
+                 + "Privacy & Security > Automation > Worktime > Google Chrome.\n")
+                .utf8))
+        }
+        return nil
+    }
     let parts = text.trimmingCharacters(in: .whitespacesAndNewlines)
         .components(separatedBy: "\t")
     guard parts.count == 2, !parts[1].isEmpty else { return nil }
