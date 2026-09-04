@@ -77,7 +77,7 @@ class EndSessionCase(unittest.TestCase):
     """
 
     NAMES = ("STATE", "MARKS", "MEETING_CUT", "SESSION_END",
-             "now_local", "events_for", "write_vault_snapshot")
+             "now_local", "events_for", "write_vault_snapshot", "mark_stamps")
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
@@ -92,21 +92,32 @@ class EndSessionCase(unittest.TestCase):
         wp.events_for = lambda day: [at(9, 0), at(15, 12, 55)]
         self.snapshots = []
         wp.write_vault_snapshot = lambda day, events: self.snapshots.append(day)
+        # What an open mark is resolved against. The real one reads prompts and
+        # focus out of the vault; these tests set it per case, because where a
+        # mark reaches is now the same question when it is closed as when it is
+        # read, and that is exactly what the last test here pins.
+        self.stamps = []
+        wp.mark_stamps = lambda day: self.stamps
 
     def tearDown(self):
         for name, value in self.saved.items():
             setattr(wp, name, value)
 
-    def open_mark(self, start_min):
+    def open_mark(self, start_min, made=None):
+        # Made when it starts unless told otherwise -- the ordinary case, a
+        # click claiming time from this minute forward. `created` is real
+        # because MARK_MAX_OPEN_MIN is measured from it.
+        made = at((made or start_min) // 60, (made or start_min) % 60)
         with open(wp.MARKS, "a") as fh:
             fh.write(json.dumps({"day": DAY, "start": start_min, "end": None,
-                                 "note": "pairing", "created": "x"}) + "\n")
+                                 "note": "pairing",
+                                 "created": made.isoformat()}) + "\n")
 
     def marks(self):
         return [json.loads(l) for l in open(wp.MARKS) if l.strip()]
 
     def test_end_now_closes_the_open_mark_at_this_minute(self):
-        self.open_mark(15 * 60)
+        self.open_mark(16 * 60 + 20)
         out = wp.end_session()
         self.assertEqual(out["at"], "16:40")
         self.assertFalse(out["at_last_entry"])
@@ -119,6 +130,25 @@ class EndSessionCase(unittest.TestCase):
         self.assertEqual(out["at"], "15:13")
         self.assertTrue(out["at_last_entry"])
         self.assertEqual(self.marks()[0]["end"], 15 * 60 + 13)
+
+    def test_closing_never_reaches_past_where_the_mark_already_did(self):
+        # The 2026-09-04 bug. A link left open at 10:08 resolved to the first
+        # event after it and was read as four minutes all morning; End Session
+        # at 14:28 then stamped 14:28 onto it, and a stretch holding two hours
+        # of breaks came back as one unbroken 4h27m period. Closing a mark is
+        # stamping on the end it HAD -- never granting it a longer one.
+        self.open_mark(15 * 60)
+        self.stamps = [15 * 60 + 4]
+        wp.end_session()
+        self.assertEqual(self.marks()[0]["end"], 15 * 60 + 4)
+
+    def test_closing_a_forgotten_mark_stops_at_the_cap(self):
+        # Nothing happened after it at all, so the cap is the only thing
+        # holding it in. Without this the same click credits the whole absence.
+        self.open_mark(15 * 60)
+        wp.end_session()
+        self.assertEqual(self.marks()[0]["end"],
+                         15 * 60 + wp.MARK_MAX_OPEN_MIN)
 
     def test_writes_a_meeting_cut_even_with_nothing_marked(self):
         # The case the menu item exists for: no mark running, the dot green off

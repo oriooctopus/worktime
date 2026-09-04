@@ -777,6 +777,56 @@ MARKS = os.path.join(STATE, "marks.jsonl")
 LINK_NOTE = "linked to the last session"
 
 
+def mark_stamps(day: str) -> list[int]:
+    """The real events a mark is resolved against, as minutes-of-day.
+
+    Consults prompts and focus directly rather than the snapshot: events_for()
+    reads marks back through the snapshot, and going that way round would be a
+    cycle.
+    """
+    stamps = [t.hour * 60 + t.minute for t in prompts_for(day)]
+    stamps += [t.hour * 60 + t.minute for t in focus_for(day)]
+    return sorted(stamps)
+
+
+def open_mark_end(r: dict, stamps: list[int], now_m: int, live: str) -> int:
+    """Where a still-open mark reaches. The one answer, for the one question.
+
+    Shared with close_open_marks, which has to write the very minute this
+    returns: a mark that is only ever READ through here, then CLOSED at some
+    later minute by a different rule, is a mark whose meaning changes when it
+    is closed -- and that is not a hypothetical. A link left open at 10:08
+    resolved here to 10:07 all morning, then End Session at 14:28 stamped
+    14:28 onto it and four hours of breaks became one unbroken period.
+    """
+    start = r["start"]
+    # The first real activity strictly after the mark closes it.
+    after = [s for s in stamps if s > start]
+    end = after[0] if after else (now_m if r.get("day") == live else start)
+    # ...but never longer than MARK_MAX_OPEN_MIN. Without a ceiling an open
+    # mark credits an entire absence: one clicked at 14:00 and forgotten ran
+    # until 15:30, silently adding 90 minutes, because nothing typed in between
+    # could close it. That failure hides itself -- the longer you are away, the
+    # more work it invents -- which is precisely what this tracker exists to
+    # catch. Expiring is the safe direction: re-clicking costs a second, and
+    # the minutes after the cap are still recoverable from prompts and Slack.
+    #
+    # Measured from when the mark was MADE, not from where it starts. The two
+    # are the same minute for a mark claiming time from the click forward, so
+    # this changes nothing for the ordinary case -- but a mark can start in the
+    # past, either from `mark HH:MM` or from a link, and there the distinction
+    # decides whether it works at all. Capping a backdated mark from its start
+    # spends the allowance on minutes that had already elapsed when it was
+    # written: a 35-minute gap linked at 12:15 would reach only 12:10, falling
+    # five minutes short of the moment it was asked to reach, and one backdated
+    # an hour would expire before it was even made. The forgotten-mark this
+    # ceiling defends against is forgotten from the click onwards, so that is
+    # where the clock starts.
+    made = datetime.fromisoformat(r["created"])
+    return min(end, max(start, made.hour * 60 + made.minute)
+               + MARK_MAX_OPEN_MIN)
+
+
 def marks_for(day: str, stamps: list[int] | None = None) -> list[dict]:
     """Manually declared work, resolved into concrete spans in minutes.
 
@@ -802,12 +852,8 @@ def marks_for(day: str, stamps: list[int] | None = None) -> list[dict]:
         return []
     live = now_local().strftime("%Y-%m-%d")
     now_m = now_local().hour * 60 + now_local().minute
-    # Resolution needs the real events, and events_for() consults marks only
-    # through the snapshot, never here -- so there is no cycle.
     if stamps is None:
-        stamps = sorted(t.hour * 60 + t.minute for t in prompts_for(day))
-        stamps += [t.hour * 60 + t.minute for t in focus_for(day)]
-        stamps.sort()
+        stamps = mark_stamps(day)
 
     out = []
     for line in open(MARKS):
@@ -820,33 +866,7 @@ def marks_for(day: str, stamps: list[int] | None = None) -> list[dict]:
         if r.get("end") is not None:
             end = r["end"]
         else:
-            # The first real activity strictly after the mark closes it.
-            after = [s for s in stamps if s > start]
-            end = after[0] if after else (now_m if day == live else start)
-            # ...but never longer than MARK_MAX_OPEN_MIN. Without a ceiling an
-            # open mark credits an entire absence: one clicked at 14:00 and
-            # forgotten ran until 15:30, silently adding 90 minutes, because
-            # nothing typed in between could close it. That failure hides
-            # itself -- the longer you are away, the more work it invents --
-            # which is precisely what this tracker exists to catch. Expiring is
-            # the safe direction: re-clicking costs a second, and the minutes
-            # after the cap are still recoverable from prompts and Slack.
-            #
-            # Measured from when the mark was MADE, not from where it starts.
-            # The two are the same minute for a mark claiming time from the
-            # click forward, so this changes nothing for the ordinary case --
-            # but a mark can start in the past, either from `mark HH:MM` or
-            # from a link, and there the distinction decides whether it works
-            # at all. Capping a backdated mark from its start spends the
-            # allowance on minutes that had already elapsed when it was
-            # written: a 35-minute gap linked at 12:15 would reach only 12:10,
-            # falling five minutes short of the moment it was asked to reach,
-            # and one backdated an hour would expire before it was even made.
-            # The forgotten-mark this ceiling defends against is forgotten from
-            # the click onwards, so that is where the clock starts.
-            made = datetime.fromisoformat(r["created"])
-            end = min(end, max(start, made.hour * 60 + made.minute)
-                      + MARK_MAX_OPEN_MIN)
+            end = open_mark_end(r, stamps, now_m, live)
         is_open = r.get("end") is None
         # An open mark counts from the moment it is made, including the minute
         # it was made in. Requiring end > start hid every fresh mark until the
@@ -913,10 +933,19 @@ def close_open_marks(when: int | None = None) -> list[dict]:
     day, now_m = now.strftime("%Y-%m-%d"), now.hour * 60 + now.minute
     end_m = now_m if when is None else when
     rows = [json.loads(l) for l in open(MARKS) if l.strip()]
+    stamps = mark_stamps(day)
     closed = []
     for r in rows:
         if r.get("day") == day and r.get("end") is None:
-            r["end"] = max(end_m, r["start"])
+            # Never past where the mark already reached. Closing is stamping on
+            # the end a mark HAD, not granting it a new one: while open it ran
+            # to the first event after it and no further than the cap, and every
+            # reading of the day was made on those terms. Writing the closing
+            # minute flat would hand back the minutes both rules withheld --
+            # which on 2026-09-04 turned a 4-minute link into 4h25m, swallowing
+            # two hours of breaks, at the click of End Session.
+            r["end"] = max(min(end_m, open_mark_end(r, stamps, now_m, day)),
+                           r["start"])
             r["closed"] = now.isoformat()
             closed.append(r)
     if not closed:
