@@ -250,14 +250,30 @@ func notify(_ body: String) {
 // the previous stand-in and they are a poor one -- reading half an hour of
 // #ruby-dev and answering nothing produces no evidence at all.
 //
-// Sampled on the poll tick rather than driven by
-// NSWorkspace.didActivateApplicationNotification. Sampling makes the machine
-// going away -- sleep, lock, this app crashing -- indistinguishable from
-// samples simply stopping, which is exactly how it should read; the
-// notification path would leave the last activation standing forever and
-// credit the whole absence to whatever happened to be frontmost when the lid
-// closed. It also declines to notice a two-second glance at Slack, which is
-// the right call for time accounting.
+// Driven by NSWorkspace.didActivateApplicationNotification, with the tick
+// still running underneath it. The notification is what an app switch
+// actually is, so it fires on the switch instead of up to POLL_SEC later, and
+// it fires however the switch was made -- rcmd, Cmd-Tab, the Dock, a click on
+// a window. There is nothing to listen to in rcmd itself: it activates apps
+// through the ordinary API, so the ordinary notification already covers it,
+// and hooking the app would only see the switches that one launcher made.
+//
+// The tick stays because two of the three things sampled here are not
+// switches. Chrome's active tab changes with no activation at all -- a new
+// page in the same window is a switch by every measure the probe cares about
+// and by none that AppKit reports -- and the live idle reading in
+// PRESENCE_PATH is continuous by definition.
+//
+// Sampling used to be the whole mechanism, on the argument that the machine
+// going away -- sleep, lock, this app crashing -- should be indistinguishable
+// from samples stopping, where a notification would leave the last activation
+// standing and credit the absence to whatever was frontmost when the lid
+// closed. That argument died with the span model: the probe credits the
+// ACTIVATION and nothing else, so a last activation with no successor buys no
+// time and there is no absence to misattribute. What is left is the accounting
+// cost -- a two-second glance at Slack was invisible between ticks and is now
+// a row. It is a row that says a person switched apps, which is presence; the
+// idle gate still discards it if nobody was at the machine.
 //
 // Neither API needs a permission grant. Accessibility is required only for
 // window TITLES -- which Slack channel, which document -- and this
@@ -392,8 +408,18 @@ final class FocusLog {
                                                        eventType: anyInput)
     }
 
-    func sample(now: Date = Date()) {
-        let app = NSWorkspace.shared.frontmostApplication
+    // Switches arrive as NSWorkspace activations; the tick supplies the rest.
+    // Both land in sample(), so a switch is written the moment it happens
+    // rather than whenever the next tick catches up to it.
+    //
+    // The default argument is evaluated per call, so the tick's plain
+    // sample() still reads whatever is in front now. The notification passes
+    // the app it names instead, which is the authoritative answer to "what
+    // just came forward" -- frontmostApplication is a second reading of the
+    // same instant and there is no reason to prefer it.
+    func sample(now: Date = Date(),
+                app: NSRunningApplication? = NSWorkspace.shared.frontmostApplication)
+    {
         let bundle = app?.bundleIdentifier ?? ""
         let day = Self.dayfmt.string(from: now)
         var row: [String: Any] = [
@@ -1148,6 +1174,26 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         build()
         refresh()
         focusLog.sample()
+        // The workspace centre, not the default one: these are posted by
+        // NSWorkspace and nothing arrives on NotificationCenter.default.
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil, queue: .main
+        ) { [weak self] note in
+            // The key is part of the notification's contract. If it is ever
+            // missing, say so rather than logging a row with no app in it --
+            // an empty bundle is a switch to nothing, which the probe would
+            // count as a switch all the same.
+            guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey]
+                as? NSRunningApplication
+            else {
+                FileHandle.standardError.write(
+                    "activation notification without an app: \(note.userInfo ?? [:])\n"
+                        .data(using: .utf8)!)
+                return
+            }
+            self?.focusLog.sample(app: app)
+        }
         registerHotKey()
         timer = Timer.scheduledTimer(withTimeInterval: POLL_SEC, repeats: true) { _ in
             // Sampled here and not inside refresh(): menuNeedsUpdate also calls
