@@ -394,6 +394,37 @@ Either closes an open mark and cuts a meeting that would otherwise run past
 that minute, in one step. A cut written when no meeting is running is inert:
 `effective_meeting_end` only applies a cut to the meeting it landed inside.
 
+**Link with Last Session** is the opposite statement: not that a stretch is
+over, but that it never stopped. A step away the tracker saw nothing in — a
+corridor conversation, a whiteboard, a call taken on the phone — comes back as
+two sessions with a hole between them, and nothing in the menu could say the
+hole was work. `mark` starts at the current minute, so it could claim from the
+click forward but never the stretch already behind it, which is the only part
+that needs claiming.
+
+So the mark this writes starts in the past, at the minute the last session
+ended, and is left open — the stretch it rejoined is still going, which is why
+the row was clicked. It closes the way any mark does: the next prompt resolves
+it, ⌘⌥S stops it, End Session ends it.
+
+Which period counts as "the last session" depends on whether one is live.
+Prompting right now means the newest period *is* the current one, so the claim
+reaches past it to the period before and the two merge; with nothing live the
+newest period is itself the last one and the claim carries it to now. That
+decision is `link_anchor`, and the row's title names the minute it returns
+(`Link with Last Session (from 11:40)`) — the same value `status` publishes as
+`link_from`, so the menu cannot advertise one minute and bank another. It greys
+out when there is nothing to link to, which is the ordinary state of the first
+session of the morning.
+
+The 30-minute ceiling on an open mark is measured from the minute the mark was
+**made**, not the minute it starts. The two are the same for a mark claiming
+time from the click forward, so this is invisible in the ordinary case — but a
+backdated mark (a link, or `mark HH:MM`) measured from its start spends the
+allowance on minutes that had already elapsed before it existed: a 35-minute
+gap linked at 12:15 would reach only 12:10, and one backdated an hour would
+expire before it was written.
+
 ## Building the menu bar app
 
 `bin/worktime-bar/build.sh` compiles the sources into the bundle launchd runs
