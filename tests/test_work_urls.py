@@ -75,6 +75,32 @@ def test_keywords_are_configurable():
     assert not is_work("https://wiki.acme-corp.com/onboarding", keywords=["rubrik"])
 
 
+# --- the hosted-tool rule ---
+
+def test_workday_is_work_wherever_the_tenant_sits_in_the_path():
+    assert is_work("https://wd5.myworkday.com/rubrik/d/home.htmld")
+    assert is_work("https://wd5.myworkday.com/wday/authgwy/rubrik/login.htmld")
+    assert is_work("https://wd5-identity.myworkday.com/wday/authgwy/rubrik/upc/login")
+
+
+def test_workday_is_work_for_a_company_the_keywords_never_name():
+    # The point of the rule: the keyword list is the employer's name, and a
+    # hosted HR system is the one work address that need not carry it.
+    assert is_work("https://wd5.myworkday.com/acme-corp/d/home.htmld",
+                   keywords=["rubrik"])
+
+
+def test_an_empty_keyword_list_does_not_turn_workday_off():
+    # ALWAYS_WORK_HOSTS is not somebody's keyword to clear -- switching the
+    # employer-name rule off says nothing about whose Workday this is.
+    assert is_work("https://wd5.myworkday.com/acme-corp/d/home.htmld",
+                   keywords=[], account=None)
+
+
+def test_searching_for_workday_is_not_work():
+    assert not is_work("https://www.google.com/search?q=myworkday.com+login")
+
+
 # --- the Google account rule ---
 
 def test_work_account_drive_calendar_and_mail_are_work():
