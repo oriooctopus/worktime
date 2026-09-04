@@ -19,8 +19,9 @@ Usage:
   worktime-probe.py backfill [n]   -- rebuild the last n days of snapshots
   worktime-probe.py mode [focused|unfocused]  -- read or set the focus mode
   worktime-probe.py meeting_end    -- the meeting running now ended at this minute
-  worktime-probe.py end_session [last]  -- close the mark and cut the meeting,
-                                          at this minute or at the last entry
+  worktime-probe.py end_session [last]  -- end the day: break the period, close
+                                          the mark, cut the meeting, at this
+                                          minute or at the last entry
   worktime-probe.py note [text]    -- record work this probe cannot see
 """
 
@@ -162,6 +163,7 @@ MIN_PERIOD_SEC = 60
 MODES = ("focused", "unfocused")
 MODEFILE = os.path.join(STATE, "mode.jsonl")
 MEETING_CUT = os.path.join(STATE, "meeting-cut.json")
+SESSION_END = os.path.join(STATE, "session-end.json")
 UNFOCUSED_GAP_START = 1
 UNFOCUSED_RAMP_MIN = 10
 
@@ -927,6 +929,15 @@ def end_session(at_last: bool = False) -> dict:
     only applies a cut to the meeting it landed inside -- so this does not need
     to ask whether one is, and cannot get that question wrong.
 
+    And it records the minute itself, which for a long time it did not -- so on
+    the ordinary afternoon this exists for, with nothing marked and nothing
+    scheduled, both of the above were inert and the click changed nothing that
+    could be seen. The dot stayed green, because prompting was what was holding
+    it green, and the period ran straight on through the minute the day had
+    just been declared over at. The declaration is now a thing in its own right:
+    it breaks the period there and puts the dot out, and neither of those needs
+    a mark or a meeting to have been running.
+
     Rebuilds the snapshot the way `mark`, `mode` and `meeting_end` do: ending
     the day changes the total as well as the dot, and waiting for the next
     20-minute check would leave the dashboard still counting a day the person
@@ -938,6 +949,7 @@ def end_session(at_last: bool = False) -> dict:
     when = last_entry_end(events) if at_last else now.hour * 60 + now.minute
     closed = close_open_marks(when)
     cuts = append_meeting_cut(when)
+    ends = append_session_end(when)
     write_vault_snapshot(day, events)
     return {
         "at": hhmm_of(when),
@@ -945,6 +957,7 @@ def end_session(at_last: bool = False) -> dict:
         "closed": [{"start": hhmm_of(r["start"]), "end": hhmm_of(r["end"]),
                     "note": r["note"]} for r in closed],
         "cuts": cuts,
+        "ends": [hhmm_of(m) for m in ends],
     }
 
 
@@ -2588,6 +2601,70 @@ def append_meeting_cut(cut_min: int) -> list[int]:
     return cuts
 
 
+def read_session_ends(day: str | None = None) -> list[int]:
+    """Minutes-of-day the person declared the day over at, on `day`.
+
+    Kept apart from the meeting cut even though End Session writes both. A cut
+    says a scheduled thing stopped early; this says the person stopped. They
+    happen to coincide when the menu item is clicked, and conflating them would
+    mean every early-exit from a standup also drew a line through the afternoon.
+    """
+    try:
+        rec = json.load(open(SESSION_END))
+    except (OSError, ValueError):
+        return []
+    if rec.get("day") != (day or now_local().strftime("%Y-%m-%d")):
+        return []
+    return sorted(rec.get("ends", []))
+
+
+def append_session_end(end_min: int) -> list[int]:
+    """Record that the day was declared over at end_min. Returns today's list."""
+    ends = sorted(set(read_session_ends()) | {end_min})
+    tmp = SESSION_END + f".{os.getpid()}.tmp"
+    with open(tmp, "w") as fh:
+        json.dump({"day": now_local().strftime("%Y-%m-%d"), "ends": ends}, fh)
+    os.replace(tmp, SESSION_END)
+    return ends
+
+
+def split_at_session_ends(spans: list[list[int]], ends_sec: list[int],
+                          stamps: list[int]) -> list[list[int]]:
+    """Break work spans where the day was declared over, in seconds.
+
+    A period is built from the events inside it and knows nothing about the
+    person's intent, so a stretch that had End Session clicked in the middle of
+    it -- because the afternoon resumed twenty minutes later, or because the
+    click simply preceded the next prompt -- came out as one unbroken run
+    straight through the declaration. The menu then showed a session still
+    going at a minute the person had just said was the end of one, which is the
+    exact thing the item is for.
+
+    A split, not a truncation: the minutes after the declaration were still
+    worked if something was done in them, and dropping them would make the item
+    a way to lose time rather than a way to divide it.
+
+    The piece after a break is dropped when no event falls in it, because that
+    piece is the tail: build_bouts hands every bout TAIL_SEC past its last
+    event, so ending at 08:40 on an 08:39 prompt would otherwise publish a
+    phantom 08:40-08:44 period made of nothing but the buffer. Only pieces
+    after a break are eligible -- a mark or a meeting is a span with no events
+    in it by nature, and the first piece is that span itself.
+    """
+    out: list[list[int]] = []
+    for a, b in spans:
+        cuts = sorted(e for e in ends_sec if a < e < b)
+        if not cuts:
+            out.append([a, b])
+            continue
+        bounds = [a] + cuts + [b]
+        for i, (lo, hi) in enumerate(zip(bounds, bounds[1:])):
+            if i and not any(lo <= t < hi for t in stamps):
+                continue
+            out.append([lo, hi])
+    return out
+
+
 def effective_meeting_end(m: dict, cuts: list[int]) -> int:
     """When a meeting actually ended: its scheduled end, or a cut inside it.
 
@@ -2813,6 +2890,13 @@ def write_vault_snapshot(day: str, events: list[datetime],
     # A meeting can overlap or abut a prompt run, and a tail can now reach into
     # the next run, so the two lists still have to be unioned.
     merged = merge_spans(present, tl)
+
+    # Where the person said the day was over. After the merge, so a declaration
+    # cannot be undone by the very rejoining it was made to prevent, and before
+    # the subtractions, which only ever remove -- they cannot close the break
+    # back up.
+    merged = split_at_session_ends(merged, [m * 60 for m in read_session_ends(day)],
+                                   stamps)
 
     # Cut out the stretches spent on the other machine. This runs AFTER the
     # merge, not before: merge_spans rejoins anything closer together than the
@@ -3645,6 +3729,8 @@ def status() -> dict:
 
     open_mark = next((m for m in marks_for(day, stamps)
                       if m["open"] and m["start"] <= now_m <= m["end"]), None)
+    ends = read_session_ends(day)
+    ended_at = max(ends) if ends else None
     in_meeting = covered_by_meeting(now, [
         m for m in (calendar_events(day) or [])
         if m.get("counts", True)])
@@ -3652,6 +3738,17 @@ def status() -> dict:
         state, why = "marked", open_mark["note"] or "marked as working"
     elif in_meeting:
         state, why = "working", f"in {in_meeting.get('title') or 'meeting'}"
+    elif ended_at is not None and (last is None
+                                   or last.hour * 60 + last.minute <= ended_at):
+        # Below the mark and the meeting, above the cutoff. A declaration ends
+        # the run it was made in, but it is not a lock on the rest of the day:
+        # starting a new mark, or a meeting beginning, speaks for the minute it
+        # covers, and prompting again is activity after the end and passes on
+        # through to the cutoff below. What it does override is the run it
+        # closed -- without this the dot stayed green for the whole of the
+        # cutoff after the click, which is what made End Session look like a
+        # button that did nothing.
+        state, why = "idle", f"session ended {hhmm_of(ended_at)}"
     elif quiet is not None and quiet * 60 <= cutoff_sec:
         state, why = "working", f"{quiet:.0f}m since last activity"
     else:

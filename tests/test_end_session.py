@@ -76,7 +76,7 @@ class EndSessionCase(unittest.TestCase):
     the reader, and nothing in the menu would show it if they did.
     """
 
-    NAMES = ("STATE", "MARKS", "MEETING_CUT",
+    NAMES = ("STATE", "MARKS", "MEETING_CUT", "SESSION_END",
              "now_local", "events_for", "write_vault_snapshot")
 
     def setUp(self):
@@ -85,6 +85,7 @@ class EndSessionCase(unittest.TestCase):
         wp.STATE = self.tmp
         wp.MARKS = os.path.join(self.tmp, "marks.jsonl")
         wp.MEETING_CUT = os.path.join(self.tmp, "meeting-cut.json")
+        wp.SESSION_END = os.path.join(self.tmp, "session-end.json")
         wp.now_local = lambda: at(16, 40)
         # The day's events and the snapshot write are not what these tests are
         # about, and the real ones read the vault and the transcripts.
@@ -138,12 +139,78 @@ class EndSessionCase(unittest.TestCase):
         self.assertEqual(wp.effective_meeting_end(standup, cuts), 10 * 60 + 30)
         self.assertEqual(wp.effective_meeting_end(running, cuts), 16 * 60 + 40)
 
+    def test_records_the_declaration_itself(self):
+        # The thing that was missing: with nothing marked and nothing
+        # scheduled, closing marks and cutting meetings are both inert, and
+        # the click left no trace anything downstream could read. The minute
+        # the day was declared over is now a record in its own right.
+        out = wp.end_session()
+        self.assertEqual(out["ends"], ["16:40"])
+        self.assertEqual(wp.read_session_ends(DAY), [16 * 60 + 40])
+
+    def test_the_declaration_is_kept_apart_from_the_meeting_cut(self):
+        # Both are written by the same click, and conflating them would mean
+        # every early exit from a standup also drew a line through the day.
+        wp.end_session()
+        self.assertNotEqual(wp.MEETING_CUT, wp.SESSION_END)
+        self.assertEqual(wp.read_session_ends("2026-03-05"), [])
+
     def test_rebuilds_the_snapshot(self):
         # Ending the day changes the total, not just the dot. Leaving it to the
         # next 20-minute check shows a dashboard still counting a day the
         # person just declared over.
         wp.end_session()
         self.assertEqual(self.snapshots, [DAY])
+
+
+class SplitAtSessionEndsCase(unittest.TestCase):
+    """Breaking the period where the day was declared over.
+
+    This is what the person actually sees. The click can close a mark and cut a
+    meeting perfectly and still look like it did nothing, because the menu is
+    showing a session that runs straight through the minute it was clicked.
+    """
+
+    def test_a_declaration_inside_a_run_breaks_it_in_two(self):
+        # 08:34-08:46 with the click at 08:40: two sessions, not one.
+        spans = [[8 * 3600 + 34 * 60, 8 * 3600 + 46 * 60]]
+        stamps = [8 * 3600 + 35 * 60, 8 * 3600 + 44 * 60]
+        self.assertEqual(
+            wp.split_at_session_ends(spans, [8 * 3600 + 40 * 60], stamps),
+            [[8 * 3600 + 34 * 60, 8 * 3600 + 40 * 60],
+             [8 * 3600 + 40 * 60, 8 * 3600 + 46 * 60]])
+
+    def test_the_minutes_after_the_break_are_still_worked(self):
+        # A split, not a truncation. Ending the day must divide time, never
+        # lose it: the afternoon that resumed is work, whatever was declared.
+        spans = [[9 * 3600, 11 * 3600]]
+        stamps = [9 * 3600 + 30 * 60, 10 * 3600 + 30 * 60]
+        out = wp.split_at_session_ends(spans, [10 * 3600], stamps)
+        self.assertEqual(sum(b - a for a, b in out), 2 * 3600)
+
+    def test_the_tail_left_behind_is_not_published_as_a_period(self):
+        # build_bouts hands every bout TAIL_SEC past its last event, so ending
+        # at 08:40 on an 08:39:50 prompt would otherwise leave a phantom
+        # 08:40-08:40:10 period made of nothing but the buffer.
+        last = 8 * 3600 + 39 * 60 + 50
+        spans = [[8 * 3600 + 30 * 60, last + wp.TAIL_SEC]]
+        self.assertEqual(
+            wp.split_at_session_ends(spans, [8 * 3600 + 40 * 60], [last]),
+            [[8 * 3600 + 30 * 60, 8 * 3600 + 40 * 60]])
+
+    def test_a_span_with_no_events_survives_when_nothing_split_it(self):
+        # A mark and a meeting are spans with no events in them by nature. The
+        # empty-piece rule is about the tail after a break, and must not reach
+        # the span it never broke.
+        spans = [[14 * 3600, 15 * 3600]]
+        self.assertEqual(wp.split_at_session_ends(spans, [9 * 3600], []), spans)
+
+    def test_a_declaration_outside_every_run_changes_nothing(self):
+        # Clicking it on the way out, with the last period already closed.
+        spans = [[9 * 3600, 10 * 3600]]
+        stamps = [9 * 3600 + 5 * 60]
+        self.assertEqual(
+            wp.split_at_session_ends(spans, [17 * 3600], stamps), spans)
 
 
 if __name__ == "__main__":
