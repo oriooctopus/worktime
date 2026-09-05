@@ -56,6 +56,21 @@ let HOTKEY_MODS = UInt32(cmdKey | optionKey)
 let ENTRY_HOTKEY_CODE = UInt32(kVK_ANSI_W)
 let ENTRY_HOTKEY_MODS = UInt32(optionKey)
 
+// ⌘E ends the session, from anywhere. The same declaration End Session's
+// "End After Last Entry" makes, and deliberately that one rather than "End
+// Now": a chord is pressed on the way out the door, so the minutes between
+// the last entry and the press are the leaving, not the work -- the identical
+// reasoning that makes ⌘⌥S stop a shift at the last event. "End Now" stays a
+// thing asked for by name, in the menu, where the minute it means is written
+// next to it.
+//
+// ⌘E without ⌥, unlike the shift toggle, because the chord was asked for in
+// that form. It is a common shortcut in other apps -- Finder's Eject, "Use
+// Selection for Find" in several editors -- and a Carbon hot key consumes the
+// event before the frontmost app sees it, so those lose it while this runs.
+let END_HOTKEY_CODE = UInt32(kVK_ANSI_E)
+let END_HOTKEY_MODS = UInt32(cmdKey)
+
 // How long ⌥W waits to find out whether a second press is coming, before
 // treating the first as a single press.
 //
@@ -72,6 +87,7 @@ let DOUBLE_PRESS_SEC = 0.33
 // has to tell them apart by id rather than by which registration it came from.
 let HOTKEY_ID_SHIFT = UInt32(1)
 let HOTKEY_ID_ENTRY = UInt32(2)
+let HOTKEY_ID_END = UInt32(3)
 
 // Absolute, not `/usr/bin/env python3`. launchd hands this process a PATH of
 // /usr/bin:/bin:/usr/sbin:/sbin, so `env` resolves to Apple's /usr/bin/python3
@@ -1268,6 +1284,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
     var lastActivityAt: Date?
     var hotKeyRef: EventHotKeyRef?
     var entryHotKeyRef: EventHotKeyRef?
+    var endHotKeyRef: EventHotKeyRef?
     // Which of the two activity views is showing, remembered across launches.
     // The choice is about how the reader wants to read the day rather than
     // about anything happening in it, so having it reset every time the app is
@@ -1346,6 +1363,10 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
             DispatchQueue.main.async {
                 switch id.id {
                 case HOTKEY_ID_ENTRY: bar.entryHotKey()
+                // Guarded like the shift toggle and for the same reason: the
+                // End After Last Entry row carries ⌘E as its key equivalent,
+                // so with the menu open both that row and this would fire.
+                case HOTKEY_ID_END:   if !bar.menuIsOpen { bar.endSession(atLast: true) }
                 default:              if !bar.menuIsOpen { bar.toggleShift() }
                 }
             }
@@ -1364,6 +1385,11 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
                                                          id: HOTKEY_ID_ENTRY),
                                            GetApplicationEventTarget(), 0, &entryHotKeyRef)
         FileHandle.standardError.write("hotkey opt+W register -> \(entryErr)\n".data(using: .utf8)!)
+        let endErr = RegisterEventHotKey(END_HOTKEY_CODE, END_HOTKEY_MODS,
+                                         EventHotKeyID(signature: OSType(0x574B_5453),
+                                                       id: HOTKEY_ID_END),
+                                         GetApplicationEventTarget(), 0, &endHotKeyRef)
+        FileHandle.standardError.write("hotkey cmd+E register -> \(endErr)\n".data(using: .utf8)!)
     }
 
     func applicationDidFinishLaunching(_: Notification) {
@@ -1751,10 +1777,16 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         // there was no menu item at all that meant "that was the day". This
         // is that item, and it says which minute it means rather than picking
         // for you.
+        // ⌘E sits on the second row and not the host, because the host opens a
+        // submenu rather than doing anything, and a chord on it would advertise
+        // the choice rather than the ending it actually performs. Which of the
+        // two the chord means is the same question the rows exist to answer, so
+        // it is answered where they are, in writing.
         let endSub = NSMenu()
-        for (title, atLast) in [("End Now", false), ("End After Last Entry", true)] {
+        for (title, atLast, key) in [("End Now", false, ""),
+                                     ("End After Last Entry", true, "e")] {
             let mi = NSMenuItem(title: title, action: #selector(endSession(_:)),
-                                keyEquivalent: "")
+                                keyEquivalent: key)
             mi.representedObject = atLast
             // Set here, not by the sweep at the bottom of build(): that walks
             // m.items, which is the top level only. A submenu item left with a
@@ -2106,6 +2138,13 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
                 "end session: row carried no minute choice\n".data(using: .utf8)!)
             return
         }
+        endSession(atLast: atLast)
+    }
+
+    // The declaration itself, reached from the two rows and from ⌘E. Split out
+    // so the chord does not have to invent an NSMenuItem to carry a Bool the
+    // row-clicked path reads back out of one.
+    func endSession(atLast: Bool) {
         probeQueue.async {
             _ = runProbe(atLast ? ["end_session", "last"] : ["end_session"])
             DispatchQueue.main.async { self.refresh() }

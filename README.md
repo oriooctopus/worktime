@@ -402,6 +402,14 @@ picking one:
 | **End Now** | this minute |
 | **End After Last Entry** | the last entry, plus `TAIL_SEC` — same rule as ⌘⌥S |
 
+**⌘E** is the second of those, from anywhere, and the row carries the chord.
+It is that one and not End Now for the reason ⌘⌥S stops at the last event: a
+chord is pressed on the way out the door, so the minutes between the last entry
+and the press are the leaving. End Now stays a thing asked for by name, in the
+menu, beside the minute it means. Being a Carbon hot key, ⌘E is consumed before
+the frontmost app sees it — Finder's Eject and "Use Selection for Find" lose it
+while the bar is running.
+
 Either closes an open mark and cuts a meeting that would otherwise run past
 that minute, in one step. A cut written when no meeting is running is inert:
 `effective_meeting_end` only applies a cut to the meeting it landed inside.
