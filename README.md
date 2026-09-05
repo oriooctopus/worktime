@@ -402,13 +402,35 @@ picking one:
 | **End Now** | this minute |
 | **End After Last Entry** | the last entry, plus `TAIL_SEC` — same rule as ⌘⌥S |
 
-**⌘E** is the second of those, from anywhere, and the row carries the chord.
-It is that one and not End Now for the reason ⌘⌥S stops at the last event: a
-chord is pressed on the way out the door, so the minutes between the last entry
-and the press are the leaving. End Now stays a thing asked for by name, in the
-menu, beside the minute it means. Being a Carbon hot key, ⌘E is consumed before
-the frontmost app sees it — Finder's Eject and "Use Selection for Find" lose it
-while the bar is running.
+**⌘E** makes either of them from anywhere: one press ends at this minute, two
+within `END_DOUBLE_PRESS_SEC` end at the last entry. One press is End Now
+because that is the common case — the ending you mean most of the time is the
+minute you are in — and because it is the recoverable order. A single press
+landing End Now claims a few minutes too many, which shows in the period list
+and can be walked back; a single press that silently ended the day half an hour
+ago deletes work nothing in the interface would show.
+
+So the single press cannot act until the double press has been ruled out, the
+same shape as ⌥W. Here the reason is sharper: acting at once and then again on
+the second press would declare the day over twice, at two minutes, and the
+second declaration cannot undo the first — `split_at_session_ends` cuts at
+every minute in the file, so the stray End Now would go on breaking the period
+at a minute nobody chose. The wait is 0.5s rather than ⌥W's 0.33 because that
+key files a minute and this one ends the day.
+
+Either ending posts a banner naming the minute *and* the rule
+(`Session ended at 13:05 — the last entry.`). The dot going out looks the same
+whichever minute it ended at, so the minute is the only thing that distinguishes
+them — and a press meant for now that reads as a double press is invisible
+without it. The minute is read back out of the probe rather than computed for
+the banner, since `last_entry_end` is the only thing that knows what "the last
+entry" resolved to.
+
+The menu carries the chord on **End Now**, because that is what one press does;
+the other row names the double press in its title, as a menu cannot express one
+— the same reason "Track time…" carries no key equivalent for ⌥W twice. Being a
+Carbon hot key, ⌘E is consumed before the frontmost app sees it — Finder's Eject
+and "Use Selection for Find" lose it while the bar is running.
 
 Either closes an open mark and cuts a meeting that would otherwise run past
 that minute, in one step. A cut written when no meeting is running is inert:

@@ -56,13 +56,18 @@ let HOTKEY_MODS = UInt32(cmdKey | optionKey)
 let ENTRY_HOTKEY_CODE = UInt32(kVK_ANSI_W)
 let ENTRY_HOTKEY_MODS = UInt32(optionKey)
 
-// ⌘E ends the session, from anywhere. The same declaration End Session's
-// "End After Last Entry" makes, and deliberately that one rather than "End
-// Now": a chord is pressed on the way out the door, so the minutes between
-// the last entry and the press are the leaving, not the work -- the identical
-// reasoning that makes ⌘⌥S stop a shift at the last event. "End Now" stays a
-// thing asked for by name, in the menu, where the minute it means is written
-// next to it.
+// ⌘E ends the session, from anywhere. One press ends it at this minute; two
+// end it at the last entry instead -- the same two minutes End Session's rows
+// name, on the same key, told apart the way ⌥W tells its two meanings apart.
+//
+// This way round, and not the other, because the common case is the one that
+// should cost one press: the ending you mean most of the time is the minute
+// you are in. Ending at the last entry is the correction -- you are leaving
+// and the last half hour was not work -- and a correction is worth a
+// deliberate second press. It is also the recoverable order. A single press
+// that lands End Now claims a few minutes too many, which is visible in the
+// period list and can be walked back; a single press that silently ended the
+// day half an hour ago deletes work nothing in the interface would show.
 //
 // ⌘E without ⌥, unlike the shift toggle, because the chord was asked for in
 // that form. It is a common shortcut in other apps -- Finder's Eject, "Use
@@ -70,6 +75,16 @@ let ENTRY_HOTKEY_MODS = UInt32(optionKey)
 // event before the frontmost app sees it, so those lose it while this runs.
 let END_HOTKEY_CODE = UInt32(kVK_ANSI_E)
 let END_HOTKEY_MODS = UInt32(cmdKey)
+
+// How long ⌘E waits to find out whether a second press is coming.
+//
+// Longer than ⌥W's 0.33: that key's single press only files a minute, while
+// this one declares the day over, and the cost of the two mistakes is not the
+// same. A double press read as two singles ends the day at the wrong minute
+// and posts two banners saying so; the price of the extra time is that every
+// single press is a beat slower to land, which is a delay before a banner and
+// not before anything that could be lost.
+let END_DOUBLE_PRESS_SEC = 0.5
 
 // How long ⌥W waits to find out whether a second press is coming, before
 // treating the first as a single press.
@@ -275,6 +290,19 @@ func notifyTracked(claimed: Int, asked: Int) {
     } else {
         notify("Tracked \(claimed)m as work.")
     }
+}
+
+// Confirmation for ⌘E, and for the two rows that do the same thing.
+//
+// It names the minute because that is the whole question the two endings
+// differ on, and a press that ended the day thirty minutes ago looks identical
+// from the outside to one that ended it now -- the dot goes out either way.
+// Naming which rule ran as well as the minute is what lets a mistaken double
+// press be recognised as one: "at 13:05 — the last entry" after a single press
+// meant for now is the only thing that would say so.
+func notifySessionEnded(at: String, atLast: Bool) {
+    notify(atLast ? "Session ended at \(at) — the last entry."
+                  : "Session ended at \(at).")
 }
 
 func notify(_ body: String) {
@@ -1321,6 +1349,9 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
     // instead. Cleared by the work item itself so a press that has already
     // fired cannot be cancelled retroactively by a much later one.
     var pendingEntry: DispatchWorkItem?
+    // The same thing for ⌘E: scheduled-but-not-yet-run End Now, whose
+    // existence is the "a press is pending" flag a second press cancels.
+    var pendingEnd: DispatchWorkItem?
     let idleWatcher = IdleWatcher()
     // One menu for the app's lifetime, mutated in place rather than replaced.
     // Assigning a freshly built NSMenu to item.menu does nothing to a menu that
@@ -1364,9 +1395,9 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
                 switch id.id {
                 case HOTKEY_ID_ENTRY: bar.entryHotKey()
                 // Guarded like the shift toggle and for the same reason: the
-                // End After Last Entry row carries ⌘E as its key equivalent,
-                // so with the menu open both that row and this would fire.
-                case HOTKEY_ID_END:   if !bar.menuIsOpen { bar.endSession(atLast: true) }
+                // End Now row carries ⌘E as its key equivalent, so with the
+                // menu open both that row and this would fire.
+                case HOTKEY_ID_END:   if !bar.menuIsOpen { bar.endHotKey() }
                 default:              if !bar.menuIsOpen { bar.toggleShift() }
                 }
             }
@@ -1777,14 +1808,16 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         // there was no menu item at all that meant "that was the day". This
         // is that item, and it says which minute it means rather than picking
         // for you.
-        // ⌘E sits on the second row and not the host, because the host opens a
+        // ⌘E goes on End Now and not on the host, because the host opens a
         // submenu rather than doing anything, and a chord on it would advertise
-        // the choice rather than the ending it actually performs. Which of the
-        // two the chord means is the same question the rows exist to answer, so
-        // it is answered where they are, in writing.
+        // the choice rather than an ending. It goes on this row specifically
+        // because this is what one press does; the other row is what two
+        // presses do, and a menu cannot express that -- the same reason "Track
+        // time…" below carries no key equivalent for ⌥W pressed twice. So the
+        // second row's title is where the double press is written down.
         let endSub = NSMenu()
-        for (title, atLast, key) in [("End Now", false, ""),
-                                     ("End After Last Entry", true, "e")] {
+        for (title, atLast, key) in [("End Now", false, "e"),
+                                     ("End After Last Entry (⌘E twice)", true, "")] {
             let mi = NSMenuItem(title: title, action: #selector(endSession(_:)),
                                 keyEquivalent: key)
             mi.representedObject = atLast
@@ -2141,12 +2174,64 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         endSession(atLast: atLast)
     }
 
+    // ⌘E, before it is known which of the two endings it means. One press ends
+    // the session at this minute; two end it at the last entry.
+    //
+    // Which means the single press cannot act until the double press has been
+    // ruled out, so it is scheduled rather than run -- the same shape, and for
+    // the same reason, as ⌥W. Here the reason is sharper: acting immediately
+    // and then also acting on the second press would declare the day over
+    // twice, at two different minutes, and the second declaration cannot undo
+    // the first. `split_at_session_ends` cuts at every minute in the file, so
+    // the stray End Now would go on breaking the period at a minute nobody
+    // chose, with nothing in the menu to say where it came from.
+    //
+    // Always on main: the Carbon handler hops here before calling this, and
+    // pendingEnd is read and written from nowhere else, so the cancel and the
+    // fire cannot race.
+    @objc func endHotKey() {
+        if let pending = pendingEnd {
+            pending.cancel()
+            pendingEnd = nil
+            endSession(atLast: true)
+            return
+        }
+        let work = DispatchWorkItem { [weak self] in
+            self?.pendingEnd = nil
+            self?.endSession(atLast: false)
+        }
+        pendingEnd = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + END_DOUBLE_PRESS_SEC, execute: work)
+    }
+
     // The declaration itself, reached from the two rows and from ⌘E. Split out
     // so the chord does not have to invent an NSMenuItem to carry a Bool the
     // row-clicked path reads back out of one.
     func endSession(atLast: Bool) {
         probeQueue.async {
-            _ = runProbe(atLast ? ["end_session", "last"] : ["end_session"])
+            // The minute comes back out of the probe rather than being
+            // computed again here. `at_last` resolves to a minute only the
+            // probe knows -- last_entry_end reads the day's events -- and a
+            // banner that named a locally-guessed time would eventually
+            // advertise one minute while the file recorded another.
+            guard let out = runProbe(atLast ? ["end_session", "last"] : ["end_session"]),
+                  let data = out.data(using: .utf8),
+                  let r = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let at = r["at"] as? String
+            else {
+                // Said out loud rather than passed over: ending the day is the
+                // one action whose whole visible result is the banner, so a
+                // silent failure here looks exactly like a hot key that never
+                // fired.
+                FileHandle.standardError.write(
+                    "end session: probe returned no minute\n".data(using: .utf8)!)
+                return
+            }
+            // Off the probe queue, same as the entry banner: the banner is an
+            // osascript of its own and every poll queues behind this one.
+            DispatchQueue.global(qos: .utility).async {
+                notifySessionEnded(at: at, atLast: atLast)
+            }
             DispatchQueue.main.async { self.refresh() }
         }
     }
