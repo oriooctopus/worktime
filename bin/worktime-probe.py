@@ -2834,12 +2834,36 @@ def read_session_ends(day: str | None = None) -> list[int]:
     return sorted(rec.get("ends", []))
 
 
+def read_session_end_ts(day: str | None, end_min: int) -> float | None:
+    """The exact epoch second End Session was clicked to produce end_min.
+
+    status() floors activity to the minute before comparing it against
+    end_min, which makes activity seconds after the click indistinguishable
+    from activity before it when both land in the same minute. This gives
+    status() the click's real instant to break that tie, without disturbing
+    end_min itself -- split_at_session_ends and the rest of the event model
+    still only ever see whole minutes.
+    """
+    try:
+        rec = json.load(open(SESSION_END))
+    except (OSError, ValueError):
+        return None
+    if rec.get("day") != (day or now_local().strftime("%Y-%m-%d")):
+        return None
+    return rec.get("ends_ts", {}).get(str(end_min))
+
+
 def append_session_end(end_min: int) -> list[int]:
     """Record that the day was declared over at end_min. Returns today's list."""
-    ends = sorted(set(read_session_ends()) | {end_min})
+    day = now_local().strftime("%Y-%m-%d")
+    prior_ends = read_session_ends(day)
+    prior_ts = {str(m): read_session_end_ts(day, m) for m in prior_ends}
+    ends = sorted(set(prior_ends) | {end_min})
+    ends_ts = {k: v for k, v in prior_ts.items() if v is not None}
+    ends_ts[str(end_min)] = now_local().timestamp()
     tmp = SESSION_END + f".{os.getpid()}.tmp"
     with open(tmp, "w") as fh:
-        json.dump({"day": now_local().strftime("%Y-%m-%d"), "ends": ends}, fh)
+        json.dump({"day": day, "ends": ends, "ends_ts": ends_ts}, fh)
     os.replace(tmp, SESSION_END)
     return ends
 
@@ -3948,6 +3972,7 @@ def status() -> dict:
                       if m["open"] and m["start"] <= now_m <= m["end"]), None)
     ends = read_session_ends(day)
     ended_at = max(ends) if ends else None
+    ended_ts = read_session_end_ts(day, ended_at) if ended_at is not None else None
     in_meeting = covered_by_meeting(now, [
         m for m in (calendar_events(day) or [])
         if m.get("counts", True)])
@@ -3955,8 +3980,9 @@ def status() -> dict:
         state, why = "marked", open_mark["note"] or "marked as working"
     elif in_meeting:
         state, why = "working", f"in {in_meeting.get('title') or 'meeting'}"
-    elif ended_at is not None and (last is None
-                                   or last.hour * 60 + last.minute <= ended_at):
+    elif ended_at is not None and (last is None or (
+            last.timestamp() <= ended_ts if ended_ts is not None
+            else last.hour * 60 + last.minute <= ended_at)):
         # Below the mark and the meeting, above the cutoff. A declaration ends
         # the run it was made in, but it is not a lock on the rest of the day:
         # starting a new mark, or a meeting beginning, speaks for the minute it
@@ -3965,6 +3991,12 @@ def status() -> dict:
         # closed -- without this the dot stayed green for the whole of the
         # cutoff after the click, which is what made End Session look like a
         # button that did nothing.
+        #
+        # The comparison needs the click's exact second, not just its minute:
+        # floored to the minute, ten seconds of Slack right after the click
+        # landed in the same minute as end_min and read as "before or at" it,
+        # so the dot stayed idle through activity that came after the
+        # declaration -- the false negative this branch exists to avoid.
         state, why = "idle", f"session ended {hhmm_of(ended_at)}"
     elif quiet is not None and quiet * 60 <= cutoff_sec:
         state, why = "working", f"{quiet:.0f}m since last activity"

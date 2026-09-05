@@ -192,6 +192,39 @@ class EndSessionCase(unittest.TestCase):
         wp.end_session()
         self.assertEqual(self.snapshots, [DAY])
 
+    def test_records_the_exact_second_alongside_the_minute(self):
+        # The 2026-09-05 bug: status() compared activity against end_min by
+        # flooring both to the minute, so ten seconds of Slack right after the
+        # click landed in the same minute as end_min and read as "before or
+        # at" it -- the dot stayed idle through activity that came after the
+        # declaration. read_session_end_ts gives status() the click's real
+        # second so same-minute activity can be told apart correctly.
+        wp.now_local = lambda: at(16, 40, 30)
+        wp.end_session()
+        self.assertEqual(
+            wp.read_session_end_ts(DAY, 16 * 60 + 40),
+            at(16, 40, 30).timestamp())
+
+    def test_a_second_declaration_keeps_both_timestamps(self):
+        wp.now_local = lambda: at(15, 0, 10)
+        wp.end_session()
+        wp.now_local = lambda: at(16, 40, 30)
+        wp.end_session()
+        self.assertEqual(wp.read_session_ends(DAY),
+                         [15 * 60, 16 * 60 + 40])
+        self.assertEqual(wp.read_session_end_ts(DAY, 15 * 60),
+                         at(15, 0, 10).timestamp())
+        self.assertEqual(wp.read_session_end_ts(DAY, 16 * 60 + 40),
+                         at(16, 40, 30).timestamp())
+
+    def test_no_timestamp_for_a_minute_that_was_never_declared(self):
+        wp.end_session()
+        self.assertIsNone(wp.read_session_end_ts(DAY, 9 * 60))
+
+    def test_no_timestamp_read_back_for_a_different_day(self):
+        wp.end_session()
+        self.assertIsNone(wp.read_session_end_ts("2026-03-05", 16 * 60 + 40))
+
 
 class SplitAtSessionEndsCase(unittest.TestCase):
     """Breaking the period where the day was declared over.
