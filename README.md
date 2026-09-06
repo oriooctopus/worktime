@@ -13,7 +13,8 @@ prompt-only probe both look identical to lunch.
 ```
 bin/    exporters plus the probe, menu bar app, and the two Claude Code hooks
         (prompt-count.py, worktime-approval.py) it depends on
-skills/ worktime-setup (guided config), indicator-dot (current status)
+skills/ worktime-setup (guided config), worktime-fit-survey (would it work
+        for you at all), indicator-dot (current status)
 tests/  pytest suites; run with `python3 -m pytest tests`
 deploy/ systemd units (Linux) and launchd plists (macOS)
 config/ example configs only -- real ones live in ~/.config
@@ -174,6 +175,29 @@ the title carries, which the probe matches too.
 In `work-domains.json`. Defaults: `gap_sec` 180 (browsing breaks run 4-7
 minutes; a 12-minute threshold borrowed from prompt bouts swallows them all),
 `max_dwell_sec` 600, `min_dwell_sec` 30, `min_block_sec` 180.
+
+## Before setting it up for a different person
+
+`skills/worktime-fit-survey` runs first, and answers a cheaper question than
+the setup skill does: would any of this survive on their machine at all.
+
+Only one signal here has no dependency — Claude Code prompts, which need
+nothing installed and work on any OS. Everything else is conditional. Seeing
+which app is in front, the menu bar dot, the shortcuts and call detection are
+macOS-only. Browsing reads Chrome's own history database, so Safari and
+Firefox produce nothing. The calendar path is Google's. Someone on Windows
+who uses Claude Code twice a week has, in practice, no tracker — and that is
+worth finding out in five minutes rather than after an afternoon of setup.
+
+The survey asks about fifteen questions with skip logic, never installs or
+changes anything, and writes one markdown file the person sends back. It is
+deliberately willing to conclude "this won't work for you".
+
+The second machine is the question people expect to fail on and mostly don't.
+There is no heartbeat and no network call between the two boxes: one writes a
+file, sync carries it, the other reads it. Without a second machine the same
+jobs run on the main one on a timer, and the only thing lost is that they
+don't run while it's asleep.
 
 ## Setting it up for a different person
 
