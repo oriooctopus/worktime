@@ -82,7 +82,7 @@ func testUnkilledSignalIsNotCalledAStall() {
 
 func testCrashedCarriesTheException() {
     let f = crashed()
-    has(f.tag, "exit 1", "the tag names the exit status")
+    has(f.tag, "KeyError", "the tag names the exception, not the exit status")
     // The exception, not the first line of the traceback: "Traceback (most
     // recent call last)" is the same sentence for every failure there is.
     has(f.summary, "KeyError", "the summary carries the exception, not the header")
@@ -102,6 +102,42 @@ func testCaretUnderlinesAreNotRows() {
         """, elapsed: 0.4)
     check(f.stderrTail == ["return day[\"periods\"]", "KeyError: 'periods'"],
           "the caret underline is dropped (got \(f.stderrTail))")
+}
+
+// The failure that was actually on the dot: the day's Slack cache did not
+// exist yet, the machine was offline, and DNS for slack.com failed. "exit 1"
+// was every word the menu bar had for it.
+func testTheExceptionIsNamedWithoutItsModule() {
+    let f = ProbeFailure(args: ["status"], path: PATH, status: 1, stderr: """
+        urllib.error.URLError: <urlopen error [Errno 8] nodename nor \
+        servname provided, or not known>
+        """, elapsed: 1.2)
+    check(f.tag == "probe URLError", "the tag names the class (got \(f.tag))")
+    has(f.summary, "URLError:", "the summary names the class")
+    check(!f.summary.contains("urllib.error"),
+          "the module path does not eat the message's room")
+    has(f.summary, "Errno 8", "enough of the message survives to be a clue")
+}
+
+func testAnExceptionWithNoMessageIsStillNamed() {
+    let f = ProbeFailure(args: ["status"], path: PATH, status: 1,
+                         stderr: "KeyboardInterrupt", elapsed: 1)
+    check(f.tag == "probe KeyboardInterrupt", "a bare class is a tag (got \(f.tag))")
+    has(f.summary, "KeyboardInterrupt", "a bare class is the summary")
+}
+
+// Not everything ending a stderr is an exception. A tag reading "probe make"
+// or "probe Error" would be worse than the exit code it replaced.
+func testProseIsNotMistakenForAnException() {
+    for line in ["make: *** [all] Error 1",
+                 "error: no such file or directory",
+                 "Traceback (most recent call last)",
+                 "  File \"x.py\", line 3, in status"] {
+        let f = ProbeFailure(args: ["status"], path: PATH, status: 1,
+                             stderr: line, elapsed: 1)
+        check(f.tag == "probe exit 1",
+              "\"\(line)\" falls back to the exit status (got \(f.tag))")
+    }
 }
 
 func testStderrTailIsTheLastThreeLines() {
@@ -180,6 +216,9 @@ enum ProbeFailureTests {
         testStalledSaysItWasKilled()
         testUnkilledSignalIsNotCalledAStall()
         testCrashedCarriesTheException()
+        testTheExceptionIsNamedWithoutItsModule()
+        testAnExceptionWithNoMessageIsStillNamed()
+        testProseIsNotMistakenForAnException()
         testCaretUnderlinesAreNotRows()
         testStderrTailIsTheLastThreeLines()
         testAnExitWithNothingToSaySaysSo()

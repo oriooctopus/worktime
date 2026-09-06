@@ -72,12 +72,42 @@ struct ProbeFailure {
         return Array(lines.suffix(3))
     }
 
+    /// The exception a Python traceback ends on, split into its class and its
+    /// message. The last line of a traceback is exactly "pkg.mod.ClassName:
+    /// message", or the class alone when the exception carries none.
+    ///
+    /// The class is what the dot should be naming. "exit 1" is the same two
+    /// words for a Slack lookup that could not resolve a hostname and for a
+    /// probe that indexed a missing key -- it says a poll failed, which the
+    /// colour already said. "URLError" says where to start.
+    var exception: (name: String, message: String)? {
+        guard let last = stderrTail.last else { return nil }
+        let parts = last.split(separator: ":", maxSplits: 1,
+                               omittingEmptySubsequences: false)
+        let head = String(parts[0])
+        // A dotted identifier and nothing else, ending in a class name. The
+        // uppercase requirement is what keeps ordinary prose out: "make: ***"
+        // and "error: no such file" both parse as an identifier and a message,
+        // and neither is an exception.
+        guard head.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" || $0 == "." }),
+              let name = head.split(separator: ".").last,
+              let first = name.first, first.isUppercase
+        else { return nil }
+        let message = parts.count > 1
+            ? String(parts[1]).trimmingCharacters(in: .whitespaces) : ""
+        return (String(name), message)
+    }
+
     /// Short enough to sit beside the dot in the menu bar. The red dot is
     /// noticed away from the menu, and a dot alone cannot say whether the
     /// tracker is stalled or crashing.
     var tag: String {
         if launchError != nil { return "probe missing" }
         if killed { return "probe stalled" }
+        // The status number only when there is nothing better: an exit code is
+        // a fact about the process, and what is wanted is the fact about the
+        // probe.
+        if let e = exception { return "probe \(e.name)" }
         return "probe exit \(status)"
     }
 
@@ -87,6 +117,13 @@ struct ProbeFailure {
         if let e = launchError { return "probe would not launch: \(clip(e, 60))" }
         if killed {
             return "probe killed after \(secs) — no answer"
+        }
+        // Named without its module path. "urllib.error.URLError" spends
+        // thirteen characters of a sixty-character line on where the class is
+        // defined, and the message is what gets clipped off the end for it.
+        if let e = exception {
+            let said = e.message.isEmpty ? e.name : "\(e.name): \(e.message)"
+            return "probe exit \(status): \(clip(said, 60))"
         }
         if let last = stderrTail.last {
             return "probe exit \(status): \(clip(last, 60))"

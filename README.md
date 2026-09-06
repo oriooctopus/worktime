@@ -567,7 +567,9 @@ apart in that log: 15 is a stall like this one, 1 is the probe genuinely
 failing and the traceback says where.
 
 The menu now makes that distinction without the log. A red dot carries a short
-tag beside it -- `probe stalled`, `probe exit 1`, `probe missing` -- and the
+tag beside it -- `probe stalled`, `probe missing`, or the exception the probe
+died on (`probe URLError`, `probe KeyError`), falling back to `probe exit 1`
+only when the last line of stderr is not one -- and the
 menu holds what the failing poll knew about itself: the probe that was run,
 how it ended, the last lines of its stderr, and how long the run of failures
 has been going. `Copy Probe Diagnostics` puts the whole thing on the clipboard,
