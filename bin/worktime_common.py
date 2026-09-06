@@ -267,6 +267,77 @@ def work_localhost_ports(profile=None):
     return {int(p) for p in configured}
 
 
+def focus_extra_apps(profile=None):
+    """Bundle ids this person counts as work, beyond the built-in allow list.
+
+    The built-in list is a claim about one machine, and two of its absences
+    are judgements rather than facts. Obsidian is left out because that vault
+    holds meeting notes and a grocery list in the same window, so being
+    frontmost cannot say which -- true of that vault, not of every vault. For
+    somebody whose notes app is only ever the job, the same exclusion deletes
+    their working day.
+
+    So the list stays as the default and this is how a person overrides it.
+    Empty by default: the built-in list is what everybody gets until they say
+    otherwise, and nothing here changes for a profile that omits the key.
+    """
+    profile = load_profile() if profile is None else profile
+    configured = profile.get("focus_extra_apps")
+    if configured is None:
+        return set()
+    if not isinstance(configured, list):
+        raise ProfileError("profile: 'focus_extra_apps' must be a list of "
+                           "bundle ids")
+    return {str(b) for b in configured}
+
+
+# How long somebody may go without touching anything before a page they are
+# sitting on stops counting as read. Deliberately far looser than the ordinary
+# two-minute gate: paragraphs take longer than that to read, and this setting
+# only exists for people whose work IS reading.
+DEFAULT_LONG_READ_IDLE_SEC = 300
+# How often a continuing stay emits another event. Must stay under the probe's
+# own five-minute silence cutoff or the events it produces will not chain, and
+# a long read would come back as a string of disconnected minutes.
+DEFAULT_LONG_READ_STRIDE_SEC = 240
+
+
+def long_read(profile=None):
+    """Settings for crediting a long stay on one page, or None when off.
+
+    OFF by default, and that default is not timidity: crediting a stay is the
+    exact mechanism that once billed forty-one minutes to a Slack window
+    nobody had touched. What makes it safe to offer at all is that the stay
+    has to keep being vouched for by input -- see focus_dwell_for() -- so it
+    is not the old span model returning, it is the span model with the thing
+    that was missing from it.
+
+    Whether to turn it on is a fact about a person, not about a machine. Fast
+    navigation leaves a trail of switches and needs none of this; reading one
+    article for forty minutes leaves a single switch, and without this the
+    other thirty-nine minutes are silence.
+    """
+    profile = load_profile() if profile is None else profile
+    configured = profile.get("long_read")
+    if configured is None:
+        return None
+    if not isinstance(configured, dict):
+        raise ProfileError("profile: 'long_read' must be an object")
+    if not configured.get("enabled"):
+        return None
+    cfg = {
+        "max_idle_sec": int(configured.get(
+            "max_idle_sec", DEFAULT_LONG_READ_IDLE_SEC)),
+        "stride_sec": int(configured.get(
+            "stride_sec", DEFAULT_LONG_READ_STRIDE_SEC)),
+    }
+    for key, value in cfg.items():
+        if value <= 0:
+            raise ProfileError(
+                "profile: long_read '{}' must be positive".format(key))
+    return cfg
+
+
 def google_account_index(url):
     """The /u/<n> (or ?authuser=<n>) account index in a Google URL, or None."""
     lowered = (url or "").lower()
