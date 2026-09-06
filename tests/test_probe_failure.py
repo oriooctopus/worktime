@@ -85,12 +85,29 @@ class TheMenuShowsIt(unittest.TestCase):
         self.assertIn("debug", key.group(0),
                       "the debug rows are not in the key, so they cannot refresh")
 
-    def test_the_dot_gets_a_label_only_when_broken(self):
-        # Red is the state noticed with the menu shut, and it is the only one
-        # that earns text in the menu bar; every other state is a bare dot.
-        self.assertIn('if s.state == "broken", let f = probeFail {', self.main,
-                      "the menu bar label is not gated on the broken state")
-        self.assertIn("f.tag", self.main, "the menu bar label does not say what broke")
+    def test_the_menu_bar_stays_a_bare_dot(self):
+        # Words beside the dot were tried and dropped: the bar is shared with a
+        # dozen icons, and what a failure needs said is more than a tag's worth.
+        # The detail lives in the menu, and the tooltip carries the rest.
+        self.assertNotIn("imageLeading", self.main,
+                         "the menu bar item is showing text beside the dot again")
+        self.assertIn("probeFail?.report", self.main,
+                      "the tooltip no longer carries the failure")
+
+    def test_the_menu_says_where_the_probe_was(self):
+        # The granularity the tag could never carry: which frame raised, and
+        # which of the probe's own frames led there.
+        self.assertIn("f.lines", self.main, "the menu no longer shows the detail")
+        probe_run = open(os.path.join(BAR, "ProbeRun.swift")).read()
+        self.assertIn("var blame:", probe_run,
+                      "the failure no longer works out where it happened")
+
+    def test_the_streak_is_named_in_clock_times(self):
+        # "22m ago" is a number to add to the time before it can be lined up
+        # against a sleep, a network drop or a rebuild.
+        self.assertIn("probeFailSince", self.main,
+                      "the menu cannot say when the run of failures began")
+        self.assertIn("func clock(", self.main, "there is no clock formatter")
 
     def test_the_diagnostics_are_reachable_from_the_menu(self):
         for sel in ("copyProbeDiagnostics", "openBarLog"):

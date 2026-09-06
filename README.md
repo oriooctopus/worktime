@@ -619,18 +619,37 @@ cost of needing one in the keychain.
 apart in that log: 15 is a stall like this one, 1 is the probe genuinely
 failing and the traceback says where.
 
-The menu now makes that distinction without the log. A red dot carries a short
-tag beside it -- `probe stalled`, `probe missing`, or the exception the probe
-died on (`probe URLError`, `probe KeyError`), falling back to `probe exit 1`
-only when the last line of stderr is not one -- and the
-menu holds what the failing poll knew about itself: the probe that was run,
-how it ended, the last lines of its stderr, and how long the run of failures
-has been going. `Copy Probe Diagnostics` puts the whole thing on the clipboard,
-since three rows is less than a traceback; `Open Bar Log` opens
+The menu now makes that distinction without the log. The bar itself stays a
+bare dot -- it is shared with a dozen other icons, and what a failure needs
+said is more than a word's worth -- but opening it gives the failing poll's own
+account of itself:
+
+```
+● URLError: <urlopen error [Errno 8] nodename nor servname provided…
+    /Users/oliver/.claude/bin/worktime-probe.py status
+    exit 1 after 0.3s
+    raised in request.py:1324 do_open
+    reached from worktime-probe.py:639 _slack_fetch
+    URLError: <urlopen error [Errno 8] nodename
+    nor servname provided, or not known>
+    3 polls failed since 00:01, last good 23:58
+  Copy Probe Diagnostics
+  Open Bar Log
+```
+
+Two frames rather than one, because they answer different questions: the raise
+says what went wrong, and the probe's own frame says which of the five things
+it gathers was being gathered at the time -- Slack, above, which is the
+difference between "the network" and "the network, and the rest of the day is
+still readable". A stall has no frames and says so instead: `killed at the 30s
+watchdog — stalled, no traceback`. Times are on the clock rather than in ages,
+so the start of a run of failures can be lined up against a sleep, a network
+drop or a rebuild. `Copy Probe Diagnostics` puts the whole failure on the
+clipboard, since three rows is less than a traceback; `Open Bar Log` opens
 `/tmp/worktime-bar.err`, which is where a run of failures is read rather than
 the current one. The afternoon that produced the section above was spent
 working out from `/tmp` which of the two failures was on the dot, which is
-exactly the question the dot can now answer itself.
+exactly the question the menu now answers on sight.
 
 ## Install
 

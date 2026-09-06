@@ -814,6 +814,13 @@ final class StatusRowView: NSView {
 // AppKit recolors a menu item's own title through the vibrancy pass regardless
 // of what is set on it, and a disabled item comes out dimmed far past the point
 // where a truncated traceback is legible.
+// Wider than the 300 every other row in this menu is built at, and only ever
+// on screen while the dot is red. A frame and a message do not fit in 300 --
+// they came out middle-truncated, which reads as the block being broken rather
+// than the message being long -- and twenty points of menu width is a cheap
+// price for the state where the menu is the only thing to read.
+let DEBUG_ROW_WIDTH: CGFloat = 330
+
 final class DebugRowView: NSView {
     init(width: CGFloat, text: String) {
         super.init(frame: NSRect(x: 0, y: 0, width: width, height: 16))
@@ -912,6 +919,17 @@ func activityAge(_ a: Activity, now: Date = Date()) -> String {
 // Measuring beats a constant because both sets grow: a new stream with a
 // longer name, or a day long enough to reach three digits of minutes, would
 // silently clip against a hardcoded width.
+// HH:mm in the machine's own locale, for the two moments the failure block
+// names. Deliberately not seconds: the poll runs every five of them, so a
+// second is a precision the number does not have.
+let clockFormatter: DateFormatter = {
+    let f = DateFormatter()
+    f.dateFormat = "HH:mm"
+    return f
+}()
+
+func clock(_ d: Date) -> String { clockFormatter.string(from: d) }
+
 func columnWidth(_ labels: [String]) -> CGFloat {
     ceil(labels.map {
         ($0 as NSString).size(withAttributes: [.font: ACTIVITY_FONT]).width
@@ -1369,6 +1387,9 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
     // menu is the only place it can be read without opening a file in /tmp.
     var probeFail: ProbeFailure?
     var probeFailures = 0
+    /// When the current run of failures began, so the menu can say the minute
+    /// rather than a count of polls.
+    var probeFailSince: Date?
     var lastGoodPollAt: Date?
     var hotKeyRef: EventHotKeyRef?
     var entryHotKeyRef: EventHotKeyRef?
@@ -1665,15 +1686,18 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
             debug = f.lines
             var run = probeFailures == 1 ? "1 poll failed"
                                          : "\(probeFailures) polls failed"
-            // Named as a wall-clock age rather than a count of polls: the count
-            // is already above, and how stale the last real reading is decides
-            // whether the day's minutes can be trusted at all.
+            // Clock times, not ages. "last good 22m ago" is a number to add to
+            // the time to find out when this started, and when it started is
+            // the thing to line up against what else happened -- the machine
+            // going to sleep, the network dropping, a rebuild.
+            if let since = probeFailSince { run += " since \(clock(since))" }
             if let good = lastGoodPollAt {
-                let mins = Int((Date().timeIntervalSince(good) / 60).rounded())
-                run += mins < 1 ? ", last good under a minute ago"
-                                : ", last good \(mins)m ago"
+                run += ", last good \(clock(good))"
             } else {
-                run += ", none good since launch"
+                // Short because the row is one line: "none good since launch"
+                // is six characters past what fits, and what it buys over
+                // "none good yet" is a word the row above already implies.
+                run += ", none good yet"
             }
             debug.append(run)
         }
@@ -1734,8 +1758,10 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         m.addItem(.separator())
 
         let st = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-        st.view = StatusRowView(width: 300, symbol: symbol,
-                                text: why, color: color)
+        // The wider row while the failure block is under it: the menu is
+        // already that wide there, and this line is the one the block explains.
+        st.view = StatusRowView(width: debug.isEmpty ? 300 : DEBUG_ROW_WIDTH,
+                                symbol: symbol, text: why, color: color)
         m.addItem(st)
 
         // Directly under the status row it elaborates, above the day: while
@@ -1744,7 +1770,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         // burying the only thing on screen that is actionable.
         for line in debug {
             let d = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-            d.view = DebugRowView(width: 300, text: line)
+            d.view = DebugRowView(width: DEBUG_ROW_WIDTH, text: line)
             m.addItem(d)
         }
         if !debug.isEmpty {
@@ -2062,6 +2088,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
                     s.why = fail.summary
                     self.probeFail = fail
                     self.probeFailures += 1
+                    if self.probeFailSince == nil { self.probeFailSince = Date() }
                     self.apply(s)
                     self.poll.finish()
                 }
@@ -2122,6 +2149,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
             DispatchQueue.main.async {
                 self.probeFail = nil
                 self.probeFailures = 0
+                self.probeFailSince = nil
                 self.lastGoodPollAt = Date()
                 self.apply(s)
                 self.poll.finish()
@@ -2139,20 +2167,15 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         case "broken":  item.button?.image = dotImage(BROKEN, hollow: false)
         default:        item.button?.image = dotImage(AWAY, hollow: true)
         }
-        // The dot alone, except when it is red. Red is the one state that is
-        // about this app rather than about the day, it is noticed from across
-        // the screen with the menu shut, and a red dot on its own cannot say
-        // whether the tracker is stalled or crashing -- two words beside it
-        // can. Every other state is self-explanatory and stays a dot.
-        if s.state == "broken", let f = probeFail {
-            item.button?.title = " " + f.tag
-            item.button?.imagePosition = .imageLeading
-            item.button?.toolTip = f.report
-        } else {
-            item.button?.title = ""
-            item.button?.imagePosition = .imageOnly
-            item.button?.toolTip = "\(s.state) — \(s.why) (as of \(s.at))"
-        }
+        // A dot and only a dot, in every state including red. Words beside it
+        // were tried and are not worth their room: the menu bar is shared with
+        // a dozen other icons, a red dot is already the thing the eye catches,
+        // and what a failure needs said about it is more than a tag's worth --
+        // which is what the menu holds. The tooltip carries the whole failure
+        // for a pointer that pauses on the way there.
+        item.button?.imagePosition = .imageOnly
+        item.button?.toolTip = s.state == "broken" ? probeFail?.report ?? s.why
+            : "\(s.state) — \(s.why) (as of \(s.at))"
         build()
     }
 
