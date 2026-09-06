@@ -129,6 +129,35 @@ green, and focus is app-level only. Window titles -- which channel, which
 document -- would need Accessibility permission, so the tracker stays at app
 granularity rather than asking for it.
 
+## Two settings for a different kind of day
+
+Both are off by default, both live in `profile.json`, and both exist because
+the defaults above are claims about one person rather than about work.
+
+**`long_read`.** Credit is the activation — the moment somebody reached for an
+app — and that is sound here only because this is a day of ~569 switches, tight
+enough for `GAP_AFTER` to chain them into periods. Somebody who opens one
+article and reads it for forty minutes produces a single switch, and the
+thirty-nine minutes after it are indistinguishable from an empty room. Enabled,
+a stay keeps emitting events every `stride_sec` (240, deliberately under the
+five-minute cutoff so they chain).
+
+This is not the span model returning. That model credited the gap between two
+samples because the samples existed, and samples arrive whether or not anybody
+is in the chair — which is how an untouched Slack window billed forty-one
+minutes. Every event here stands on its own row's `idle` reading instead, the
+one number that climbs when the room empties. Scroll counts as input under the
+`~0` wildcard, so a reader resets it on every flick of the wheel while a parked
+tab crosses `max_idle_sec` (300) and stops earning. That distinction is
+unavailable from history, which records navigations and so cannot see either.
+
+**`focus_extra_apps`.** Adds bundle ids to `FOCUS_INCLUDE`. Obsidian is absent
+from that list because *this* vault holds meeting notes and a grocery list in
+one window — a fact about the vault, not about note-taking. A vault that is
+only ever the job is the case the exclusion deletes, and this is how it says so.
+It only ever adds; nothing can be removed through it, so a misconfiguration
+cannot silently drop Slack.
+
 ## Two traps worth knowing
 
 **`visit_duration` is not attention.** It measures time until the tab navigated

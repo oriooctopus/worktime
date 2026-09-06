@@ -1478,6 +1478,25 @@ FOCUS_SELF_RAISING = {
 CHROME_BUNDLE = "com.google.Chrome"
 
 
+# Resolved once. The profile is a file on disk and focus_app() is called for
+# every row of a ~2,900-row log, several times per poll.
+_FOCUS_INCLUDE_RESOLVED = FOCUS_INCLUDE | wc.focus_extra_apps()
+_LONG_READ = wc.long_read()
+
+
+def focus_idle_limit() -> int:
+    """How long since the last input a sample may be and still count.
+
+    Two numbers rather than one because they answer different questions.
+    FOCUS_IDLE_SEC is tight because the case it guards -- an app left in front
+    of an empty chair -- is the common one, and because the reading it would
+    otherwise lose is held up by evidence of its own elsewhere. Somebody whose
+    work is reading has no such other evidence, and for them the tight number
+    is not caution, it is the deletion of their afternoon.
+    """
+    return _LONG_READ["max_idle_sec"] if _LONG_READ else FOCUS_IDLE_SEC
+
+
 def focus_app(sample: dict) -> bool:
     """Whether the app in this sample is one whose foreground means work.
 
@@ -1493,7 +1512,7 @@ def focus_app(sample: dict) -> bool:
     """
     bundle = sample.get("bundle")
     if bundle != CHROME_BUNDLE:
-        return bundle in FOCUS_INCLUDE
+        return bundle in _FOCUS_INCLUDE_RESOLVED
     return (_work_site_hit(sample.get("tab", ""))
             or _work_site_hit(sample.get("url", "")))
 
@@ -1518,7 +1537,7 @@ def focus_counts(sample: dict) -> bool:
     right one to take -- an unattended machine reads identically, is far more
     common, and inflates a day by tens of minutes rather than deflating it.
     """
-    return focus_app(sample) and sample.get("idle", 0) <= FOCUS_IDLE_SEC
+    return focus_app(sample) and sample.get("idle", 0) <= focus_idle_limit()
 
 
 def focus_name(sample: dict) -> str:
@@ -1679,12 +1698,77 @@ def focus_for(day: str) -> list[datetime]:
     work reads as a run of switches. Measured against the span model on live
     logs the whole day moves by -2 minutes (2026-09-01); the -39 on 2026-09-02
     is the untouched Slack evening this was built to stop counting.
+
+    Somebody who does not switch is the one shape this misses, and
+    focus_dwell_for() is what covers it -- folded in here rather than beside
+    events_for() so that every caller of this function gets the same day. The
+    dot, the total, the sessions and the snapshot all read focus through this
+    one door, and a second door would have had them disagreeing about how long
+    an afternoon was.
     """
     base = datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=LOCAL)
     acts = list(focus_activations(day))
-    return [base + timedelta(seconds=sec_of(a["t"]))
-            for a, nxt in zip(acts, acts[1:] + [None])
-            if focus_counts(a) and not self_raised(nxt, a)]
+    out = [base + timedelta(seconds=sec_of(a["t"]))
+           for a, nxt in zip(acts, acts[1:] + [None])
+           if focus_counts(a) and not self_raised(nxt, a)]
+    return sorted(set(out) | set(focus_dwell_for(day)))
+
+
+def focus_dwell_for(day: str) -> list[datetime]:
+    """Events DURING a stay on one thing, for people whose work is reading.
+
+    Empty unless long_read is enabled, so this changes nothing for a setup
+    that does not ask for it.
+
+    The problem it solves is the one focus_for() names as its accepted cost.
+    Credit there is the activation -- the moment somebody reached for an app
+    -- which works because a fast-navigating day is a run of switches, ~569 of
+    them, close enough together that GAP_AFTER chains them into periods. Read
+    one long article instead and the same day produces a SINGLE switch. The
+    period machinery then sees one point event, and the thirty-nine minutes
+    that followed it are silence indistinguishable from an empty room.
+
+    So a stay emits more events as it continues -- but only while the log
+    keeps saying somebody is there. This is deliberately NOT the span model
+    that used to bill an untouched Slack window all night: that model credited
+    the gap between two samples on the strength of the samples existing, and
+    the samples exist whether or not anybody is in the chair. Here every event
+    stands on its own row's idle reading, which is the number that goes up
+    when the room empties. A parked tab climbs past max_idle_sec within
+    minutes and stops earning; a person scrolling resets it to nothing on
+    every flick of the wheel, because the reading counts scroll and gestures
+    the same as keys.
+
+    That is the whole distinction between reading and parking, and it is the
+    only one available: both look identical from the history, which records
+    navigations and so cannot see either.
+
+    Events land at stride_sec apart rather than at every 30-second heartbeat
+    because the period machinery needs them chained, not dense -- one every
+    four minutes is enough to hold a bout open under a five-minute cutoff, and
+    ninety-nine per hour would be the same day at ninety-nine times the cost.
+    """
+    if not _LONG_READ:
+        return []
+    stride = _LONG_READ["stride_sec"]
+    base = datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=LOCAL)
+    out, key_prev, anchor = [], None, None
+    for r in focus_rows(day):
+        key = (r.get("bundle"),
+               r.get("tab") if r.get("bundle") == CHROME_BUNDLE else None)
+        at = sec_of(r["t"])
+        # A switch restarts the clock: the activation itself is focus_for()'s
+        # to credit, and this function only ever adds to a stay already under
+        # way. Without the reset, a run of quick switches would each inherit
+        # the previous thing's anchor and earn a dwell event they did not sit
+        # still for.
+        if key != key_prev:
+            key_prev, anchor = key, at
+            continue
+        if at - anchor >= stride and focus_counts(r):
+            out.append(base + timedelta(seconds=at))
+            anchor = at
+    return out
 
 
 def focus_app_by_minute(day: str) -> dict[int, str]:

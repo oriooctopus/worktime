@@ -10,6 +10,18 @@
   "_work_localhost_ports": "Ports on this machine that serve the work app in development. A tab on one of them is work: nothing else in localhost:3000/dashboard says so. Omit the key to keep the default of 3000-3005.",
   "work_localhost_ports": [3000, 3001, 3002, 3003, 3004, 3005],
 
+  "_focus_extra_apps": "Bundle ids to count as work on top of the built-in list, which names Slack, Zoom, Zed, Granola and GitHub Desktop. Obsidian is deliberately absent from that list because one vault held both meeting notes and a grocery list -- if yours is only ever the job, add 'md.obsidian' here and its foreground time counts. Omit the key to change nothing.",
+  "focus_extra_apps": [],
+
+  "_long_read": "Turn this on if your work is READING rather than clicking. Normally a page earns credit at the moment you switch to it, which suits a day of quick navigation -- hundreds of switches, each one holding the day open. Read a single article for forty minutes and that produces one switch and thirty-nine minutes of apparent silence. Enabled, a page you are sitting on keeps earning, but only while the machine says somebody is still there: scrolling counts, so a reader stays credited and a tab left open in an empty room stops within max_idle_sec. Leave it out or set enabled false to keep the default behaviour.",
+  "long_read": {
+    "enabled": false,
+    "_max_idle_sec": "How long you may go without touching anything before the page you are on stops counting. 300 is five minutes -- long enough for a dense paragraph, short enough that a parked tab stops earning quickly. The ordinary limit is 120.",
+    "max_idle_sec": 300,
+    "_stride_sec": "How often a continuing read earns again. Keep it under five minutes or the events will not join up and a long read comes back as scattered minutes.",
+    "stride_sec": 240
+  },
+
   "_google_work_account": "The account number in Google URLs: drive.google.com/drive/u/1/home is account 1. Set it only when a separate work Google account exists -- then that account's Gmail, Calendar, Drive and Docs count as work and the personal account's do not. With one Google account there is nothing to tell apart; omit the key.",
   "google_work_account": 1
 }

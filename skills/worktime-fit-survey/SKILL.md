@@ -69,6 +69,20 @@ Tell them, in about this much detail and in your own words:
 
 ### A. The machine
 
+**A0. Do you work for a company, or for yourself?**
+An employer / self-employed, freelance or my own projects / a mix.
+
+*(This one decides whether a whole group of questions gets asked. Half the
+tracker's shortcuts for spotting work — an address with the company's name in
+it, a separate work login, a work calendar — only exist for somebody with an
+employer. Working for yourself doesn't make this harder, it makes it simpler:
+there's no line between two accounts to draw, so the sites you name are the
+whole answer.)*
+
+- **If "self-employed" → skip C2, C4, F1's work/personal distinction, and
+  don't ask about a work email or work calendar anywhere.** Ask C3 as the
+  full answer instead of a supplement to a company-name rule.
+
 **A1. What kind of computer do you do most of your work on?**
 macOS / Windows / Linux / a mix.
 
@@ -117,17 +131,38 @@ Chrome / Arc, Brave, Edge or another Chromium one / Safari / Firefox / a mix.
   browsing signal reads Chrome's own history database, so on Safari or
   Firefox there'd be no browsing signal at all.
 
-**C2.** **Do your work tools live at web addresses with your company's name
-in them?** For example an internal wiki, a ticket tracker, an SSO login page.
-Yes / mostly third-party tools under their own names / a mix.
+**C2.** *(skip if self-employed)* **Do your work tools live at web addresses
+with your company's name in them?** For example an internal wiki, a ticket
+tracker, an SSO login page. Yes / mostly third-party tools under their own
+names / a mix.
 
-**C3.** **Which handful of sites would mean, if you're on them, that you're
-definitely working?** Free text. Names are fine — "our Jira", "GitHub",
-"Notion" — no need for exact addresses.
+**C3.** **Which sites would mean, if you're on them, that you're working?**
+Free text. Names are fine — "Substack", "Google Docs", "our Jira" — no need
+for exact addresses. For somebody self-employed this is the whole of how the
+tracker tells work from everything else, so push gently for a real list
+rather than two examples.
 
-**C4.** **Do you have separate work and personal accounts signed into the
-same Google account switcher?** So work Gmail and personal Gmail both open in
-the same browser. Yes / no / I don't use Google for work.
+**C4.** *(skip if self-employed)* **Do you have separate work and personal
+accounts signed into the same Google account switcher?** So work Gmail and
+personal Gmail both open in the same browser. Yes / no / I don't use Google
+for work.
+
+**C5. When you're working in the browser, which is it more like?**
+Lots of quick jumping between tabs and pages / long stretches reading one
+page — an article, a document, a thread — for twenty minutes or more / both,
+depending on the day.
+
+*(Ask this one carefully; it's the question most likely to be answered wrong
+by reflex, because everybody feels like they jump around. Ask what the last
+genuinely productive hour looked like.)*
+
+*(Why it matters: the tracker normally notices you're working at the moment
+you switch to something. That works for somebody who switches hundreds of
+times an hour and fails completely for somebody who opens one long article
+and reads it — that's one switch, and the next forty minutes look identical
+to an empty room. There's a setting for this and it's off by default, so
+getting this answer right is what decides whether their day comes back
+whole.)*
 
 ### D. Desktop apps
 
@@ -140,12 +175,26 @@ none of these.
   currently informational only**, since seeing which app is in front is
   Mac-only today.
 
-**D2. Is there an app you use for both work and personal things in the same
-window?** A notes app, a browser, a chat app. Yes (which) / no.
+**D2. Do you write or keep notes in a desktop app — Obsidian, Notion, Apple
+Notes, something else?** Which one / no.
 
-*(Why: if the same window holds your meeting notes and your grocery list,
-having it in front can't say which one you're doing, so today it isn't
-counted at all.)*
+- **If yes → ask D3. If no → skip D3.**
+
+**D3. Is that same app also where your personal life lives?** Shopping lists,
+journal, plans with friends. Yes, it's all one place / no, work notes are
+separate / I keep separate vaults or workspaces in the same app.
+
+*(Why both questions: a notes app in front of you is either the strongest
+signal there is that you're working, or no signal at all, and which one
+depends entirely on this answer. Notes apps are excluded by default because
+the one this was built on held meeting notes and a grocery list in the same
+window — being in front couldn't say which. If work notes are their own app,
+or their own vault, that objection doesn't apply and the app can be counted.
+Say which of the two you're recording, because it's a setting somebody has to
+turn on deliberately.)*
+
+**D4. Is there anything else you use for both work and personal things in the
+same window?** A browser, a chat app. Yes (which) / no.
 
 ### E. The always-on machine
 
@@ -258,6 +307,11 @@ than leaving it out. A missing line is ambiguous; a skipped one is data.)
 - **Menu bar indicator and shortcuts:** ...
 - **Background jobs:** on a second machine / on the main machine on a timer
 
+## Settings to turn on for this person
+
+- **Long reading:** on / off — <why, from C5>
+- **Count the notes app:** on (<app>) / off — <why, from D2 and D3>
+
 ## Overall
 
 <two or three sentences, honest. Which signals survive, which don't, and
@@ -277,10 +331,25 @@ answered — H1 and H2 are the test, not the count of working signals.>
 | Which app is in front | macOS, and the menu bar app installed | A1 not macOS |
 | Menu bar dot, shortcuts, call detection | macOS, permission to install | A1 not macOS, or G2 is "no" |
 | Browsing | Chrome or another Chromium browser | C1 is Safari/Firefox, or G1 excluded history |
-| Company-name rule for internal tools | Work tools on company-named addresses | C2 is "mostly third-party" |
+| Company-name rule for internal tools | An employer, and tools on company-named addresses | A0 is self-employed, or C2 is "mostly third-party" |
 | Telling work Google from personal | Two Google accounts in one browser | C4 is "no" — then neither counts |
 | Calendar | Google Calendar | F1 is Outlook or none |
 | Meetings as evidence | Meetings actually on the calendar | F2 is "most are unplanned" |
+
+**Two settings the answers turn on.** Name them explicitly in the file — they
+are off by default, and somebody who needs one and doesn't get it will
+conclude the tracker doesn't work rather than that it wasn't switched on:
+
+- **Long reading** (`long_read`) — turn on if C5 is "long stretches". Without
+  it, a forty-minute read counts as one moment and the rest is silence.
+- **Counting the notes app** (`focus_extra_apps`) — turn on if D2 names an
+  app and D3 says work notes are separate from personal ones. If D3 says it's
+  all one place, say plainly that it can't be counted and why.
+
+For anybody self-employed, note that the only things separating work from
+everything else are the sites they named in C3 and whichever of the two
+settings above apply. There is no company name to fall back on, which makes
+C3 worth a follow-up if their answer was thin.
 
 **Be blunt in "Overall".** The two failure shapes worth naming out loud:
 
