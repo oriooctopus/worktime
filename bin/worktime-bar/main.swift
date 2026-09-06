@@ -20,6 +20,13 @@ import Foundation
 // which is why this path went unexercised until it could be pointed somewhere.
 let PROBE = ProcessInfo.processInfo.environment["WORKTIME_PROBE"]
     ?? ("~/.claude/bin/worktime-probe.py" as NSString).expandingTildeInPath
+// Where launchd sends this app's stderr, which is where every probe failure is
+// already written. The menu's diagnostic rows can only afford three lines of a
+// traceback, so the row that opens the whole file has to name it -- and the
+// name has to be the one deploy/launchd/com.oliver.worktime-bar.plist uses,
+// which a test pins rather than trusting the two to stay in step.
+let BAR_LOG = "/tmp/worktime-bar.err"
+
 // 5s is affordable only because the probe's status path is memoised: the
 // transcripts are parsed per-file against size+mtime, and a full re-derivation
 // is floored at MIN_RECOMPUTE_SEC. Raising this back to 60 without those would
@@ -219,14 +226,17 @@ struct Status {
 // permissions note in README.
 let probeQueue = DispatchQueue(label: "worktime.probe", qos: .userInitiated)
 
-// The wall against a probe that never returns, for the same reason
-// CHROME_TAB_TIMEOUT_SEC exists: on a serial queue one wedged child is every
-// later probe blocked behind it, including the one a click is waiting on.
-// Generous rather than tight -- a genuinely cold run that has to re-read every
-// transcript on disk takes several seconds and is not a fault.
-let PROBE_TIMEOUT_SEC = 30.0
+// A one-shot flag set from the watchdog's queue and read from the caller's, so
+// the kill is reported rather than inferred: exit 15 alone cannot tell this
+// app's own SIGTERM from anybody else's.
+final class Fired {
+    private let lock = NSLock()
+    private var value = false
+    func set() { lock.lock(); value = true; lock.unlock() }
+    var isSet: Bool { lock.lock(); defer { lock.unlock() }; return value }
+}
 
-func runProbe(_ args: [String]) -> String? {
+func runProbe(_ args: [String]) -> ProbeRun {
     let p = Process()
     p.executableURL = URL(fileURLWithPath: PYTHON)
     p.arguments = [PROBE] + args
@@ -234,11 +244,16 @@ func runProbe(_ args: [String]) -> String? {
     let err = Pipe()
     p.standardOutput = out
     p.standardError = err
+    let started = Date()
     do { try p.run() } catch {
         FileHandle.standardError.write("probe launch failed: \(error)\n".data(using: .utf8)!)
-        return nil
+        return .failed(ProbeFailure(args: args, path: PROBE,
+                                    launchError: "\(error)"))
     }
-    let killer = DispatchWorkItem { if p.isRunning { p.terminate() } }
+    let fired = Fired()
+    let killer = DispatchWorkItem {
+        if p.isRunning { fired.set(); p.terminate() }
+    }
     DispatchQueue.global().asyncAfter(deadline: .now() + PROBE_TIMEOUT_SEC,
                                       execute: killer)
     let data = out.fileHandleForReading.readDataToEndOfFile()
@@ -246,14 +261,19 @@ func runProbe(_ args: [String]) -> String? {
     p.waitUntilExit()
     killer.cancel()
     // Logged, not swallowed. A silent non-zero exit is what let a blind poll
-    // sit on screen looking like a confident idle reading.
+    // sit on screen looking like a confident idle reading. Returned as well as
+    // logged, so the menu can say which failure this was instead of leaving
+    // the answer in a file in /tmp.
     guard p.terminationStatus == 0 else {
         let msg = String(data: edata, encoding: .utf8) ?? ""
         FileHandle.standardError.write(
             "probe \(args) exit \(p.terminationStatus): \(msg)\n".data(using: .utf8)!)
-        return nil
+        return .failed(ProbeFailure(args: args, path: PROBE,
+                                    status: p.terminationStatus, stderr: msg,
+                                    elapsed: Date().timeIntervalSince(started),
+                                    killed: fired.isSet))
     }
-    return String(data: data, encoding: .utf8)
+    return .ok(String(data: data, encoding: .utf8) ?? "")
 }
 
 // Confirmation for ⌥W. The press is silent by design -- nothing opens, no
@@ -776,6 +796,39 @@ final class StatusRowView: NSView {
         NSLayoutConstraint.activate([
             field.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
             field.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -14),
+            field.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+}
+
+// One line of a failed poll's account of itself. Monospaced and small: these
+// rows are a path, an exit status and a line of stderr, which are read by
+// picking a detail out rather than by reading the sentence, and a proportional
+// face makes a path harder to scan. Dimmer than the status row above them for
+// the same reason the activity rows are -- the verdict is the thing being read,
+// this is what it was derived from.
+//
+// A custom view rather than a disabled NSMenuItem, and for the usual reason:
+// AppKit recolors a menu item's own title through the vibrancy pass regardless
+// of what is set on it, and a disabled item comes out dimmed far past the point
+// where a truncated traceback is legible.
+final class DebugRowView: NSView {
+    init(width: CGFloat, text: String) {
+        super.init(frame: NSRect(x: 0, y: 0, width: width, height: 16))
+
+        let field = NSTextField(labelWithString: text)
+        field.font = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
+        field.textColor = .secondaryLabelColor
+        field.lineBreakMode = .byTruncatingMiddle
+        field.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(field)
+
+        NSLayoutConstraint.activate([
+            field.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 28),
+            field.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor,
+                                            constant: -14),
             field.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
     }
@@ -1310,6 +1363,13 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
     // tick (instead of only at POLL_SEC) is what lets the blink count down
     // smoothly between polls rather than jumping every 5s.
     var lastActivityAt: Date?
+    // What the last failed poll was, and how long the run of them has been
+    // going. Kept on the Bar rather than in Status because it is not a reading
+    // of the day -- it is the reason there is no reading of the day, and the
+    // menu is the only place it can be read without opening a file in /tmp.
+    var probeFail: ProbeFailure?
+    var probeFailures = 0
+    var lastGoodPollAt: Date?
     var hotKeyRef: EventHotKeyRef?
     var entryHotKeyRef: EventHotKeyRef?
     var endHotKeyRef: EventHotKeyRef?
@@ -1563,9 +1623,13 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         // above this list, describing the exact same current period a second
         // time. Folding it into that period's own row said it once instead
         // of twice, and reads as one glance instead of two rows to reconcile.
-        let symbol = (status.state == "working" || status.state == "marked") ? "●" : "○"
+        // Broken is filled and red like the dot in the bar, not hollow amber:
+        // this row is the caption on that dot, and the two disagreeing about
+        // which state the app is in is worse than either colour alone.
+        let symbol = status.state == "idle" || status.state == "unknown" ? "○" : "●"
         let color: NSColor = status.state == "marked" ? MARKED
-            : (status.state == "working" ? WORKING : AWAY)
+            : status.state == "working" ? WORKING
+            : status.state == "broken" ? BROKEN : AWAY
 
         // In focused mode the cutoff is always five minutes, so "2m since last
         // activity" already tells you how much silence the run has left. In
@@ -1588,6 +1652,30 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
             if left > 0 {
                 why += "  ·  \(left)m left of \(Int((Double(cutoff) / 60).rounded()))m"
             }
+        }
+
+        // The failing poll's own account of itself, red-state only. Three
+        // lines and a count: what was run, how it ended, what it managed to
+        // say, and how long this has been going on. Enough to tell a stall
+        // from a traceback and to see whether it is one bad poll or the
+        // afternoon -- which is the whole question a red dot asks and the one
+        // thing it could not previously answer without opening a file in /tmp.
+        var debug: [String] = []
+        if status.state == "broken", let f = probeFail {
+            debug = f.lines
+            var run = probeFailures == 1 ? "1 poll failed"
+                                         : "\(probeFailures) polls failed"
+            // Named as a wall-clock age rather than a count of polls: the count
+            // is already above, and how stale the last real reading is decides
+            // whether the day's minutes can be trusted at all.
+            if let good = lastGoodPollAt {
+                let mins = Int((Date().timeIntervalSince(good) / 60).rounded())
+                run += mins < 1 ? ", last good under a minute ago"
+                                : ", last good \(mins)m ago"
+            } else {
+                run += ", none good since launch"
+            }
+            debug.append(run)
         }
 
         // Every period lives in the submenu, none of them at the top level.
@@ -1615,7 +1703,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         // is exactly what a rebuild costs: emptying an open menu dismisses it
         // half a second later, which is the whole reason the flip now hides
         // rows instead.
-        let key = ([worked, symbol, why, status.state, status.mode]
+        let key = ([worked, symbol, why, status.state, status.mode] + debug
                    + periods.map { p in
                        let s = periodStrings(p)
                        return s.top + "\u{1}" + s.what
@@ -1649,6 +1737,27 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         st.view = StatusRowView(width: 300, symbol: symbol,
                                 text: why, color: color)
         m.addItem(st)
+
+        // Directly under the status row it elaborates, above the day: while
+        // this is showing there is no reading of the day to lead with, and
+        // burying the reason under a list of yesterday's evidence would be
+        // burying the only thing on screen that is actionable.
+        for line in debug {
+            let d = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+            d.view = DebugRowView(width: 300, text: line)
+            m.addItem(d)
+        }
+        if !debug.isEmpty {
+            // Two ways out of the three-line summary, because the two failures
+            // want different ones: a traceback is longer than the menu can
+            // show and wants pasting somewhere, while a stall's evidence is the
+            // run of them in the log rather than any single line.
+            m.addItem(NSMenuItem(title: "Copy Probe Diagnostics",
+                                 action: #selector(copyProbeDiagnostics),
+                                 keyEquivalent: ""))
+            m.addItem(NSMenuItem(title: "Open Bar Log",
+                                 action: #selector(openBarLog), keyEquivalent: ""))
+        }
         m.addItem(.separator())
 
         // The evidence the verdict was derived from, at the top level rather
@@ -1920,7 +2029,8 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
 
     private func runStatusProbe() {
         probeQueue.async {
-            guard let out = runProbe(["status"]),
+            let run = runProbe(["status"])
+            guard case .ok(let out) = run,
                   let d = out.data(using: .utf8),
                   let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any]
             else {
@@ -1930,10 +2040,28 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
                 // hollow amber -- the tracker looked like it was working and
                 // reporting an idle day, when in fact it was blind. A broken
                 // poll gets its own glyph so it cannot be mistaken for one.
+                //
+                // Which failure it was goes on screen too. "probe did not
+                // answer" was all this used to say, and it is the one sentence
+                // that fits both a stall and a traceback -- so the afternoon
+                // it mattered was spent in /tmp/worktime-bar.err working out
+                // which of the two was on the dot.
+                let fail: ProbeFailure
+                if case .failed(let f) = run {
+                    fail = f
+                } else {
+                    // Ran, exited 0, and what came back was not the status
+                    // JSON. Nothing about the process was wrong, so it has no
+                    // failure of its own to describe.
+                    fail = ProbeFailure(args: ["status"], path: PROBE,
+                                        stderr: "answer was not status JSON")
+                }
                 DispatchQueue.main.async {
                     var s = self.status
                     s.state = "broken"
-                    s.why = "probe did not answer"
+                    s.why = fail.summary
+                    self.probeFail = fail
+                    self.probeFailures += 1
                     self.apply(s)
                     self.poll.finish()
                 }
@@ -1991,7 +2119,13 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
                                           n: r["n"] as? Int ?? 1)
                            })
             }
-            DispatchQueue.main.async { self.apply(s); self.poll.finish() }
+            DispatchQueue.main.async {
+                self.probeFail = nil
+                self.probeFailures = 0
+                self.lastGoodPollAt = Date()
+                self.apply(s)
+                self.poll.finish()
+            }
         }
     }
 
@@ -2005,8 +2139,20 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         case "broken":  item.button?.image = dotImage(BROKEN, hollow: false)
         default:        item.button?.image = dotImage(AWAY, hollow: true)
         }
-        item.button?.imagePosition = .imageOnly
-        item.button?.toolTip = "\(s.state) — \(s.why) (as of \(s.at))"
+        // The dot alone, except when it is red. Red is the one state that is
+        // about this app rather than about the day, it is noticed from across
+        // the screen with the menu shut, and a red dot on its own cannot say
+        // whether the tracker is stalled or crashing -- two words beside it
+        // can. Every other state is self-explanatory and stays a dot.
+        if s.state == "broken", let f = probeFail {
+            item.button?.title = " " + f.tag
+            item.button?.imagePosition = .imageLeading
+            item.button?.toolTip = f.report
+        } else {
+            item.button?.title = ""
+            item.button?.imagePosition = .imageOnly
+            item.button?.toolTip = "\(s.state) — \(s.why) (as of \(s.at))"
+        }
         build()
     }
 
@@ -2037,7 +2183,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
             // failure to stderr; a banner saying the minute was logged when
             // the write never landed would be worse than no banner at all,
             // because it is the thing being trusted instead of checking.
-            guard runProbe(["note"]) != nil else { return }
+            guard case .ok = runProbe(["note"]) else { return }
             // Off the probe queue: the banner is an osascript of its own, and
             // holding a serial queue that every poll and every clicked row now
             // waits behind, for the sake of a notification nothing depends on,
@@ -2108,7 +2254,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
     // the wrong one.
     func trackBack(minutes: Int, mode: String) {
         probeQueue.async {
-            guard let out = runProbe(["track", String(minutes), mode]),
+            guard case .ok(let out) = runProbe(["track", String(minutes), mode]),
                   let data = out.data(using: .utf8),
                   let r = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
             else { return }
@@ -2214,7 +2360,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
             // probe knows -- last_entry_end reads the day's events -- and a
             // banner that named a locally-guessed time would eventually
             // advertise one minute while the file recorded another.
-            guard let out = runProbe(atLast ? ["end_session", "last"] : ["end_session"]),
+            guard case .ok(let out) = runProbe(atLast ? ["end_session", "last"] : ["end_session"]),
                   let data = out.data(using: .utf8),
                   let r = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let at = r["at"] as? String
@@ -2265,6 +2411,26 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
     }
 
     @objc func refreshNow() { refresh() }
+
+    // The whole failure, not the clipped three lines the menu shows: a
+    // traceback pasted into a message or an editor is the difference between
+    // reporting "the dot is red" and reporting what broke.
+    @objc func copyProbeDiagnostics() {
+        // Nil is reachable and is not a bug: the row is built only while a
+        // failure is current, and a poll that succeeds while the menu is open
+        // clears it under the click. There is nothing to copy at that point,
+        // and the dot has already gone back to a colour.
+        guard let f = probeFail else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(f.report, forType: .string)
+    }
+
+    // Opens in whatever reads a .err, which on this machine is Console. The
+    // log holds every failure rather than the current one, so it is where a
+    // run of them is read -- when it started, and whether it ever stopped.
+    @objc func openBarLog() {
+        NSWorkspace.shared.open(URL(fileURLWithPath: BAR_LOG))
+    }
     @objc func quit() { NSApplication.shared.terminate(nil) }
 }
 
