@@ -79,9 +79,15 @@ employer. Working for yourself doesn't make this harder, it makes it simpler:
 there's no line between two accounts to draw, so the sites you name are the
 whole answer.)*
 
-- **If "self-employed" → skip C2, C4, F1's work/personal distinction, and
-  don't ask about a work email or work calendar anywhere.** Ask C3 as the
-  full answer instead of a supplement to a company-name rule.
+- **If "self-employed" → skip A2, C2, C4, G2, F1's work/personal distinction,
+  and don't ask about a work email or work calendar anywhere.** Ask C3 as the
+  full answer instead of a supplement to a company-name rule. A2 and G2 both
+  ask what an IT department allows, and there isn't one; asking anyway reads
+  as not having listened to the answer they just gave. Record A2 as "their own
+  machine" and G2 as "yes" without asking either.
+- **If "a mix" → ask everything.** Somebody with a client laptop and their own
+  has both situations at once, and which machine they mean is exactly what A2
+  is for.
 
 **A1. What kind of computer do you do most of your work on?**
 macOS / Windows / Linux / a mix.
@@ -91,7 +97,8 @@ indicator, the keyboard shortcuts, detecting that you're on a call — are all
 Mac-only today. On Windows or Linux the tracker still works, but only from
 Claude Code, browsing and calendar.)*
 
-**A2. Is that computer managed by your employer?**
+**A2.** *(skip if self-employed)* **Is that computer managed by your
+employer?**
 Yes with tight restrictions / yes but I can install things / no, it's mine.
 
 *(Why: a locked-down Mac may refuse to run an app that isn't from the App
@@ -248,8 +255,8 @@ delete what it stores / no.
 - **If "except the browsing history" → note it and carry on**, but skip C2,
   C3 and C4 if you haven't asked them yet.
 
-**G2. On a work machine, are you allowed to install things and grant
-permissions without asking IT?**
+**G2.** *(skip if self-employed)* **On a work machine, are you allowed to
+install things and grant permissions without asking IT?**
 Yes / I'd have to ask / no.
 
 ### H. What they actually want
@@ -287,7 +294,7 @@ the directory they ran this from. Use this shape:
 
 ### A. The machine
 - **Main computer:** ...
-- **Employer-managed:** ...
+- **Employer-managed:** ... *(skipped — self-employed, it's their own machine)*
 - **More than one machine:** ...
 - **File sync between them:** ... *(skipped — one machine)*
 
