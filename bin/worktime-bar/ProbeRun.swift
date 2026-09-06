@@ -27,6 +27,12 @@ import Foundation
 // must not be able to disagree about what the number is.
 let PROBE_TIMEOUT_SEC = 30.0
 
+/// How many characters of the 10pt monospaced face a debug row holds. Measured
+/// against the row it is drawn in rather than guessed: at 44 the wrapped rows
+/// came out middle-truncated on screen, which reads as a bug in the block
+/// rather than as a long message.
+let DEBUG_ROW_CHARS = 46
+
 struct ProbeFailure {
     /// The probe's own arguments, without the interpreter or script path.
     let args: [String]
@@ -98,19 +104,6 @@ struct ProbeFailure {
         return (String(name), message)
     }
 
-    /// Short enough to sit beside the dot in the menu bar. The red dot is
-    /// noticed away from the menu, and a dot alone cannot say whether the
-    /// tracker is stalled or crashing.
-    var tag: String {
-        if launchError != nil { return "probe missing" }
-        if killed { return "probe stalled" }
-        // The status number only when there is nothing better: an exit code is
-        // a fact about the process, and what is wanted is the fact about the
-        // probe.
-        if let e = exception { return "probe \(e.name)" }
-        return "probe exit \(status)"
-    }
-
     /// One line, for the status row and the tooltip -- where "probe did not
     /// answer" used to be.
     var summary: String {
@@ -118,12 +111,14 @@ struct ProbeFailure {
         if killed {
             return "probe killed after \(secs) — no answer"
         }
-        // Named without its module path. "urllib.error.URLError" spends
-        // thirteen characters of a sixty-character line on where the class is
-        // defined, and the message is what gets clipped off the end for it.
+        // The exception and nothing before it. The status row is one line
+        // beside a red bullet, and "probe exit 1: " spends a third of it
+        // saying what the bullet said -- while the exit code has a row of its
+        // own directly underneath. Named without its module path, too:
+        // "urllib.error." is thirteen more characters of where a class is
+        // defined, paid for out of the message.
         if let e = exception {
-            let said = e.message.isEmpty ? e.name : "\(e.name): \(e.message)"
-            return "probe exit \(status): \(clip(said, 60))"
+            return e.message.isEmpty ? e.name : "\(e.name): \(e.message)"
         }
         if let last = stderrTail.last {
             return "probe exit \(status): \(clip(last, 60))"
@@ -131,8 +126,48 @@ struct ProbeFailure {
         return "probe exit \(status), no output"
     }
 
-    /// The detail rows, in the order they earn their height. First what was
-    /// run, then how it ended, then whatever it managed to say.
+    /// Every frame of the traceback, as file, line and function. Python writes
+    /// them one per pair of lines: `  File "/x/y.py", line 639, in fetch`.
+    ///
+    /// Parsed rather than shown raw because a raw frame is an absolute path
+    /// that fills a menu row and leaves the line number off the end of it,
+    /// while what is wanted out of it is three short things.
+    var frames: [(file: String, line: String, function: String)] {
+        let pattern = #"File "([^"]+)", line (\d+), in (\S+)"#
+        let text = plainStderr
+        let re = try? NSRegularExpression(pattern: pattern)
+        let range = NSRange(text.startIndex..., in: text)
+        return (re?.matches(in: text, range: range) ?? []).compactMap { m in
+            guard let f = Range(m.range(at: 1), in: text),
+                  let l = Range(m.range(at: 2), in: text),
+                  let fn = Range(m.range(at: 3), in: text) else { return nil }
+            return ((text[f] as Substring).split(separator: "/").last.map(String.init)
+                        ?? String(text[f]),
+                    String(text[l]), String(text[fn]))
+        }
+    }
+
+    /// The frames worth a row of their own: the one that raised, and the last
+    /// one inside the probe itself when the raise happened further down.
+    ///
+    /// Both, because they answer different questions. A URLError raised in
+    /// urllib says what went wrong; the probe's own frame says which of the
+    /// five things it gathers was being gathered at the time -- Slack, in the
+    /// failure this was written for, which is the difference between "the
+    /// network" and "the network, and the day is otherwise readable".
+    var blame: [String] {
+        let all = frames
+        guard let raised = all.last else { return [] }
+        let mine = String(path.split(separator: "/").last ?? "")
+        var out = ["raised in \(raised.file):\(raised.line) \(raised.function)"]
+        if let own = all.last(where: { $0.file == mine }), own.file != raised.file {
+            out.append("reached from \(own.file):\(own.line) \(own.function)")
+        }
+        return out
+    }
+
+    /// The detail rows, in the order they earn their height. What was run, how
+    /// it ended, where it was when it ended, and what it said.
     var lines: [String] {
         if let e = launchError {
             return ["\(path) \(args.joined(separator: " "))", e]
@@ -145,10 +180,20 @@ struct ProbeFailure {
             // what it was blocked on and not what it computed.
             out.append("killed at the \(Int(PROBE_TIMEOUT_SEC))s watchdog"
                        + " — stalled, no traceback")
-        } else {
-            out.append("exit \(status) after \(secs)")
+            return out
         }
-        out.append(contentsOf: stderrTail.map { clip($0, 70) })
+        out.append("exit \(status) after \(secs)")
+        out.append(contentsOf: blame)
+        // The exception on its own row and last, where the eye lands after the
+        // frames that lead to it. Split rather than clipped when it is long:
+        // this is the sentence the whole block exists to deliver, and losing
+        // its end to an ellipsis is losing the errno.
+        if let e = exception {
+            let said = e.message.isEmpty ? e.name : "\(e.name): \(e.message)"
+            out.append(contentsOf: wrap(said, DEBUG_ROW_CHARS, rows: 3))
+        } else {
+            out.append(contentsOf: stderrTail.map { clip($0, DEBUG_ROW_CHARS) })
+        }
         return out
     }
 
@@ -185,6 +230,26 @@ struct ProbeFailure {
 enum ProbeRun {
     case ok(String)
     case failed(ProbeFailure)
+}
+
+/// Breaks a line into at most `rows` rows of at most `width`, on spaces where
+/// there are any. The last row is clipped if the text outruns the budget, so
+/// the block cannot grow without limit on a long exception message.
+func wrap(_ s: String, _ width: Int, rows: Int) -> [String] {
+    var out: [String] = []
+    var rest = Substring(s)
+    while !rest.isEmpty {
+        // The last row carries whatever is left, clipped: an ellipsis at the
+        // end of the block is honest, an ellipsis with rows still to spare is
+        // just a narrow column.
+        if out.count == rows - 1 { out.append(clip(String(rest), width)); break }
+        if rest.count <= width { out.append(String(rest)); break }
+        let limit = rest.index(rest.startIndex, offsetBy: width)
+        let cut = rest[..<limit].lastIndex(of: " ") ?? limit
+        out.append(String(rest[..<cut]))
+        rest = rest[cut...].drop(while: { $0 == " " })
+    }
+    return out
 }
 
 /// Truncates on a character count, with an ellipsis so a cut line cannot be
