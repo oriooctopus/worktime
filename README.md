@@ -590,6 +590,17 @@ cost of needing one in the keychain.
 apart in that log: 15 is a stall like this one, 1 is the probe genuinely
 failing and the traceback says where.
 
+The menu now makes that distinction without the log. A red dot carries a short
+tag beside it -- `probe stalled`, `probe exit 1`, `probe missing` -- and the
+menu holds what the failing poll knew about itself: the probe that was run,
+how it ended, the last lines of its stderr, and how long the run of failures
+has been going. `Copy Probe Diagnostics` puts the whole thing on the clipboard,
+since three rows is less than a traceback; `Open Bar Log` opens
+`/tmp/worktime-bar.err`, which is where a run of failures is read rather than
+the current one. The afternoon that produced the section above was spent
+working out from `/tmp` which of the two failures was on the dot, which is
+exactly the question the dot can now answer itself.
+
 ## Install
 
 Copy `config/*.example.json` to `~/.config/`, symlink `bin/*.py` onto your
