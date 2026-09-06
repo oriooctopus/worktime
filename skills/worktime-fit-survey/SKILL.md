@@ -49,8 +49,8 @@ below. Never ask a question this survey has already ruled out.
 
 Tell them, in about this much detail and in your own words:
 
-> This is a short survey about your setup — about 15 questions, five minutes.
-> Nothing gets installed and nothing changes on your computer.
+> This is a short survey about your setup — about 20 questions, five or ten
+> minutes. Nothing gets installed and nothing changes on your computer.
 >
 > It's for an automatic time tracker that works out when you were actually
 > working, so you don't have to log it by hand. It does that by looking at
@@ -64,6 +64,29 @@ Tell them, in about this much detail and in your own words:
 > useful — that's what the survey is for.
 >
 > At the end I'll write your answers to a file for you to send back.
+
+Then explain how it decides you're working, because several questions later on
+make no sense without it and people answer them wrong by guessing:
+
+> The way it works is worth thirty seconds, because a few of the questions
+> depend on it.
+>
+> It doesn't watch a clock running. It notices *moments* — you sent a message
+> to Claude Code, you opened a work page, you switched to Slack. Each moment
+> on its own is just an instant, so around each one it holds the clock open
+> for a few minutes afterwards. Moments close together join into one stretch,
+> and that stretch is what gets counted as working.
+>
+> So a busy hour of jumping between things comes back as a solid hour, because
+> the moments keep landing before the previous one runs out. And a gap only
+> becomes a gap when nothing happens for long enough that the last moment
+> expires.
+>
+> The catch, and this is what a couple of questions are about: reading one long
+> page is a single moment. You switch to the article once and then you're just
+> reading. Nothing else happens, so after a few minutes it looks the same as
+> an empty room, and you can lose forty minutes of real work that way. There's
+> a setting that fixes it — that's why I'll ask what your browsing is like.
 
 ## Step 1 — the questions
 
@@ -79,12 +102,12 @@ employer. Working for yourself doesn't make this harder, it makes it simpler:
 there's no line between two accounts to draw, so the sites you name are the
 whole answer.)*
 
-- **If "self-employed" → skip A2, C2, C4, G2, F1's work/personal distinction,
+- **If "self-employed" → skip A2, C2, C4, G1, F1's work/personal distinction,
   and don't ask about a work email or work calendar anywhere.** Ask C3 as the
-  full answer instead of a supplement to a company-name rule. A2 and G2 both
+  full answer instead of a supplement to a company-name rule. A2 and G1 both
   ask what an IT department allows, and there isn't one; asking anyway reads
   as not having listened to the answer they just gave. Record A2 as "their own
-  machine" and G2 as "yes" without asking either.
+  machine" and G1 as "yes" without asking either.
 - **If "a mix" → ask everything.** Somebody with a client laptop and their own
   has both situations at once, and which machine they mean is exactly what A2
   is for.
@@ -104,11 +127,27 @@ Yes with tight restrictions / yes but I can install things / no, it's mine.
 *(Why: a locked-down Mac may refuse to run an app that isn't from the App
 Store, or block the permission that lets it see which browser tab is open.)*
 
-**A3. Do you work across more than one computer during the day?**
-Just the one / a laptop and a desktop / a personal machine and a work-issued
-one / more than that.
+**A3. Do you do any of your work on a device other than that computer?**
+Count anything where real work happens, not just where the typing happens —
+a second laptop or desktop, but also reading on a tablet, or a serious stretch
+of email and messages on your phone.
+Just the one computer / a laptop and a desktop / a personal machine and a
+work-issued one / a phone or tablet as well / more than that.
 
-- **If "just the one" → skip A4.**
+- **If a phone or tablet is named → ask A3b.**
+- **If only ever the one computer → skip A4.** Otherwise ask A4 about the
+  other *computers* only; a phone doesn't sync anything the tracker can use.
+
+**A3b.** *(only if a phone or tablet was named)* **Roughly how much of your
+working day happens on it?** Minutes here and there / a real chunk most days,
+half an hour or more / some days it's most of my work.
+
+*(Why: nothing here can see a phone or a tablet, and nothing is going to.
+Work done on one is invisible — it shows up as a gap, so an hour of email on
+the sofa reads as an hour off. That's fine when it's a few minutes, and it
+quietly makes the totals wrong when it's habitual. Record the answer plainly
+in the file; if it's "most of my work", say so in the overall verdict rather
+than burying it, because no setting fixes it.)*
 
 **A4.** *(only if more than one)* **When you switch machines, does anything
 already sync files between them?** Something like Dropbox, iCloud, Obsidian
@@ -144,24 +183,93 @@ tracker, an SSO login page. Yes / mostly third-party tools under their own
 names / a mix.
 
 **C3.** **Which sites would mean, if you're on them, that you're working?**
-Free text. Names are fine — "Substack", "Google Docs", "our Jira" — no need
-for exact addresses. For somebody self-employed this is the whole of how the
-tracker tells work from everything else, so push gently for a real list
-rather than two examples.
+
+This is the most important answer in section C, and the hardest to give from
+memory — people name three sites and forget the ten they actually use. So
+offer to look first, and only fall back to asking them to remember.
+
+**Offer it like this:**
+
+> Rather than have you try to remember, I can look at which sites you've
+> actually spent time on recently and read you back the top twenty or so, and
+> you just tell me which ones are work. It's the same list your browser's
+> history page shows you. Want me to?
+
+- **If yes → read the history and build the list.** Chrome keeps it in a
+  SQLite file which it holds a lock on, so copy it first and query the copy.
+
+  **Find the profile by scanning; never hardcode `Default`.** Plenty of
+  machines have no `Default` directory at all — the Mac this was built on has
+  only `Profile 2` — and a hardcoded path there reads an empty history
+  forever while looking exactly like somebody who does not browse. Take the
+  most recently written one:
+
+  ```bash
+  ls -t ~/Library/Application\ Support/Google/Chrome/*/History | head -1
+  ```
+
+  On Linux that root is `~/.config/google-chrome/` instead. Copy the file it
+  names to a scratch path, then:
+
+  ```sql
+  SELECT substr(substr(url, instr(url,'://')+3), 1,
+                instr(substr(url, instr(url,'://')+3)||'/','/')-1) AS d,
+         sum(visit_count) v
+    FROM urls
+   WHERE last_visit_time > (strftime('%s','now','-30 days')+11644473600)*1000000
+   GROUP BY d HAVING v > 4 ORDER BY v DESC LIMIT 40;
+  ```
+
+  The window is thirty days and the unit is visits rather than distinct pages,
+  so a site they open constantly outranks one they once crawled through. The
+  epoch offset is Chrome's: it counts microseconds from 1601, not 1970. Delete
+  the copy when you're done with it.
+
+  Collapse what you get to bare domains, drop the obvious noise (search
+  engines, the new-tab page, anything with one or two visits), and present the
+  top fifteen to twenty as a numbered list. Then ask them to sort it: **which
+  of these mean you're working?** Let them answer by number, in a bundle, or
+  with "all of these except 4 and 9".
+
+  Read the file, and do not do anything else with it. No sampling of page
+  titles, no times of day, no reading what they searched for. It is a list of
+  domains for them to sort and nothing else, and the file goes to `/tmp` and
+  is deleted in the same command.
+
+- **If they'd rather not, or it fails, or they don't use Chrome → just ask.**
+  Free text. Names are fine — "Substack", "Google Docs", "our Jira" — no need
+  for exact addresses. Push gently for a real list rather than two examples.
+
+- **Either way, ask the follow-up the history cannot answer:** *is there
+  anything you'd count as work that you haven't been to recently?* A quarterly
+  invoicing tool won't show up in a fortnight of history and would go missing
+  from the list forever.
+
+For somebody self-employed this list is the whole of how the tracker tells
+work from everything else — there's no company-name shortcut behind it — so
+spend the extra minute here.
 
 **C4.** *(skip if self-employed)* **Do you have separate work and personal
 accounts signed into the same Google account switcher?** So work Gmail and
 personal Gmail both open in the same browser. Yes / no / I don't use Google
 for work.
 
-**C5. When you're working in the browser, which is it more like?**
-Lots of quick jumping between tabs and pages / long stretches reading one
-page — an article, a document, a thread — for twenty minutes or more / both,
-depending on the day.
+**C5.** Point back at what you explained at the start, then ask:
+
+> Remember how it counts moments, and how sitting still on one long page
+> stops producing them? **Think about the last hour of real work you did in
+> the browser. Was it lots of little moves — opening things, switching tabs,
+> clicking through — or was most of it spent on one page, reading?**
+
+Lots of quick moves / mostly one page at a time, twenty minutes or more /
+genuinely both, depending on the day.
 
 *(Ask this one carefully; it's the question most likely to be answered wrong
-by reflex, because everybody feels like they jump around. Ask what the last
-genuinely productive hour looked like.)*
+by reflex, because everybody feels like they jump around. Anchoring it to a
+specific remembered hour is what gets a real answer — "how do you browse" in
+the abstract gets "oh, all over the place" from people who in fact read one
+document all afternoon. If they say "both", ask which one the *good* days
+look like, and record that.)*
 
 *(Why it matters: the tracker normally notices you're working at the moment
 you switch to something. That works for somebody who switches hundreds of
@@ -187,33 +295,60 @@ Notes, something else?** Which one / no.
 
 - **If yes → ask D3. If no → skip D3.**
 
-**D3. Is that same app also where your personal life lives?** Shopping lists,
-journal, plans with friends. Yes, it's all one place / no, work notes are
-separate / I keep separate vaults or workspaces in the same app.
+**D3.** Name the app they gave in D2 and ask it concretely:
 
-*(Why both questions: a notes app in front of you is either the strongest
-signal there is that you're working, or no signal at all, and which one
-depends entirely on this answer. Notes apps are excluded by default because
-the one this was built on held meeting notes and a grocery list in the same
-window — being in front couldn't say which. If work notes are their own app,
-or their own vault, that objection doesn't apply and the app can be counted.
-Say which of the two you're recording, because it's a setting somebody has to
-turn on deliberately.)*
+> **If I counted every minute [Obsidian] is open in front of you as working
+> time, would that be about right — or would it sweep in a lot of personal
+> time too?** Some people keep everything in one place: work notes next to
+> the shopping list and the holiday planning.
+
+About right, it's basically all work / it'd sweep in a lot of personal
+things / it's mixed, but work and personal are in separate vaults or
+workspaces.
+
+*(Ask it this way round — as "would counting it be right" rather than "is
+your personal life in there" — because that is literally the decision being
+made, and people answer it accurately. Asked the abstract way it gets a
+puzzled "…sort of?", which decides nothing.)*
+
+*(Why it matters: a notes app in front of you is either the strongest signal
+there is that you're working, or no signal at all, and which one depends
+entirely on this answer. Notes apps are left out by default because the vault
+this was built against held meeting notes and a grocery list in the same
+window, so being in front couldn't say which. Their own app, or their own
+vault, and that objection doesn't apply and it can be counted. Record which
+of the three, because turning it on is a deliberate setting.)*
 
 **D4. Is there anything else you use for both work and personal things in the
 same window?** A browser, a chat app. Yes (which) / no.
 
 ### E. The always-on machine
 
-**E1. Do you have a second computer that stays on and connected all day —
-a desktop, a home server, a cloud dev box — separate from the one you're
-working at?**
-Yes / no / I have one but it isn't always on.
+**E1.** Explain before asking, because "always-on machine" means nothing to
+most people and the honest answer for nearly everybody is no:
 
-- **If "no" or "not always on" → skip E2 and E3, and don't dwell on it.**
-  Note in the file that the background jobs would have to run on their main
-  machine on a timer instead. That is a supported arrangement, just a
-  different one, and it means those jobs only run while the machine is awake.
+> Some of the work happens on a schedule rather than while you're at the
+> keyboard — every few minutes something totals up the day so far and writes
+> it down. That's what keeps yesterday's numbers there when you come back to
+> them.
+>
+> That can just run on your laptop, and for most people it does. The only
+> catch is that a laptop sleeps: shut the lid at six and nothing runs again
+> until you open it. It catches up when you do, so nothing is lost — it just
+> means the day's file is stale while the machine is asleep. If some other
+> computer happens to be sitting there switched on all the time, that job can
+> live there instead and the numbers stay current.
+>
+> **So: is there another computer in your life that's just on all day — a
+> desktop you don't shut down, a home server, a Raspberry Pi, a cloud box you
+> rent?** Most people don't, and that's completely fine.
+
+Yes / no / I have one but it isn't reliably on.
+
+- **If "no" or "not reliably on" → skip E2 and E3, and don't dwell on it.**
+  Record in the file that the scheduled jobs run on their main machine and
+  pause while it's asleep. This is a supported arrangement and the common one,
+  not a shortcoming — do not write it up as a gap.
 
 **E2.** *(only if yes)* **What does it run, and could a small script run on it
 every few minutes?** Linux / a Mac / Windows / don't know.
@@ -236,44 +371,42 @@ keep one.
 **F2.** **Do your meetings actually appear on it, or do a lot of them happen
 ad hoc?** Almost all are on the calendar / roughly half / most are unplanned.
 
-### G. Comfort and permissions
+### G. Permissions
 
-**G1.** Read this out and get a straight answer:
+*(There is no privacy question here on purpose. What the tracker reads is
+already said plainly in the opening, which is where it belongs — a survey
+that stops to ask permission again mid-way starts to sound like it expects to
+be refused. If they raise a concern themselves, answer it straight, record it
+in the file, and carry on.)*
 
-> To do its job the tracker would look at, all on your own computer: the
-> addresses and times of pages you visited, which app is in front of you,
-> the times and titles of calendar events, and when you sent a message to
-> Claude Code. It never reads what you typed, page contents, message
-> contents, or email bodies. Nothing is uploaded.
-
-**Is that something you'd be comfortable running?**
-Yes / yes, except the browsing history / yes, but only if I can see and
-delete what it stores / no.
-
-- **If "no" → stop the survey here.** Thank them, write the file with what
-  you have and mark it as declined. Don't argue and don't ask the rest.
-- **If "except the browsing history" → note it and carry on**, but skip C2,
-  C3 and C4 if you haven't asked them yet.
-
-**G2.** *(skip if self-employed)* **On a work machine, are you allowed to
+**G1.** *(skip if self-employed)* **On a work machine, are you allowed to
 install things and grant permissions without asking IT?**
 Yes / I'd have to ask / no.
 
 ### H. What they actually want
 
-**H1. What would you use the output for?**
-Timesheets or billing / knowing where my time actually goes / showing
-someone else how much I worked / managing my own focus / just curious.
-
-**H2. How precise does it need to be?**
+**H1. How precise does it need to be?**
 To the nearest 15 minutes is fine / within about 5 minutes / I need it
 close to exact.
 
-**H3. How do you track this today?**
-Not at all / a manual note or spreadsheet / a tool like Toggl or Harvest /
-my employer's timesheet system.
+**H2.** The question behind this one is whether they'd ever be able to tell
+that it was wrong:
 
-**H4. Is there anything about how your day goes that you think would
+> **Say it told you that yesterday you worked five hours and forty minutes.
+> Is there anything you could check that against — an invoice, a timesheet, a
+> note you keep — or would you just have to take its word for it?**
+
+I could check it against something (what) / I'd have a rough sense and would
+notice if it were badly off / I'd have no idea, I'd just believe it.
+
+*(Asked instead of "how do you track your time today", which gets "I don't"
+from most people and settles nothing. This version is the useful one: a
+number nobody can check is a number that gets trusted while it's wrong, and
+if they have something to compare against then the first week has an obvious
+shape — run both, see whether they agree. Note what they'd compare against,
+by name.)*
+
+**H3. Is there anything about how your day goes that you think would
 confuse an automatic tracker?** Free text. Encourage a real answer here —
 long stretches reading on paper, pair programming on someone else's machine,
 shift work, two jobs, heavy phone use. This is the question most likely to
@@ -288,14 +421,15 @@ the directory they ran this from. Use this shape:
 # Worktime fit survey — <name>
 
 **Date:** <YYYY-MM-DD>
-**Completed:** fully / stopped early at <question> / declined at G1
+**Completed:** fully / stopped early at <question>
 
 ## Answers
 
 ### A. The machine
 - **Main computer:** ...
 - **Employer-managed:** ... *(skipped — self-employed, it's their own machine)*
-- **More than one machine:** ...
+- **Other devices used for work:** ...
+- **How much work happens on a phone or tablet:** ... *(skipped — none named)*
 - **File sync between them:** ... *(skipped — one machine)*
 
 ### B. Claude Code
@@ -327,7 +461,7 @@ answered — H1 and H2 are the test, not the count of working signals.>
 
 ## In their own words
 
-> <verbatim answer to H4, and to C3 if given>
+> <verbatim answer to H3, and to C3 if given>
 ```
 
 **Fill in "What would work" yourself** from their answers, using this map:
@@ -336,12 +470,13 @@ answered — H1 and H2 are the test, not the count of working signals.>
 |---|---|---|
 | Claude Code prompts | Claude Code, any OS | B1 is "don't use it" |
 | Which app is in front | macOS, and the menu bar app installed | A1 not macOS |
-| Menu bar dot, shortcuts, call detection | macOS, permission to install | A1 not macOS, or G2 is "no" |
-| Browsing | Chrome or another Chromium browser | C1 is Safari/Firefox, or G1 excluded history |
+| Menu bar dot, shortcuts, call detection | macOS, permission to install | A1 not macOS, or G1 is "no" |
+| Browsing | Chrome or another Chromium browser | C1 is Safari/Firefox |
 | Company-name rule for internal tools | An employer, and tools on company-named addresses | A0 is self-employed, or C2 is "mostly third-party" |
 | Telling work Google from personal | Two Google accounts in one browser | C4 is "no" — then neither counts |
 | Calendar | Google Calendar | F1 is Outlook or none |
 | Meetings as evidence | Meetings actually on the calendar | F2 is "most are unplanned" |
+| Anything at all done on a phone or tablet | — | Nothing can see them; A3b is how much this costs |
 
 **Two settings the answers turn on.** Name them explicitly in the file — they
 are off by default, and somebody who needs one and doesn't get it will
@@ -361,9 +496,14 @@ C3 worth a follow-up if their answer was thin.
 **Be blunt in "Overall".** The two failure shapes worth naming out loud:
 
 - Not macOS **and** little Claude Code — almost nothing is left. Say so.
-- Precision needed (H2 "close to exact") while the signals are thin — the
+- Precision needed (H1 "close to exact") while the signals are thin — the
   tracker will produce a number, and that number will be wrong in ways they
-  can't see. That's worse than no tracker, and it should be said.
+  can't see. That's worse than no tracker, and it should be said. It is worse
+  again when H2 says they'd have nothing to check it against, because then
+  nothing will ever tell them it's wrong.
+- A3b is "most of my work" — a large part of their day happens somewhere no
+  setting can reach, and the totals will read low every single day. Say it in
+  the verdict, not in a footnote.
 
 ## Step 3 — hand it back
 
