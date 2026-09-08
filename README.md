@@ -676,3 +676,18 @@ ln -sf "$PWD/bin/done-daily.sh" ~/.claude/bin/done-daily.sh
 cp deploy/launchd/com.oullman.done-daily.plist ~/Library/LaunchAgents/
 launchctl load ~/Library/LaunchAgents/com.oullman.done-daily.plist
 ```
+
+**Grant Full Disk Access to `/bin/zsh` before loading it.** A launchd agent
+gets none of the Documents access a terminal session inherits, and both halves
+of this job live under `~/Documents`: the symlink above resolves into this
+checkout, and the notes it writes go to the Obsidian vault. Without the grant
+the agent cannot open the script at all (exit 127), and even reached directly
+it could not see the vault — `ls` fails and the `*.md` glob returns zero
+against a directory full of notes. That second failure is what made the job
+re-run the same day every 30 minutes for a week: `have_note` read a refused
+directory as an empty one. `vault_readable()` now refuses the tick and says so
+rather than running blind, so the symptom is a quiet log line instead of a
+bill, but the grant is what actually makes the job work.
+
+System Settings → Privacy & Security → Full Disk Access → add `/bin/zsh`
+(⌘⇧G in the file picker to type the path).
