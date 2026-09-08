@@ -657,15 +657,33 @@ Copy `config/*.example.json` to `~/.config/`, symlink `bin/*.py` onto your
 PATH, and install the units in `deploy/systemd` (or `deploy/launchd`).
 Credentials are read from `~/.claude/tokens.env` and are never stored here.
 
-Two of the `bin/` scripts are Claude Code hooks and must additionally be
+Three of the `bin/` scripts are Claude Code hooks and must additionally be
 symlinked into `~/.claude/hooks/` under their own names, since that fixed
 path is hardcoded into `settings.json`'s hook config and (for
 `prompt-count.py`) the global statusline:
 
 ```
-ln -sf "$PWD/bin/prompt-count.py"     ~/.claude/hooks/prompt-count.py
-ln -sf "$PWD/bin/worktime-approval.py" ~/.claude/hooks/worktime-approval.py
+ln -sf "$PWD/bin/prompt-count.py"        ~/.claude/hooks/prompt-count.py
+ln -sf "$PWD/bin/worktime-approval.py"   ~/.claude/hooks/worktime-approval.py
+ln -sf "$PWD/bin/worktime-prompt-mark.py" ~/.claude/hooks/worktime-prompt-mark.py
 ```
+
+`worktime-prompt-mark.py` must then be registered as a `UserPromptSubmit`
+hook in **every** Claude Code profile on the machine — this one runs three
+(`~/.claude`, `~/.claude-personal` for worktime's own background jobs, and
+`~/.claude-bench`), and each keeps its own `settings.json`:
+
+```json
+"UserPromptSubmit": [
+  {"hooks": [{"type": "command",
+              "command": "python3 ~/.claude/hooks/worktime-prompt-mark.py"}]}
+]
+```
+
+The probe refuses to run if any profile it reads transcripts from is missing
+that registration. It has to: all the profiles share one mark file, so an
+unhooked profile does not break anything visible — its prompts just stop
+counting, and the day quietly reads as emptier than it was.
 
 `bin/done-daily.sh` wants the same treatment for the same reason — its
 LaunchAgent hardcodes `$HOME/.claude/bin/done-daily.sh`, so the agent finds
