@@ -30,6 +30,7 @@ Usage:
 
 from __future__ import annotations  # 3.8 can parse the annotations
 
+import functools
 import hashlib
 import http.client
 import json
@@ -503,12 +504,30 @@ def live_cutoff(day: str, stamps_sec: list[int]) -> int:
     return gap_sec_for(mode_now(), bouts[-1][1] - bouts[-1][0] if bouts else 0)
 
 
-def prompts_for(day: str) -> list[datetime]:
-    """Merged, sorted prompt datetimes for one local calendar day.
+@functools.lru_cache(maxsize=None)
+def _prompts_for_cached(day: str) -> tuple:
+    """One prompt-count subprocess per day, per probe run.
 
-    Merged across sessions on purpose: prompting session A and session B in the
-    same ten minutes is one work period, not two. Per-session bouts would
-    double-count it and invent gaps that never happened.
+    Four call sites ask for the same day's prompts and a status poll reaches
+    seven of them, each previously paying its own `subprocess.run` -- seven
+    fresh interpreters where one answer was wanted. That is the probe's single
+    largest cost (2.1s of a 4.3s run) and, more to the point, seven eighths of
+    the interpreter startups it performs.
+
+    Startup is what actually kills this process. A stalled poll sampled at
+    11:17 was in state `U` -- uninterruptible disk wait -- inside dyld's
+    `dlopen` and Python's import machinery, faulting extension modules and
+    .pyc files back in one page at a time. With swap at 17.9GB of 19.4GB the
+    pages a Python launch needs are evicted between polls, so each of the eight
+    launches pays a cold start, and eight cold starts overrun the menu bar's
+    30s watchdog: SIGTERM, exit 15, red dot. Collapsing seven of them to one
+    cuts the exposure by the same factor.
+
+    Caching is sound because the process is short-lived -- a poll answers in
+    well under a second and exits -- so no transcript can gain a prompt between
+    two calls within one run. A tuple is returned because lru_cache hands every
+    caller the same object and a list would let one of them mutate the others'
+    copy; `prompts_for` unpacks it back into a fresh list.
     """
     r = subprocess.run(
         [PYTHON, PROMPT_COUNT, "--day", day],
@@ -522,7 +541,7 @@ def prompts_for(day: str) -> list[datetime]:
         raise RuntimeError(f"prompt-count failed ({r.returncode}): {r.stderr.strip()}")
     out = r.stdout
     if not out.strip():
-        return []
+        return ()
     data = json.loads(out)
     base = datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=LOCAL)
     seen = []
@@ -534,7 +553,12 @@ def prompts_for(day: str) -> list[datetime]:
         for ts in s.get("times", []):
             h, m, sec = ts.split(":")
             seen.append(base.replace(hour=int(h), minute=int(m), second=int(sec)))
-    return sorted(seen)
+    return tuple(sorted(seen))
+
+
+def prompts_for(day: str) -> list[datetime]:
+    """Merged, sorted prompt datetimes for one local calendar day."""
+    return list(_prompts_for_cached(day))
 
 
 # Slack is the other place the work happens. With Claude prompts as the only
