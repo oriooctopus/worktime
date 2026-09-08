@@ -666,3 +666,13 @@ path is hardcoded into `settings.json`'s hook config and (for
 ln -sf "$PWD/bin/prompt-count.py"     ~/.claude/hooks/prompt-count.py
 ln -sf "$PWD/bin/worktime-approval.py" ~/.claude/hooks/worktime-approval.py
 ```
+
+`bin/done-daily.sh` wants the same treatment for the same reason — its
+LaunchAgent hardcodes `$HOME/.claude/bin/done-daily.sh`, so the agent finds
+the script through the symlink rather than through this checkout's path:
+
+```
+ln -sf "$PWD/bin/done-daily.sh" ~/.claude/bin/done-daily.sh
+cp deploy/launchd/com.oullman.done-daily.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/com.oullman.done-daily.plist
+```
