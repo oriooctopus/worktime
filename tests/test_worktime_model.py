@@ -698,39 +698,56 @@ class ActivityFingerprint(unittest.TestCase):
 
     DAY = "2026-08-26"
 
-    def _prompt_in(self, root_dir, name):
-        d = os.path.join(root_dir, "-Users-someone-project")
-        os.makedirs(d, exist_ok=True)
-        with open(os.path.join(d, name), "w") as fh:
-            fh.write('{"type":"user"}\n')
+    def _hooked_profiles(self, tmp):
+        """Profile dirs shaped like ~/.claude*, each firing the mark hook."""
+        roots = []
+        for name in (".claude", ".claude-personal"):
+            base = os.path.join(tmp, name)
+            os.makedirs(os.path.join(base, "projects"), exist_ok=True)
+            with open(os.path.join(base, "settings.json"), "w") as fh:
+                json.dump({"hooks": {"UserPromptSubmit": [{"hooks": [
+                    {"type": "command",
+                     "command": "python3 ~/.claude/hooks/worktime-prompt-mark.py"}
+                ]}]}}, fh)
+            roots.append(os.path.join(base, "projects"))
+        return roots
 
-    def test_a_prompt_under_either_profile_moves_it(self):
-        # Background jobs run under a second profile. Walking only the first
-        # meant a prompt sent to one of them left the fingerprint identical,
-        # so the verdict was served from cache for as long as nothing else
-        # happened to touch a file.
-        old = wp.PROMPT_ROOTS
+    def test_a_prompt_under_any_profile_moves_it(self):
+        # Background jobs run under a second profile. The fingerprint used to
+        # walk the transcript roots, and walking only the first meant a prompt
+        # sent to one of them left it identical, so the verdict was served from
+        # cache for as long as nothing else happened to touch a file.
+        #
+        # The roots are no longer walked -- every profile's hook overwrites one
+        # shared mark, which is what the poll stats -- so the guarantee now
+        # rests on two things tested separately: the mark moving (here) and
+        # every profile actually firing the hook (test_prompt_mark.py, which
+        # pins the real machine because a missing registration is invisible).
+        tmp = tempfile.mkdtemp()
+        old_roots, old_mark = wp.PROMPT_ROOTS, wp.PROMPT_MARK
         try:
-            for i in range(len(old)):
-                roots = [tempfile.mkdtemp() for _ in old]
-                wp.PROMPT_ROOTS = roots
-                before = wp.activity_fingerprint(self.DAY)
-                self._prompt_in(roots[i], "session.jsonl")
-                self.assertNotEqual(before, wp.activity_fingerprint(self.DAY),
-                                    f"a prompt under root {i} changed nothing")
+            wp.PROMPT_ROOTS = self._hooked_profiles(tmp)
+            wp.PROMPT_MARK = os.path.join(tmp, "prompt-mark.json")
+            before = wp.activity_fingerprint(self.DAY)
+            with open(wp.PROMPT_MARK, "w") as fh:
+                fh.write('{"at": "2026-08-26T09:00:00"}')
+            self.assertNotEqual(before, wp.activity_fingerprint(self.DAY),
+                                "a prompt changed nothing")
         finally:
-            wp.PROMPT_ROOTS = old
+            wp.PROMPT_ROOTS, wp.PROMPT_MARK = old_roots, old_mark
 
     def test_it_stays_put_when_nothing_happened(self):
         # The other half: if it moved on its own the memo would never hit and
         # the 5-second poll would re-derive the whole day every time.
-        old = wp.PROMPT_ROOTS
+        tmp = tempfile.mkdtemp()
+        old_roots, old_mark = wp.PROMPT_ROOTS, wp.PROMPT_MARK
         try:
-            wp.PROMPT_ROOTS = [tempfile.mkdtemp() for _ in old]
+            wp.PROMPT_ROOTS = self._hooked_profiles(tmp)
+            wp.PROMPT_MARK = os.path.join(tmp, "prompt-mark.json")
             self.assertEqual(wp.activity_fingerprint(self.DAY),
                              wp.activity_fingerprint(self.DAY))
         finally:
-            wp.PROMPT_ROOTS = old
+            wp.PROMPT_ROOTS, wp.PROMPT_MARK = old_roots, old_mark
 
     def test_the_probe_and_the_counter_read_the_same_roots(self):
         # Not "the same values" -- the same object. They used to be two lists

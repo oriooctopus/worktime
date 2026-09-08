@@ -3894,19 +3894,79 @@ MIN_RECOMPUTE_SEC = 10
 STATUS_CACHE_V = 6
 
 
+# One file, overwritten by bin/worktime-prompt-mark.py on every prompt in every
+# profile. Stat'ing it is the whole of the freshness check that used to walk
+# 3,139 transcripts and directories -- see activity_fingerprint.
+PROMPT_MARK = os.path.join(STATE, "prompt-mark.json")
+
+
+def profiles_missing_mark_hook() -> list[str]:
+    """Profile roots whose settings.json does not fire the prompt-mark hook.
+
+    The mark is shared, so a profile that stops firing it does not break
+    anything visibly -- the file keeps moving, updated by the other profiles,
+    and that profile's prompts simply stop counting as presence. That is the
+    one failure the old walk could not have had, since it read the transcripts
+    directly, so it is the one this design has to answer for.
+    """
+    missing = []
+    for root in PROMPT_ROOTS:
+        settings = os.path.join(os.path.dirname(root), "settings.json")
+        try:
+            with open(settings) as fh:
+                groups = json.load(fh).get("hooks", {}).get(
+                    "UserPromptSubmit", [])
+        except (OSError, ValueError):
+            groups = []
+        wired = any("worktime-prompt-mark" in h.get("command", "")
+                    for g in groups for h in g.get("hooks", []))
+        if not wired:
+            missing.append(os.path.dirname(root))
+    return missing
+
+
+def prompt_mark_stamp() -> str:
+    """The prompts half of the fingerprint, as one stat.
+
+    An absent mark is a legitimate state -- no prompt since the file was last
+    cleared -- but an unhooked profile is a configuration bug that would show
+    up as a person who quietly stopped working, so it stops the probe instead.
+    """
+    missing = profiles_missing_mark_hook()
+    if missing:
+        raise RuntimeError(
+            "UserPromptSubmit hook worktime-prompt-mark.py is not registered "
+            "for: " + ", ".join(missing) + " -- prompts from those profiles "
+            "would not count. See the Install section in README.md.")
+    try:
+        st = os.stat(PROMPT_MARK)
+    except OSError:
+        return f"{PROMPT_MARK}:absent"
+    return f"{PROMPT_MARK}:{st.st_mtime_ns}:{st.st_size}"
+
+
 def activity_fingerprint(day: str) -> str:
     """A signature of every input the live verdict is derived from.
 
-    Cheap on purpose -- 944 transcripts stat in ~20ms, against ~650ms to
-    actually re-derive the day, so a poll that finds this unchanged can skip
-    the work entirely. That is what makes a 5-second dot affordable: the
-    expensive path runs when something really happened, not on a timer.
+    One stat per input, and prompts arrive as a single one. This used to walk
+    every transcript on the machine -- 3,139 files and directories across the
+    profile roots -- and hash their mtimes, which costs ~40ms with the
+    filesystem metadata in cache and upwards of 25 seconds without it. Under
+    memory pressure the cache is evicted between polls, so a 5-second poll was
+    spending half a minute in uninterruptible disk wait and dying to the menu
+    bar's 30s watchdog. Two thirds of those files had not changed in a week.
 
-    Both profile roots are walked, matching prompt-count.py. Missing the second
-    one did not lose a prompt -- the counting is prompt-count.py's job and it
-    already read both -- but it did mean a prompt to a background job changed
-    nothing this function could see, so the cache held and the menu showed a
-    reading from minutes earlier while insisting it was current.
+    So prompts are pushed rather than polled: bin/worktime-prompt-mark.py runs
+    on Claude Code's UserPromptSubmit and overwrites PROMPT_MARK, and the walk
+    collapses into that one path. This is exact, not an approximation of the
+    walk -- there is no scan window for a prompt to land inside, and a resumed
+    old session is caught like any other, which a cheaper walk pruned by
+    directory mtime could not manage (appending to a transcript does not
+    change its directory's mtime).
+
+    It also recomputes less. The walk changed on every transcript write, which
+    an active session causes about six times a minute; only the user's prompts
+    are evidence anyone is at the desk, and those are what the mark records.
 
     Slack is the exception and has to be handled by time rather than by file.
     A message sent from the phone changes nothing on this disk, so the
@@ -3916,20 +3976,10 @@ def activity_fingerprint(day: str) -> str:
 
     Since sends stopped counting as presence that bucket no longer moves the
     dot -- it now only keeps the tooltip's message list current, which is
-    still worth a recompute every four minutes and nothing like often enough
-    to matter. The focus log is an ordinary file and needs no such trick,
-    though it does mean the fingerprint misses on every heartbeat: a full
-    re-derivation twice a minute, against the six a minute an active Claude
-    session already causes through its transcript.
+    still worth a recompute every four minutes. The focus log is an ordinary
+    file and needs no such trick.
     """
-    parts = []
-    for root_dir in PROMPT_ROOTS:
-        for root, _dirs, files in os.walk(root_dir):
-            for f in files:
-                if f.endswith(".jsonl"):
-                    p = os.path.join(root, f)
-                    st = os.stat(p)
-                    parts.append(f"{p}:{st.st_mtime_ns}:{st.st_size}")
+    parts = [prompt_mark_stamp()]
     # Chrome's History is in here so a PR opened in the browser moves the dot
     # without waiting for something else to happen. It is the one input that
     # changes on its own while the person is doing nothing this probe can
