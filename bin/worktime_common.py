@@ -433,11 +433,30 @@ def read_history_queries(path, queries):
     about the same moment -- the visits to work pages, and the redirect chains
     that say which of them somebody made -- asks for both here rather than
     paying it twice on a five-second poll.
+
+    The journal is copied with it. Chrome runs History in `journal_mode=delete`,
+    so an in-flight write leaves the original pages in `History-journal` while
+    the partially-rewritten ones sit in `History` itself. Copying the database
+    alone captures that half-applied state with nothing to undo it, and sqlite
+    rejects the result as `database disk image is malformed` -- the probe died
+    that way 95 times before the sidecar came along. With the journal beside it
+    sqlite replays the rollback against the copy and opens the consistent
+    pre-transaction snapshot instead.
+
+    Chrome's lock is why this is a file copy at all: `Connection.backup()` is
+    the tidy way to snapshot a live database, but it waits on that lock and
+    never returns, which the menu bar's 30s watchdog turns into a red dot.
     """
     tmp_dir = tempfile.mkdtemp(prefix="worktime-history-")
     try:
         tmp = os.path.join(tmp_dir, "History")
         shutil.copy2(path, tmp)
+        # Copied after the database, not before: a journal read first could be
+        # deleted by a commit landing mid-copy, which would leave a stale undo
+        # log pointing at pages the copy has already moved past.
+        for suffix in ("-journal", "-wal", "-shm"):
+            if os.path.exists(path + suffix):
+                shutil.copy2(path + suffix, tmp + suffix)
         conn = sqlite3.connect(tmp)
         try:
             return [list(conn.execute(sql, params)) for sql, params in queries]
