@@ -446,6 +446,21 @@ def read_history_queries(path, queries):
     Chrome's lock is why this is a file copy at all: `Connection.backup()` is
     the tidy way to snapshot a live database, but it waits on that lock and
     never returns, which the menu bar's 30s watchdog turns into a red dot.
+
+    A History holding no tables at all reads as no browsing, not as an error.
+    Chrome recreates the file empty when it cannot open the old one, which is
+    what happened when this machine's disk hit 100% full: a 32KB History with
+    zero tables where 61MB of visits had been. Every query then failed with
+    `no such table: visits`, and since the probe raises rather than guessing,
+    that killed every poll -- a permanently red dot for a browser that was
+    simply empty. An empty database is a real state (a fresh profile, cleared
+    history, a Chrome that had to start over) and belongs with the absent one
+    the caller already handles.
+
+    The check is for zero tables specifically, not for the error text. A
+    `no such table` from a database that HAS tables means the schema is not
+    what this code expects, which is a bug and still raises -- as does every
+    other sqlite failure, including the malformed-image case above.
     """
     tmp_dir = tempfile.mkdtemp(prefix="worktime-history-")
     try:
@@ -459,6 +474,10 @@ def read_history_queries(path, queries):
                 shutil.copy2(path + suffix, tmp + suffix)
         conn = sqlite3.connect(tmp)
         try:
+            if not conn.execute(
+                    "SELECT count(*) FROM sqlite_master "
+                    "WHERE type='table'").fetchone()[0]:
+                return [[] for _ in queries]
             return [list(conn.execute(sql, params)) for sql, params in queries]
         finally:
             conn.close()
