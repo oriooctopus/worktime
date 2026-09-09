@@ -2608,7 +2608,14 @@ CAL_STALE_HOURS = 6
 CAL_ROW = re.compile(
     r"^\|\s*(\d{1,2}:\d{2})\s*\|\s*(\d{1,2}:\d{2})\s*\|\s*(.*?)\s*\|"
     r"(?:\s*([A-Za-z]+)\s*\|)?")
-CAL_DATE = re.compile(r"(\d{4}-\d{2}-\d{2})")
+# The day the dump covers, read from its heading and nowhere else. An
+# unanchored date matched the frontmatter's `generated:` line first, so a file
+# written today but headed with yesterday read as current -- exactly the shape
+# a refresh that ran against the wrong day would leave behind. The heading is
+# the contract; the frontmatter says when the file was made, not what is in it.
+# Both dashes appear in the wild (the exporter emits an em dash; older files a
+# hyphen), so the separator is not part of the match.
+CAL_DATE = re.compile(r"^#.*?(\d{4}-\d{2}-\d{2})", re.M)
 # `generated:` is preferred and `updated:` is the fallback. Obsidian's
 # update-time-on-edit plugin rewrites `updated:` seconds after any write and
 # strips the timezone offset while doing it, so the exporter also emits
@@ -2846,6 +2853,92 @@ def calendar_from_vault(day: str) -> list[dict] | None:
             "counts": tag in CAL_WORK_TAGS,
         })
     return out
+
+
+# How old the vault dump may get before a refresh is launched. Well inside
+# CAL_STALE_HOURS so a failed attempt has several more tries before the day
+# actually goes calendar-blind, and long enough that the steady state is a
+# handful of refreshes a day rather than one per idle hour.
+CAL_REFRESH_AFTER = timedelta(hours=2)
+# Floor between attempts, which only bites while refreshes are FAILING. A
+# broken connection would otherwise spawn one on every probe run -- once a
+# minute, all day.
+CAL_RETRY_AFTER = timedelta(minutes=30)
+CAL_REFRESH_STAMP = os.path.join(STATE, "calendar-refresh-attempt")
+CAL_REFRESH_CMD = os.path.expanduser("~/.claude/bin/calendar-refresh.sh")
+
+
+def refresh_calendar_if_stale(now: datetime | None = None) -> bool:
+    """Launch the calendar refresh when the vault dump is going stale.
+
+    It lives here, rather than in a launchd job of its own, because of what
+    reaching the vault costs: the dump, the refresh script and the repo it
+    lives in are all under ~/Documents, and a LaunchAgent gets "Operation not
+    permitted" on every one of them -- macOS grants that directory per
+    executable, and /bin/zsh does not have it. The probe does, by inheritance
+    from the bar app, and it already runs every minute. So the machine that
+    can do this is the one already awake.
+
+    Fire-and-forget on purpose. The refresh shells out to a language model and
+    takes the better part of a minute; waiting on it would stall a probe run
+    that has a dot to draw. Nothing here reads the result -- the next run picks
+    the new file up by finding it on disk, the same way it would have found one
+    written by anything else.
+
+    Returns whether an attempt was launched, for the tests and for the caller.
+    False is the ordinary answer: the file is usually fresh.
+    """
+    now = now or now_local()
+    day = now.strftime("%Y-%m-%d")
+
+    # The stamp is written BEFORE the attempt and is what the retry floor is
+    # measured from, so a refresh that hangs or dies without writing anything
+    # still counts as having been tried. Measuring from the dump's own age
+    # instead would retry on every run for as long as the failure lasted.
+    try:
+        last = datetime.fromtimestamp(os.path.getmtime(CAL_REFRESH_STAMP), LOCAL)
+    except OSError:
+        last = None
+    if last and now - last < CAL_RETRY_AFTER:
+        return False
+
+    # Age is read from the file's own `generated:` stamp rather than its mtime,
+    # for the same reason calendar_from_vault does: the vault syncs, and a copy
+    # landing from another machine touches the mtime without making the
+    # contents any newer.
+    fresh = False
+    try:
+        with open(CAL_FILE) as fh:
+            text = fh.read()
+        head = CAL_DATE.search(text)
+        up = CAL_GENERATED.search(text) or CAL_UPDATED.search(text)
+        if head and head.group(1) == day and up:
+            gen = datetime.fromisoformat(up.group(1))
+            if gen.tzinfo is None:
+                gen = gen.replace(tzinfo=LOCAL)
+            fresh = now - gen < CAL_REFRESH_AFTER
+    except (OSError, ValueError):
+        fresh = False
+    if fresh:
+        return False
+
+    if not os.access(CAL_REFRESH_CMD, os.X_OK):
+        return False
+
+    os.makedirs(os.path.dirname(CAL_REFRESH_STAMP), exist_ok=True)
+    with open(CAL_REFRESH_STAMP, "w") as fh:
+        fh.write(now.isoformat())
+    try:
+        subprocess.Popen(
+            [CAL_REFRESH_CMD],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            # Detached, so the refresh outlives the probe run that started it.
+            # A one-minute child of a process that exits in seconds would
+            # otherwise be killed halfway through and never write anything.
+            start_new_session=True)
+    except OSError:
+        return False
+    return True
 
 
 def calendar_events(day: str) -> list[dict] | None:
@@ -3687,6 +3780,7 @@ def closed_gap(events: list[datetime], now: datetime):
 
 def check() -> None:
     now = now_local()
+    refresh_calendar_if_stale(now)
     events = events_for(now.strftime("%Y-%m-%d"))
     resolved = resolve_pending(now, events)
 
