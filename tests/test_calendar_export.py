@@ -836,3 +836,143 @@ def test_malformed_profile_raises(tmp_path):
     f = tmp_path / "profile.json"; f.write_text("{not json")
     with pytest.raises(ce.CalendarExportError):
         ce.load_profile(str(f))
+
+
+# --------------------------------------------------------------------------
+# --from-json: the credential-free path
+# --------------------------------------------------------------------------
+
+
+def snapshot(calendars, day="2026-08-27"):
+    return {"date": day, "calendars": calendars}
+
+
+def snap_cal(cid, access_role, events):
+    return {"id": cid, "accessRole": access_role, "events": events}
+
+
+def snap_event(start, end, **extra):
+    ev = {"start": start, "end": end, "summary": None, "status": "confirmed",
+          "transparency": None, "allDay": False, "myResponse": None}
+    ev.update(extra)
+    return ev
+
+
+def write_snapshot(tmp_path, doc):
+    path = tmp_path / "snapshot.json"
+    path.write_text(json.dumps(doc))
+    return str(path)
+
+
+def test_snapshot_splits_personal_from_work():
+    personal, work = ce.events_from_snapshot(snapshot([
+        snap_cal("oliverullman@gmail.com", "owner",
+                 [snap_event("2026-08-27T09:00:00-04:00", "2026-08-27T09:30:00-04:00",
+                             summary="Dentist")]),
+        snap_cal(ce.WORK_CALENDAR_ID, "freeBusyReader",
+                 [snap_event("2026-08-27T14:00:00-04:00", "2026-08-27T15:00:00-04:00")]),
+    ]))
+    assert [e["summary"] for e in personal] == ["Dentist"]
+    assert work[0]["start"] == {"dateTime": "2026-08-27T14:00:00-04:00"}
+
+
+def test_snapshot_drops_read_only_subscriptions():
+    """A football fixture list says nothing about whether he was working."""
+    personal, work = ce.events_from_snapshot(snapshot([
+        snap_cal("holidays@group.calendar.google.com", "reader",
+                 [snap_event("2026-08-27T10:00:00-04:00", "2026-08-27T11:00:00-04:00",
+                             summary="Some holiday")]),
+    ]))
+    assert personal == [] and work == []
+
+
+def test_snapshot_declined_invitation_is_still_excluded():
+    """The filtering rules have to survive the trip through the new shape."""
+    personal, work = ce.events_from_snapshot(snapshot([
+        snap_cal("oliverullman@gmail.com", "owner",
+                 [snap_event("2026-08-27T09:00:00-04:00", "2026-08-27T09:30:00-04:00",
+                             summary="Declined thing", myResponse="declined")]),
+    ]))
+    assert ce.render_rows(ce.merge_events(personal, work), date(2026, 8, 27)) == []
+
+
+def test_snapshot_transparent_and_all_day_events_are_excluded():
+    personal, work = ce.events_from_snapshot(snapshot([
+        snap_cal("oliverullman@gmail.com", "owner", [
+            snap_event("2026-08-27T09:00:00-04:00", "2026-08-27T09:30:00-04:00",
+                       summary="Free block", transparency="transparent"),
+            snap_event("2026-08-27", "2026-08-28", summary="PTO", allDay=True),
+        ]),
+    ]))
+    assert ce.render_rows(ce.merge_events(personal, work), date(2026, 8, 27)) == []
+
+
+def test_snapshot_work_mirror_of_a_personal_event_is_dropped():
+    personal, work = ce.events_from_snapshot(snapshot([
+        snap_cal("oliverullman@gmail.com", "owner",
+                 [snap_event("2026-08-27T17:00:00-04:00", "2026-08-27T18:00:00-04:00",
+                             summary="BlueSleep appliance fitting")]),
+        snap_cal(ce.WORK_CALENDAR_ID, "freeBusyReader",
+                 [snap_event("2026-08-27T17:00:00-04:00", "2026-08-27T18:00:00-04:00")]),
+    ]))
+    rows = ce.render_rows(ce.merge_events(personal, work), date(2026, 8, 27))
+    assert rows == [("17:00", "18:00", "BlueSleep appliance fitting", "personal")]
+
+
+def test_snapshot_for_the_wrong_day_is_refused(tmp_path):
+    """Yesterday's meetings under today's heading would tell the probe an hour
+    nobody worked was a meeting, and nothing downstream could notice."""
+    path = write_snapshot(tmp_path, snapshot([], day="2026-08-26"))
+    with pytest.raises(ce.CalendarExportError):
+        ce.load_snapshot(path, date(2026, 8, 27))
+
+
+def test_snapshot_with_an_unparseable_time_is_refused(tmp_path):
+    path = write_snapshot(tmp_path, snapshot([
+        snap_cal("oliverullman@gmail.com", "owner",
+                 [snap_event("tomorrow afternoon", "2026-08-27T09:30:00-04:00")]),
+    ]))
+    with pytest.raises(ce.CalendarExportError):
+        ce.load_snapshot(path, date(2026, 8, 27))
+
+
+def test_snapshot_missing_calendars_key_is_refused(tmp_path):
+    path = tmp_path / "snapshot.json"
+    path.write_text(json.dumps({"date": "2026-08-27"}))
+    with pytest.raises(ce.CalendarExportError):
+        ce.load_snapshot(str(path), date(2026, 8, 27))
+
+
+def test_snapshot_that_is_not_json_is_refused(tmp_path):
+    path = tmp_path / "snapshot.json"
+    path.write_text("NO_CONNECTOR")
+    with pytest.raises(ce.CalendarExportError):
+        ce.load_snapshot(str(path), date(2026, 8, 27))
+
+
+def test_run_from_snapshot_writes_the_file_without_any_credentials(tmp_path):
+    """The whole point: no tokens.env, no network, same output file."""
+    out = tmp_path / "calendar-today.md"
+    path = write_snapshot(tmp_path, snapshot([
+        snap_cal(ce.WORK_CALENDAR_ID, "freeBusyReader",
+                 [snap_event("2026-08-27T12:15:00-04:00", "2026-08-27T12:30:00-04:00")]),
+    ]))
+    content = ce.run(local_date=date(2026, 8, 27), snapshot_path=path,
+                     output_path=str(out), tokens_path="/nonexistent/tokens.env",
+                     now=FIXED_NOW, overrides_path=str(tmp_path / "none.json"),
+                     work_blocks_path=str(tmp_path / "none2.json"))
+    assert "| 12:15 | 12:30 | (busy) | work |" in content
+    assert out.read_text() == content
+
+
+def test_run_from_a_bad_snapshot_leaves_the_previous_file_untouched(tmp_path):
+    out = tmp_path / "calendar-today.md"
+    out.write_text("previous good content")
+    path = tmp_path / "snapshot.json"
+    path.write_text("not json at all")
+    with pytest.raises(ce.CalendarExportError):
+        ce.run(local_date=date(2026, 8, 27), snapshot_path=str(path),
+               output_path=str(out), tokens_path="/nonexistent/tokens.env",
+               now=FIXED_NOW, overrides_path=str(tmp_path / "none.json"),
+               work_blocks_path=str(tmp_path / "none2.json"))
+    assert out.read_text() == "previous good content"

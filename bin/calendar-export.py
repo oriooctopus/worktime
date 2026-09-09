@@ -333,6 +333,87 @@ def render_rows(tagged_events, local_date, tz=NY_TZ):
     return rows
 
 
+def events_from_snapshot(doc, tz=NY_TZ):
+    """Split a hand-supplied calendar dump into (personal, work) event lists.
+
+    The OAuth path is not the only way to reach a calendar: a Claude client
+    holding a Google Calendar connection can read the same events without this
+    machine needing a refresh token of its own, which is what keeps the export
+    running after the credentials went missing from tokens.env. It supplies a
+    flat, verbatim-hostile shape -- one dict per event, no nesting -- because
+    every field it emits was retyped by a language model, and a nested Google
+    event object is far easier to get subtly wrong than six scalars.
+
+    Rebuilt into Google's shape here rather than teaching should_include and
+    friends a second dialect: the filtering rules are the delicate part (a
+    declined invitation and a transparent block both have to vanish), and they
+    are already right for one input shape. Two shapes would mean two chances
+    to get them wrong, and the second one would only be exercised by whichever
+    path happened to be running that week.
+    """
+    personal, work = [], []
+    for cal in doc["calendars"]:
+        bucket = (work if cal["id"] == WORK_CALENDAR_ID
+                  else personal if cal.get("accessRole") in PERSONAL_ACCESS_ROLES
+                  else None)
+        if bucket is None:
+            # A subscribed calendar -- holidays, a football fixture list. Read
+            # access to somebody else's calendar says nothing about this
+            # person's day, which is the same cut personal_calendar_ids makes.
+            continue
+        for ev in cal["events"]:
+            rebuilt = {
+                "status": ev.get("status") or "confirmed",
+                "summary": ev.get("summary"),
+            }
+            if ev.get("transparency"):
+                rebuilt["transparency"] = ev["transparency"]
+            if ev.get("myResponse"):
+                rebuilt["attendees"] = [{"self": True,
+                                         "responseStatus": ev["myResponse"]}]
+            if ev.get("allDay"):
+                # should_include drops these, but it recognises an all-day
+                # event by the "date" key rather than by a flag, so the shape
+                # has to carry that distinction rather than the flag itself.
+                rebuilt["start"] = {"date": ev["start"]}
+                rebuilt["end"] = {"date": ev["end"]}
+            else:
+                # Parsed here, and not only in render_rows, so a malformed
+                # timestamp fails the whole run instead of writing a file with
+                # one silently missing meeting. Nothing downstream would ever
+                # report the absence.
+                for slot in ("start", "end"):
+                    datetime.fromisoformat(ev[slot]).astimezone(tz)
+                rebuilt["start"] = {"dateTime": ev["start"]}
+                rebuilt["end"] = {"dateTime": ev["end"]}
+            bucket.append(rebuilt)
+    return personal, work
+
+
+def load_snapshot(path, local_date):
+    """Read and check a supplied dump, or raise. Never returns a partial read.
+
+    The date is checked against the day being written because the failure it
+    guards is invisible downstream: yesterday's meetings rendered under
+    today's heading pass every other validation here and then tell the probe
+    that an hour nobody worked was a meeting.
+    """
+    try:
+        with open(path) as fh:
+            doc = json.load(fh)
+    except (OSError, ValueError) as e:
+        raise CalendarExportError(f"cannot read snapshot {path}: {e}")
+    if not isinstance(doc, dict) or not isinstance(doc.get("calendars"), list):
+        raise CalendarExportError(f"snapshot {path} has no calendars list")
+    if doc.get("date") != local_date.isoformat():
+        raise CalendarExportError(
+            f"snapshot is for {doc.get('date')!r}, expected {local_date.isoformat()}")
+    try:
+        return events_from_snapshot(doc)
+    except (KeyError, TypeError, ValueError) as e:
+        raise CalendarExportError(f"snapshot {path} is malformed: {e}")
+
+
 def load_overrides(path):
     """Return {date_str: {"overrides": [...], "add": [...]}} of hand corrections.
 
@@ -506,7 +587,7 @@ def _http_get_json(url, access_token):
 
 def run(local_date=None, tokens_path=None, output_path=None,
         http_post=None, http_get=None, now=None, overrides_path=None,
-        work_blocks_path=None):
+        work_blocks_path=None, snapshot_path=None):
     # tokens_path/output_path default to None (not the module constants
     # directly) so a test's monkeypatch.setattr(module, "TOKENS_PATH", ...)
     # takes effect -- a default bound at def time would freeze in whatever
@@ -520,18 +601,21 @@ def run(local_date=None, tokens_path=None, output_path=None,
     overrides_path = overrides_path if overrides_path is not None else OVERRIDES_PATH
     work_blocks_path = work_blocks_path if work_blocks_path is not None else WORK_BLOCKS_PATH
 
-    env = load_tokens_env(tokens_path)
-    access_token = get_access_token(env, http_post=http_post, tokens_path=tokens_path)
+    if snapshot_path:
+        personal, work = load_snapshot(snapshot_path, local_date)
+    else:
+        env = load_tokens_env(tokens_path)
+        access_token = get_access_token(env, http_post=http_post, tokens_path=tokens_path)
 
-    time_min, time_max = day_window(local_date)
-    calendar_list = fetch_calendar_list(access_token, http_get=http_get)
+        time_min, time_max = day_window(local_date)
+        calendar_list = fetch_calendar_list(access_token, http_get=http_get)
 
-    personal = []
-    for calendar_id in personal_calendar_ids(calendar_list):
-        personal.extend(
-            fetch_events(access_token, calendar_id, time_min, time_max, http_get=http_get)
-        )
-    work = fetch_events(access_token, WORK_CALENDAR_ID, time_min, time_max, http_get=http_get)
+        personal = []
+        for calendar_id in personal_calendar_ids(calendar_list):
+            personal.extend(
+                fetch_events(access_token, calendar_id, time_min, time_max, http_get=http_get)
+            )
+        work = fetch_events(access_token, WORK_CALENDAR_ID, time_min, time_max, http_get=http_get)
 
     rows = render_rows(merge_events(personal, work), local_date)
     rows = sorted(rows + load_work_blocks(work_blocks_path, local_date),
@@ -544,9 +628,15 @@ def run(local_date=None, tokens_path=None, output_path=None,
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.parse_args()
+    parser.add_argument(
+        "--from-json", metavar="PATH", dest="snapshot",
+        help="read events from a supplied JSON dump instead of Google's API. "
+             "The way calendar-refresh.sh feeds in what a Claude client read "
+             "over its own Calendar connection, so this machine needs no "
+             "OAuth credentials of its own.")
+    args = parser.parse_args()
     try:
-        run()
+        run(snapshot_path=args.snapshot)
     except CalendarExportError as e:
         print(f"calendar-export: {e}", file=sys.stderr)
         sys.exit(1)
