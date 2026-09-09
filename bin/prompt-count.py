@@ -315,6 +315,82 @@ def summarize_sessions(sessions_with_texts: list[tuple[dict, list[str]]], api_ke
                 session["summary_body"] = ""
 
 
+# Written by bin/worktime-prompt-mark.py on every prompt: which transcripts a
+# day's prompts landed in. See transcripts_for().
+INDEX_DIR = os.path.expanduser("~/.claude/stats/worktime/prompt-index")
+SINCE = os.path.join(INDEX_DIR, "since")
+
+
+def index_since() -> str | None:
+    """First day the prompt index was being written, or None if never.
+
+    Days at or before it are not covered: the index begins partway through
+    whatever day the hook was installed, so its earlier prompts were never
+    recorded and only the transcripts still hold them.
+    """
+    try:
+        with open(SINCE) as fh:
+            return fh.read().strip() or None
+    except OSError:
+        return None
+
+
+def transcripts_for(day: str, cutoff: float) -> list[str]:
+    """Transcripts that could hold a prompt from `day`.
+
+    Two sources, and which one applies is decided by the date rather than by
+    whether a read happens to succeed -- a missing index for a covered day is
+    a broken hook, and quietly walking instead would turn that into a slightly
+    short day nobody would ever notice.
+
+    THE INDEX, for days the hook covered end to end. The prompt hook records
+    the transcript path on every prompt, so the day's sessions are already
+    known and there is nothing to search for: a handful of opens against the
+    3,166 filesystem metadata operations a walk costs. That walk is what put
+    the probe past its watchdog -- warm it is ~40ms, but with the machine
+    swapping the metadata cache is evicted between polls and it runs for tens
+    of seconds in uninterruptible disk wait.
+
+    THE WALK, for every earlier day, which predates the index and can only be
+    answered by looking. Those days are computed once and cached, so the cost
+    lands off the five-second path. Transcripts are append-only, so an mtime
+    below the day's start rules a file out -- a sound prune, not a sample.
+    """
+    since = index_since()
+    if since is None or day <= since:
+        return [
+            os.path.join(root, f)
+            for root, _dirs, files in itertools.chain.from_iterable(
+                os.walk(p) for p in PROJECT_ROOTS
+            )
+            for f in files
+            if f.endswith(".jsonl")
+            and _mtime_at_least(os.path.join(root, f), cutoff)
+        ]
+
+    paths = []
+    seen = set()
+    with open(os.path.join(INDEX_DIR, f"{day}.jsonl")) as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            path = json.loads(line).get("transcript")
+            # A transcript deleted since the prompt was recorded is gone for
+            # good; the walk would not have found it either.
+            if path and path not in seen and os.path.exists(path):
+                seen.add(path)
+                paths.append(path)
+    return paths
+
+
+def _mtime_at_least(path: str, cutoff: float) -> bool:
+    try:
+        return os.stat(path).st_mtime >= cutoff
+    except OSError:
+        return False
+
+
 def count_for_day(day: str, summarize: bool = False, full: bool = False) -> dict:
     """Per-session prompt counts for one LOCAL calendar day.
 
@@ -342,76 +418,65 @@ def count_for_day(day: str, summarize: bool = False, full: bool = False) -> dict
     sessions = []
     sessions_hits: list[tuple[dict, list[str]]] = []  # for optional summarization
     total = 0
-    for root, _dirs, files in itertools.chain.from_iterable(
-        os.walk(p) for p in PROJECT_ROOTS
-    ):
-        for fname in files:
-            if not fname.endswith(".jsonl"):
+    for path in transcripts_for(day, cutoff):
+        hits = []
+        for text, ts, title in cached_prompts_with_time(path):
+            if not ts:
                 continue
-            path = os.path.join(root, fname)
             try:
-                if os.stat(path).st_mtime < cutoff:
-                    continue
-            except OSError:
+                when = datetime.fromisoformat(
+                    ts.replace("Z", "+00:00")
+                ).astimezone(LOCAL)
+            except ValueError:
                 continue
-            hits = []
-            for text, ts, title in cached_prompts_with_time(path):
-                if not ts:
-                    continue
-                try:
-                    when = datetime.fromisoformat(
-                        ts.replace("Z", "+00:00")
-                    ).astimezone(LOCAL)
-                except ValueError:
-                    continue
-                if start_local <= when < end_local:
-                    hits.append((text, when, title))
-            if not hits:
-                continue
-            total += len(hits)
-            # Title as of the day's last prompt: a session renamed mid-day
-            # should read as whatever it had become by the end of that day.
-            title = hits[-1][2]
-            raw_texts = [redact(t) for t, _, _ in hits]
-            session: dict = {
-                "session_id": fname[:-6],
-                "project": os.path.basename(root),
-                "count": len(hits),
-                "first": hits[0][1].strftime("%H:%M"),
-                "last": hits[-1][1].strftime("%H:%M"),
-                "title": redact(title)[:80],
-                "named": bool(title),
-                "opening_prompt": redact(hits[0][0])[:120],
-                # What a renderer should show: the name when there is one,
-                # else the opening prompt as a stand-in.
-                "label": redact(title or hits[0][0])[:100],
-                # First 20 prompts, each truncated to 150 chars. Stored in
-                # the note so the dashboard can show the full list on click.
-                # Capped at 20 by default because these carry prompt TEXT into
-                # the Obsidian note. `full` lifts the cap for callers that need
-                # to know what was said across a whole day rather than render a
-                # readable list -- a summariser cannot describe an afternoon it
-                # was only shown the morning of.
-                "prompts": [{"text": redact(t)[:150], "ts": w.strftime("%H:%M")}
-                            for t, w, _ in (hits if full else hits[:20])],
-                # EVERY timestamp, uncapped. The 20-cap above exists to keep
-                # prompt text out of the Obsidian note, but it was silently
-                # truncating the timing signal too: a 46-prompt session running
-                # to 17:56 exposed only its first 20, so an entire afternoon of
-                # work read as absence and the gap detector invented a
-                # two-and-a-half-hour hole that never happened. Bare "HH:MM"
-                # strings cost five bytes each, so there is no reason to cap
-                # them alongside the text.
-                #
-                # Seconds are kept. At minute resolution a burst of four prompts
-                # inside one minute collapsed to four identical stamps, so the
-                # work period they formed measured last-minus-first = zero and
-                # rendered as "23:52-23:52 0m". Consumers that want minutes can
-                # truncate; nothing can recover a second that was never written.
-                "times": [w.strftime("%H:%M:%S") for _, w, _ in hits],
-            }
-            sessions.append(session)
-            sessions_hits.append((session, raw_texts))
+            if start_local <= when < end_local:
+                hits.append((text, when, title))
+        if not hits:
+            continue
+        total += len(hits)
+        # Title as of the day's last prompt: a session renamed mid-day
+        # should read as whatever it had become by the end of that day.
+        title = hits[-1][2]
+        raw_texts = [redact(t) for t, _, _ in hits]
+        session: dict = {
+            "session_id": os.path.basename(path)[:-6],
+            "project": os.path.basename(os.path.dirname(path)),
+            "count": len(hits),
+            "first": hits[0][1].strftime("%H:%M"),
+            "last": hits[-1][1].strftime("%H:%M"),
+            "title": redact(title)[:80],
+            "named": bool(title),
+            "opening_prompt": redact(hits[0][0])[:120],
+            # What a renderer should show: the name when there is one,
+            # else the opening prompt as a stand-in.
+            "label": redact(title or hits[0][0])[:100],
+            # First 20 prompts, each truncated to 150 chars. Stored in
+            # the note so the dashboard can show the full list on click.
+            # Capped at 20 by default because these carry prompt TEXT into
+            # the Obsidian note. `full` lifts the cap for callers that need
+            # to know what was said across a whole day rather than render a
+            # readable list -- a summariser cannot describe an afternoon it
+            # was only shown the morning of.
+            "prompts": [{"text": redact(t)[:150], "ts": w.strftime("%H:%M")}
+                        for t, w, _ in (hits if full else hits[:20])],
+            # EVERY timestamp, uncapped. The 20-cap above exists to keep
+            # prompt text out of the Obsidian note, but it was silently
+            # truncating the timing signal too: a 46-prompt session running
+            # to 17:56 exposed only its first 20, so an entire afternoon of
+            # work read as absence and the gap detector invented a
+            # two-and-a-half-hour hole that never happened. Bare "HH:MM"
+            # strings cost five bytes each, so there is no reason to cap
+            # them alongside the text.
+            #
+            # Seconds are kept. At minute resolution a burst of four prompts
+            # inside one minute collapsed to four identical stamps, so the
+            # work period they formed measured last-minus-first = zero and
+            # rendered as "23:52-23:52 0m". Consumers that want minutes can
+            # truncate; nothing can recover a second that was never written.
+            "times": [w.strftime("%H:%M:%S") for _, w, _ in hits],
+        }
+        sessions.append(session)
+        sessions_hits.append((session, raw_texts))
 
     sessions.sort(key=lambda s: s["count"], reverse=True)
 
@@ -420,6 +485,13 @@ def count_for_day(day: str, summarize: bool = False, full: bool = False) -> dict
         if api_key:
             summarize_sessions(sessions_hits, api_key)
 
+    # Ordered by when each session's first prompt landed. Left unsorted this
+    # came out in os.walk order -- arbitrary, and different depending on
+    # whether the day was answered from the index or from a walk, which is
+    # exactly the kind of difference that makes two supposedly equivalent code
+    # paths impossible to compare. Reading a day top to bottom in the order it
+    # happened is also what every consumer wanted anyway.
+    sessions.sort(key=lambda s: (s["first"], s["session_id"]))
     return {"date": day, "total": total, "sessions": sessions}
 
 

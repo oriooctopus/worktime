@@ -60,6 +60,19 @@ import worktime_common as wc  # noqa: E402
 STATE = os.path.expanduser("~/.claude/stats/worktime")
 MARK = os.path.join(STATE, "prompt-mark.json")
 
+# Which transcripts a day's prompts landed in, so bin/prompt-count.py can open
+# those few instead of walking every transcript on the machine to find them.
+# An index of paths, deliberately NOT a copy of the prompts: the counter's
+# filters (entrypoint, isMeta, isSidechain, the running session title, the
+# fork/rewind dedup) are subtle and worth exactly one implementation, and the
+# UserPromptSubmit payload does not carry `entrypoint` to reproduce them with.
+# Recording where to look keeps every one of those decisions where it is.
+INDEX_DIR = os.path.join(STATE, "prompt-index")
+# The day the index went live. Days before it -- and the install day itself,
+# whose earlier prompts happened before the hook existed -- are incomplete, so
+# the counter walks those rather than trusting a partial answer.
+SINCE = os.path.join(INDEX_DIR, "since")
+
 
 def main() -> None:
     try:
@@ -87,6 +100,22 @@ def main() -> None:
         with os.fdopen(fd, "w") as fh:
             fh.write(body)
         os.replace(tmp, MARK)
+
+        transcript = payload.get("transcript_path")
+        if transcript:
+            os.makedirs(INDEX_DIR, exist_ok=True)
+            if not os.path.exists(SINCE):
+                with open(SINCE, "w") as fh:
+                    fh.write(now.strftime("%Y-%m-%d"))
+            # Appended, not overwritten: a day has many sessions and the
+            # counter needs all of them. Duplicates are expected -- one line
+            # per prompt, not per session -- and the reader dedups, which is
+            # cheaper than reading the file back here on every prompt.
+            with open(os.path.join(
+                    INDEX_DIR, now.strftime("%Y-%m-%d") + ".jsonl"), "a") as fh:
+                fh.write(json.dumps({"transcript": transcript,
+                                     "session": payload.get("session_id") or ""})
+                         + "\n")
     except Exception:
         pass
 

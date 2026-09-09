@@ -685,6 +685,20 @@ that registration. It has to: all the profiles share one mark file, so an
 unhooked profile does not break anything visible — its prompts just stop
 counting, and the day quietly reads as emptier than it was.
 
+The hook writes two things under `~/.claude/stats/worktime/`:
+
+- `prompt-mark.json` — overwritten every prompt. The probe stats it to decide
+  whether the cached day is still good, which is the whole freshness check.
+- `prompt-index/<day>.jsonl` — appended every prompt, recording which
+  transcript it landed in, plus a `since` file marking the first day the index
+  was live. `prompt-count.py` opens the transcripts a day's index names rather
+  than walking every transcript on the machine to find them; days at or before
+  `since` predate the index and are still walked.
+
+Neither file holds prompt text — the index records only *where* to look, so
+every decision about what counts as a human at a keyboard (the `entrypoint`
+filter and the rest of `prompts_with_time`) stays in one place.
+
 `bin/done-daily.sh` wants the same treatment for the same reason — its
 LaunchAgent hardcodes `$HOME/.claude/bin/done-daily.sh`, so the agent finds
 the script through the symlink rather than through this checkout's path:
