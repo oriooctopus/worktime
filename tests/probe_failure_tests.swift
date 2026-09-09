@@ -284,6 +284,78 @@ func testClipMarksWhatItCut() {
 
 // Top-level code only compiles in a file called main.swift, and this one is
 // named after what it tests; same shape as the other Swift suites here.
+
+// What a stall costs the dot, as opposed to what it says.
+//
+// A probe killed at the watchdog never got far enough to disagree with the
+// last reading, so the reading stands and the timer stops relaunching into a
+// machine that just proved it cannot finish one. Both halves are pure
+// functions on purpose: the state they describe takes a memory-starved Mac to
+// reproduce, and this is the only place it can be asserted on demand.
+
+func testAStallKeepsTheReadingAlreadyOnScreen() {
+    let good = Date().addingTimeInterval(-10)
+    check(StallPolicy.holdsLastReading(stalled(), lastGood: good),
+          "a fresh reading survives a stall")
+}
+
+func testAStaleReadingIsNotWorthKeeping() {
+    let good = Date().addingTimeInterval(-(STALE_AFTER_SEC + 1))
+    check(!StallPolicy.holdsLastReading(stalled(), lastGood: good),
+          "a reading past STALE_AFTER_SEC goes red")
+}
+
+func testACrashGoesRedImmediately() {
+    // A traceback IS a disagreement with the last reading -- something is
+    // wrong with the tracker, not with the machine's spare memory.
+    let good = Date()
+    check(!StallPolicy.holdsLastReading(crashed(), lastGood: good),
+          "a traceback is never held")
+}
+
+func testAProbeThatHasNeverAnsweredIsBroken() {
+    check(!StallPolicy.holdsLastReading(stalled(), lastGood: nil),
+          "no good reading yet means nothing to hold")
+}
+
+func testALaunchFailureIsNeverHeld() {
+    let f = ProbeFailure(args: ["status"], path: PATH, killed: true,
+                         launchError: "No such file or directory")
+    check(!StallPolicy.holdsLastReading(f, lastGood: Date()),
+          "a probe that will not launch is broken however it ended")
+}
+
+func testTheHoldEndsExactlyAtTheStaleMark() {
+    let good = Date().addingTimeInterval(-STALE_AFTER_SEC)
+    check(!StallPolicy.holdsLastReading(stalled(), lastGood: good),
+          "the boundary is not held")
+}
+
+func testAnAnsweringPollPaysNoBackoff() {
+    check(StallPolicy.backoff(consecutiveKills: 0) == 0,
+          "no backoff while the polls are answering")
+}
+
+func testBackoffGrowsWithConsecutiveKills() {
+    let first = StallPolicy.backoff(consecutiveKills: 1)
+    let second = StallPolicy.backoff(consecutiveKills: 2)
+    check(first > 0 && second > first,
+          "a machine still stalling is asked less often, not more")
+}
+
+func testBackoffStopsGrowing() {
+    // Otherwise a bad afternoon ends with the dot updating once an hour.
+    let capped = StallPolicy.backoff(consecutiveKills: 99)
+    check(capped == PROBE_BACKOFF_SEC.last!,
+          "the wait is capped at the last step")
+}
+
+func testBackoffIsLongerThanAPoll() {
+    // The whole point: five seconds is what was making the pile-up.
+    check(StallPolicy.backoff(consecutiveKills: 1) > 5.0,
+          "the first backoff is longer than the poll interval")
+}
+
 @main
 enum ProbeFailureTests {
     static func main() {
@@ -306,6 +378,17 @@ enum ProbeFailureTests {
         testReportSaysWhenStderrWasEmpty()
         testTerminalColorCodesAreStripped()
         testClipMarksWhatItCut()
+
+        testAStallKeepsTheReadingAlreadyOnScreen()
+        testAStaleReadingIsNotWorthKeeping()
+        testACrashGoesRedImmediately()
+        testAProbeThatHasNeverAnsweredIsBroken()
+        testALaunchFailureIsNeverHeld()
+        testTheHoldEndsExactlyAtTheStaleMark()
+        testAnAnsweringPollPaysNoBackoff()
+        testBackoffGrowsWithConsecutiveKills()
+        testBackoffStopsGrowing()
+        testBackoffIsLongerThanAPoll()
 
         print(failures == 0 ? "all probe failure checks passed"
                             : "\(failures) probe failure check(s) failed")
