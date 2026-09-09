@@ -29,6 +29,14 @@ set -uo pipefail
 # with no -f, so python3 -- already a hard dependency below -- does it.
 BIN="$(python3 -c 'import os,sys; print(os.path.dirname(os.path.realpath(sys.argv[1])))' "${BASH_SOURCE[0]}")"
 CLAUDE="${CLAUDE_BIN:-$HOME/.local/bin/claude}"
+
+# The Calendar connection is scoped to a project directory, so where this runs
+# decides whether it can read a calendar at all: from $HOME the same prompt
+# comes back "I don't have access to Google Calendar tools in this
+# environment". The probe launches this as a child and hands down whatever
+# working directory the bar app happened to have, which is not the repo -- so
+# the directory is pinned here rather than inherited.
+cd "$BIN/.." || exit 1
 TODAY="$(date +%Y-%m-%d)"
 OUT="$(mktemp -t calendar-refresh)"
 trap 'rm -f "$OUT" "$OUT.json" "$OUT.err"' EXIT
