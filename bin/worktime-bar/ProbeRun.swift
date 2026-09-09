@@ -27,6 +27,34 @@ import Foundation
 // must not be able to disagree about what the number is.
 let PROBE_TIMEOUT_SEC = 30.0
 
+/// How long a reading stays worth showing after the polls stop answering.
+///
+/// A probe killed at the watchdog has not disagreed with the last reading --
+/// it never got far enough to have an opinion. The dot answers "is somebody
+/// working", which does not change in the seconds it takes a loaded machine to
+/// fault a Python interpreter back in from swap, so the honest response to a
+/// stall is the previous answer, not a red bullet claiming the tracker is
+/// broken.
+///
+/// Two minutes because that is where the two errors cross. Below it, showing
+/// the old dot is right far more often than it is wrong. Past it the reading
+/// predates a whole gap-detection window and would start hiding exactly what
+/// the dot exists to show, so it goes red and says so.
+let STALE_AFTER_SEC = 120.0
+
+/// What the timer waits after a kill before it may launch another probe.
+///
+/// A killed probe writes no cache, so the poll behind it redoes the same cold
+/// work and is killed in turn -- which is why these arrive in runs of a
+/// hundred and more rather than one at a time. Worse, the machine is being
+/// killed BY memory pressure, and relaunching a fresh interpreter every five
+/// seconds into that is the one place this app makes its own problem worse.
+///
+/// Stepped rather than fixed: one stall is usually a passing spike and 15s is
+/// enough, while a machine still stalling a minute later is not going to be
+/// helped by asking it twelve more times.
+let PROBE_BACKOFF_SEC: [Double] = [15, 30, 60]
+
 /// How many characters of the 10pt monospaced face a debug row holds. Measured
 /// against the row it is drawn in rather than guessed: at 44 the wrapped rows
 /// came out middle-truncated on screen, which reads as a bug in the block
@@ -230,6 +258,36 @@ struct ProbeFailure {
 enum ProbeRun {
     case ok(String)
     case failed(ProbeFailure)
+}
+
+/// What to do about a poll that stalled, as opposed to one that was wrong.
+///
+/// Free of AppKit and of any clock but the one passed in, because both of
+/// these decisions are otherwise reproducible only by starving a real machine
+/// of memory and waiting.
+enum StallPolicy {
+    /// Whether the reading already on screen should stay there.
+    ///
+    /// Only for the watchdog's own kill. A probe that exits non-zero has run
+    /// far enough to raise, and a traceback IS a disagreement with the last
+    /// reading -- something is wrong with the tracker and the dot should say
+    /// so immediately. A launch failure is the same: nothing ran, and nothing
+    /// is going to until it is fixed.
+    static func holdsLastReading(_ fail: ProbeFailure, lastGood: Date?,
+                                 now: Date = Date()) -> Bool {
+        guard fail.killed, fail.launchError == nil else { return false }
+        // No good reading yet means there is nothing to hold. A probe that has
+        // never once answered since launch is broken, however it fails.
+        guard let good = lastGood else { return false }
+        return now.timeIntervalSince(good) < STALE_AFTER_SEC
+    }
+
+    /// How long the timer should stay quiet after `kills` consecutive kills.
+    /// Zero when the last poll answered, which is the ordinary case.
+    static func backoff(consecutiveKills kills: Int) -> TimeInterval {
+        guard kills > 0 else { return 0 }
+        return PROBE_BACKOFF_SEC[min(kills, PROBE_BACKOFF_SEC.count) - 1]
+    }
 }
 
 /// Breaks a line into at most `rows` rows of at most `width`, on spaces where

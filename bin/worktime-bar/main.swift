@@ -1391,6 +1391,14 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
     /// rather than a count of polls.
     var probeFailSince: Date?
     var lastGoodPollAt: Date?
+    /// Consecutive watchdog kills, which is what the backoff is stepped on.
+    /// Reset by any poll that answers, including one the user asked for.
+    var consecutiveKills = 0
+    /// When the timer may next launch a probe. Only the timer honours it: a
+    /// refresh the user asked for -- the Refresh row, opening the menu, the
+    /// completion of an action -- is a question worth a stalled machine's
+    /// time, and silently ignoring it would look like the app had hung.
+    var timerProbeHeldUntil: Date?
     var hotKeyRef: EventHotKeyRef?
     var entryHotKeyRef: EventHotKeyRef?
     var endHotKeyRef: EventHotKeyRef?
@@ -1541,7 +1549,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
             // measure of how often the dropdown was opened.
             self.focusLog.sample()
             self.idleWatcher.tick(idle: FocusLog.idleSeconds())
-            self.refresh()
+            self.refreshOnTimer()
         }
         blinkTimer = Timer.scheduledTimer(withTimeInterval: BLINK_INTERVAL, repeats: true) { _ in
             self.tickBlink()
@@ -2053,6 +2061,20 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         poll.request()
     }
 
+    /// The 5s poll's own request, which the backoff can decline.
+    ///
+    /// Separate from refresh() so that only the clock is held back. The dot
+    /// keeps blinking and the menu keeps opening during a hold -- what stops
+    /// is launching a fresh interpreter into a machine that has just proved it
+    /// cannot finish one.
+    func refreshOnTimer() {
+        if let until = timerProbeHeldUntil {
+            if Date() < until { return }
+            timerProbeHeldUntil = nil
+        }
+        refresh()
+    }
+
     private func runStatusProbe() {
         probeQueue.async {
             let run = runProbe(["status"])
@@ -2083,12 +2105,29 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
                                         stderr: "answer was not status JSON")
                 }
                 DispatchQueue.main.async {
-                    var s = self.status
-                    s.state = "broken"
-                    s.why = fail.summary
                     self.probeFail = fail
                     self.probeFailures += 1
                     if self.probeFailSince == nil { self.probeFailSince = Date() }
+                    if fail.killed {
+                        self.consecutiveKills += 1
+                        self.timerProbeHeldUntil = Date().addingTimeInterval(
+                            StallPolicy.backoff(
+                                consecutiveKills: self.consecutiveKills))
+                    }
+                    // A stall is a late answer, not a wrong one, so the
+                    // reading already on screen stays -- see StallPolicy. The
+                    // failure is still recorded above, so the status row goes
+                    // on saying how many polls have failed and when the last
+                    // good one was; what it no longer does is claim the
+                    // tracker is broken because the machine was busy.
+                    if StallPolicy.holdsLastReading(fail,
+                                                    lastGood: self.lastGoodPollAt) {
+                        self.poll.finish()
+                        return
+                    }
+                    var s = self.status
+                    s.state = "broken"
+                    s.why = fail.summary
                     self.apply(s)
                     self.poll.finish()
                 }
@@ -2151,6 +2190,8 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
                 self.probeFailures = 0
                 self.probeFailSince = nil
                 self.lastGoodPollAt = Date()
+                self.consecutiveKills = 0
+                self.timerProbeHeldUntil = nil
                 self.apply(s)
                 self.poll.finish()
             }
