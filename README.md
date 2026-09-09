@@ -532,6 +532,18 @@ decision is `link_anchor`, and the row's title names the minute it returns
 out when there is nothing to link to, which is the ordinary state of the first
 session of the morning.
 
+A mark already running is not, by itself, one of those states. It used to be —
+any open mark refused the click, on the reasoning that an open mark holds the
+day open so there is no gap left to bridge. That holds only for a mark that
+began before the last session ended. Mark as working on sitting back down and
+*then* reach for the link, which is the obvious order to do those two things
+in, and the mark starts after the anchor: it holds the stretch in front of it
+and leaves the gap behind it exactly as unclaimed as if no mark were running.
+The item was offered anyway, named a minute, and banked nothing. Now the span
+written in that case is closed rather than open, ending where the running mark
+begins — it fills the hole and nothing more, and the day stays open on the mark
+that was already open instead of on a second one beside it.
+
 The 30-minute ceiling on an open mark is measured from the minute the mark was
 **made**, not the minute it starts. The two are the same for a mark claiming
 time from the click forward, so this is invisible in the ordinary case — but a

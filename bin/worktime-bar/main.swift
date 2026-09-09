@@ -2413,7 +2413,19 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
     // the title advertised.
     @objc func linkLastSession() {
         probeQueue.async {
-            _ = runProbe(["link_last"])
+            // A refusal is not supposed to be reachable -- the item greys out
+            // on the same None the probe refuses for -- but the menu can go
+            // stale while it is open, and a click that lands then would
+            // otherwise be indistinguishable from one that worked. The log is
+            // where that difference gets recorded.
+            if case .ok(let out) = runProbe(["link_last"]),
+               let data = out.data(using: .utf8),
+               let r = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               r["linked"] as? Bool == false {
+                FileHandle.standardError.write(
+                    "link last: \(r["why"] as? String ?? "refused")\n"
+                        .data(using: .utf8)!)
+            }
             DispatchQueue.main.async { self.refresh() }
         }
     }
