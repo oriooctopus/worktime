@@ -1079,7 +1079,8 @@ def end_session(at_last: bool = False) -> dict:
     }
 
 
-def link_anchor(worked: list[dict], now_m: int, cutoff_sec: int) -> int | None:
+def link_anchor(worked: list[dict], now_m: int, cutoff_sec: int,
+                mark_start: int | None = None) -> int | None:
     """The minute "link with the last session" would join from, or None.
 
     One definition, read by both the menu item and the action behind it. The
@@ -1104,6 +1105,15 @@ def link_anchor(worked: list[dict], now_m: int, cutoff_sec: int) -> int | None:
     is the only one there is. Not an error, just the ordinary state of the
     first session of the morning, and the item greys out for it.
 
+    `mark_start` is where a currently-running mark begins, when one is running.
+    A mark that began at or before the anchor is already holding those minutes
+    open and there is nothing left to claim, so that greys the item out too. A
+    mark that began AFTER the anchor does not: it holds the stretch in front of
+    it and leaves the gap behind it exactly as unclaimed as if no mark existed,
+    which is the case that used to be refused. Marking as working on returning
+    to the desk and then reaching for the link is the obvious order to do those
+    two things in, and it made the link a no-op.
+
     The minute returned is never in the future, and does not need clamping to
     ensure it. A period's end can sit slightly ahead of the clock, because
     TAIL_SEC is added to its last event -- but a period ending after now is
@@ -1114,7 +1124,10 @@ def link_anchor(worked: list[dict], now_m: int, cutoff_sec: int) -> int | None:
         return None
     live = (now_m - worked[-1]["end"]) * 60 <= cutoff_sec
     periods = worked[:-1] if live else worked
-    return periods[-1]["end"] if periods else None
+    if not periods:
+        return None
+    start = periods[-1]["end"]
+    return None if mark_start is not None and mark_start <= start else start
 
 
 def link_last_session() -> dict:
@@ -1136,11 +1149,20 @@ def link_last_session() -> dict:
     closes the way any other mark does: the next prompt resolves it, ⌘⌥S stops
     it, End Session ends it.
 
-    Refuses when a mark is already running, rather than appending a second one.
-    Two open marks was a real bug on the day marks shipped -- nothing in the
-    menu said the first had taken -- and here the refusal is nearly free,
-    because an open mark means the day is already held open and there is no gap
-    to bridge in the first place.
+    Unless something is already holding it open. A mark running from AFTER the
+    anchor is the common case -- back at the desk, marked as working, then
+    reached for the link -- and there the gap behind that mark still needs
+    claiming while the stretch in front of it is already spoken for. So the
+    span written then is closed, ending where the running mark begins: it fills
+    the hole and nothing more, and the day stays open on the mark that was
+    already open rather than on a second one beside it. Two open marks was a
+    real bug on the day marks shipped, and this is how that stays true without
+    refusing the click.
+
+    A mark running from at or before the anchor really does leave nothing to
+    do, and link_anchor returns None for it -- the same None the menu greys out
+    on, so the refusal below is reachable only by clicking through a menu that
+    went stale while it was open.
 
     Rebuilds the snapshot like every other mutating command: the whole point is
     that the two sessions become one in the list the person is looking at, and
@@ -1159,19 +1181,24 @@ def link_last_session() -> dict:
     worked = json.load(open(path)).get("worked", []) if os.path.exists(path) else []
 
     _last, stamps, ev_stamps, _acts = live_activity(day)
-    if next((m for m in marks_for(day, stamps)
-             if m["open"] and m["start"] <= now_m <= m["end"]), None):
-        return {"linked": False, "why": "a mark is already running"}
+    running = next((m for m in marks_for(day, stamps)
+                    if m["open"] and m["start"] <= now_m <= m["end"]), None)
 
     start = link_anchor(worked, now_m,
-                        live_cutoff(day, [m * 60 for m in ev_stamps]))
+                        live_cutoff(day, [m * 60 for m in ev_stamps]),
+                        running["start"] if running else None)
     if start is None:
-        return {"linked": False, "why": "no earlier session to link to"}
+        return {"linked": False, "why": "nothing to link to"}
 
-    add_mark(hhmm_of(start), LINK_NOTE)
+    add_mark(f"{hhmm_of(start)}-{hhmm_of(running['start'])}" if running
+             else hhmm_of(start), LINK_NOTE)
     write_vault_snapshot(day, events_for(day))
-    return {"linked": True, "from": hhmm_of(start), "to": hhmm_of(now_m),
-            "gap": now_m - start}
+    # Where the claim actually reaches, which is the running mark's start when
+    # there is one -- the minutes past that were already claimed, and reporting
+    # `now` there would credit the link with them.
+    to = running["start"] if running else now_m
+    return {"linked": True, "from": hhmm_of(start), "to": hhmm_of(to),
+            "gap": to - start}
 
 
 # The note track_back() writes. Same shape of statement as LINK_NOTE: the
@@ -4221,7 +4248,8 @@ def status() -> dict:
         sessions = group_sessions(all_acts, worked, live=live)
         # Off the same periods the list above was drawn from, so the item can
         # only offer a minute the person can see on screen. None greys it out.
-        link_from = link_anchor(worked, now_m, cutoff_sec)
+        link_from = link_anchor(worked, now_m, cutoff_sec,
+                                open_mark["start"] if open_mark else None)
 
     # Read from the same snapshot the menu bar's period list came from, not
     # recomputed here -- this is the on-disk record of the last completed

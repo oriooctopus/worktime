@@ -88,6 +88,20 @@ class LinkAnchorCase(unittest.TestCase):
         self.assertEqual(wp.link_anchor(worked, now, 5 * 60), wp.to_min("10:30"))
         self.assertEqual(wp.link_anchor(worked, now, 1 * 60), wp.to_min("12:13"))
 
+    def test_a_running_mark_only_hides_the_item_if_it_covers_the_anchor(self):
+        # A mark begun at or before the anchor already holds those minutes; one
+        # begun after it holds the stretch in front and leaves the gap behind
+        # it exactly as unclaimed as if no mark were running at all.
+        worked = [period("09:00", "10:30")]
+        now = wp.to_min("12:15")
+        self.assertIsNone(
+            wp.link_anchor(worked, now, CUTOFF, wp.to_min("10:30")))
+        self.assertIsNone(
+            wp.link_anchor(worked, now, CUTOFF, wp.to_min("09:30")))
+        self.assertEqual(
+            wp.link_anchor(worked, now, CUTOFF, wp.to_min("12:05")),
+            wp.to_min("10:30"))
+
     def test_never_starts_in_the_future(self):
         # A period's end carries TAIL_SEC past its last event, so it can land a
         # minute ahead of the clock -- and a claim starting after the minute it
@@ -136,6 +150,12 @@ class LinkLastSessionCase(unittest.TestCase):
         with open(self.snap, "w") as fh:
             json.dump({"fp": "fp", "worked": worked}, fh)
 
+    def running_mark(self, start):
+        """Pretend a still-open mark began at `start` and reaches past now."""
+        self.patch("marks_for", lambda day, stamps=None: [
+            {"start": wp.to_min(start), "end": wp.to_min("12:30"),
+             "note": "", "open": True}])
+
     def marks_written(self):
         if not os.path.exists(self.marks):
             return []
@@ -165,17 +185,45 @@ class LinkLastSessionCase(unittest.TestCase):
         self.assertEqual(out["from"], "10:30")
         self.assertEqual(self.marks_written()[0]["start"], wp.to_min("10:30"))
 
-    def test_refuses_when_a_mark_is_already_running(self):
-        # Two open marks was a real bug the day marks shipped. Here the refusal
-        # is nearly free: an open mark already holds the day open, so there is
-        # no gap to bridge.
+    def test_refuses_when_the_running_mark_already_covers_the_anchor(self):
+        # Two open marks was a real bug the day marks shipped, and a mark that
+        # began before the last session ended is already holding every minute
+        # the link would claim. Nothing to add.
         self.snapshot([period("09:00", "10:30")])
-        self.patch("marks_for", lambda day, stamps=None: [
-            {"start": wp.to_min("12:00"), "end": wp.to_min("12:30"),
-             "note": "", "open": True}])
+        self.running_mark("10:00")
         out = wp.link_last_session()
         self.assertFalse(out["linked"])
         self.assertEqual(self.marks_written(), [])
+
+    def test_fills_the_gap_behind_a_mark_that_started_after_the_anchor(self):
+        # The order the two get clicked in: back at the desk, marked as
+        # working, then reach for the link. The mark holds the stretch in front
+        # of it; the minutes behind it are still the hole that needed claiming,
+        # and refusing here made the item a no-op in its commonest case.
+        self.snapshot([period("09:00", "10:30")])
+        self.running_mark("12:05")
+        out = wp.link_last_session()
+        self.assertTrue(out["linked"])
+        self.assertEqual((out["from"], out["to"]), ("10:30", "12:05"))
+        marks = self.marks_written()
+        self.assertEqual(len(marks), 1)
+        self.assertEqual(marks[0]["start"], wp.to_min("10:30"))
+        # Closed, and closed where the running mark begins: the day is already
+        # held open by that one, and a second open mark beside it is the bug.
+        self.assertEqual(marks[0]["end"], wp.to_min("12:05"))
+
+    def test_the_menu_greys_out_exactly_when_the_action_would_refuse(self):
+        # The two disagreeing is the whole failure being fixed: the item was
+        # offered, named a minute, and banked nothing.
+        worked = [period("09:00", "10:30")]
+        for mark, offered in (("10:00", False), ("12:05", True)):
+            with self.subTest(mark=mark):
+                self.snapshot(worked)
+                self.running_mark(mark)
+                advertised = wp.link_anchor(worked, wp.to_min("12:15"), CUTOFF,
+                                            wp.to_min(mark))
+                self.assertEqual(advertised is not None, offered)
+                self.assertEqual(wp.link_last_session()["linked"], offered)
 
     def test_refuses_on_an_empty_day_without_writing_anything(self):
         self.snapshot([])
