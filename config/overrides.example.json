@@ -4,6 +4,9 @@
     "overrides": [
       {"start": "13:45", "end": "14:07", "note": "meeting overran its scheduled end"}
     ],
+    "remove": [
+      {"start": "10:00", "note": "skipped this meeting"}
+    ],
     "add": [
       {"start": "16:20", "end": "16:23", "label": "Working", "source": "work",
        "note": "always give a manual mark a fixed end; an open end keeps claiming time with no evidence"}

@@ -615,6 +615,32 @@ def test_override_without_start_is_rejected():
         ce.apply_overrides(ROWS, D, ov([{"end": "14:07"}]))
 
 
+def rm(entries):
+    return {"2026-08-31": {"remove": entries}}
+
+
+def test_remove_drops_a_skipped_meeting():
+    out = ce.apply_overrides(ROWS, D, rm([{"start": "13:45"}]))
+    assert out == [ROWS[0], ROWS[2]]
+
+
+def test_remove_matching_nothing_warns_but_keeps_rows(capsys):
+    out = ce.apply_overrides(ROWS, D, rm([{"start": "09:15"}]))
+    assert out == ROWS
+    assert "matched no event" in capsys.readouterr().err
+
+
+def test_remove_without_start_is_rejected():
+    with pytest.raises(ce.CalendarExportError):
+        ce.apply_overrides(ROWS, D, rm([{"note": "skipped"}]))
+
+
+def test_remove_key_is_accepted_by_the_loader(tmp_path):
+    p = tmp_path / "overrides.json"
+    p.write_text('{"2026-08-31": {"remove": [{"start": "13:45"}]}}')
+    assert ce.load_overrides(str(p))["2026-08-31"]["remove"] == [{"start": "13:45"}]
+
+
 def test_malformed_overrides_file_raises(tmp_path):
     p = tmp_path / "overrides.json"
     p.write_text("{not json")

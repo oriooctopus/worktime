@@ -423,6 +423,9 @@ def load_overrides(path):
         leaves the probe treating 14:00-14:07 as idle.
       * "add" records work that generated no calendar event and no prompts at
         all, which the probe would otherwise score as not working.
+      * "remove" drops a meeting that was skipped. A work block comes from the
+        free/busy share and cannot be declined from here, so without this a
+        meeting nobody attended is still credited as working time.
 
     A missing file is the normal case, not an error.
     """
@@ -440,7 +443,7 @@ def load_overrides(path):
             raise CalendarExportError(
                 f"overrides file {path}: {day} must map to an object with "
                 f"'overrides' and/or 'add' keys, got {type(spec).__name__}")
-        unknown = set(spec) - {"overrides", "add"}
+        unknown = set(spec) - {"overrides", "add", "remove"}
         if unknown:
             raise CalendarExportError(
                 f"overrides file {path}: {day} has unknown key(s) {sorted(unknown)}")
@@ -490,6 +493,18 @@ def apply_overrides(rows, local_date, overrides, now=None, tz=NY_TZ):
         return rows
 
     patched = list(rows)
+    for entry in spec.get("remove", []):
+        start = entry.get("start")
+        if not start:
+            raise CalendarExportError(f"remove entry {entry!r} has no 'start'")
+        kept = [row for row in patched if row[0] != start]
+        if len(kept) == len(patched):
+            print(
+                f"calendar-export: remove for {local_date} {start} matched no event",
+                file=sys.stderr,
+            )
+        patched = kept
+
     for entry in spec.get("overrides", []):
         start = entry.get("start")
         if not start:
