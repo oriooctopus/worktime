@@ -2890,6 +2890,11 @@ CAL_REFRESH_AFTER = timedelta(hours=2)
 CAL_RETRY_AFTER = timedelta(minutes=30)
 CAL_REFRESH_STAMP = os.path.join(STATE, "calendar-refresh-attempt")
 CAL_REFRESH_CMD = os.path.expanduser("~/.claude/bin/calendar-refresh.sh")
+# Where the detached refresh reports. It outlives the probe run that started it,
+# so nothing is left to read its exit code -- this file is the only place a
+# failure can surface. It used to go to /dev/null, and a refresh that failed on
+# every attempt for a whole morning looked exactly like one that was never run.
+CAL_REFRESH_LOG = os.path.join(STATE, "calendar-refresh.log")
 
 
 def refresh_calendar_if_stale(now: datetime | None = None) -> bool:
@@ -2953,9 +2958,14 @@ def refresh_calendar_if_stale(now: datetime | None = None) -> bool:
     with open(CAL_REFRESH_STAMP, "w") as fh:
         fh.write(now.isoformat())
     try:
+        # Overwritten, not appended: it answers "why did the last attempt
+        # fail", and at one attempt per half hour an append would grow forever.
+        log = open(CAL_REFRESH_LOG, "w")
+        log.write(f"{now.isoformat()} refresh launched\n")
+        log.flush()
         subprocess.Popen(
             [CAL_REFRESH_CMD],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            stdout=log, stderr=subprocess.STDOUT,
             # Detached, so the refresh outlives the probe run that started it.
             # A one-minute child of a process that exits in seconds would
             # otherwise be killed halfway through and never write anything.

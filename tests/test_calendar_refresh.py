@@ -45,6 +45,7 @@ def rig(tmp_path, monkeypatch):
     monkeypatch.setattr(wp, "CAL_FILE", str(tmp_path / "calendar-today.md"))
     monkeypatch.setattr(wp, "CAL_REFRESH_STAMP", str(tmp_path / "stamp"))
     monkeypatch.setattr(wp, "CAL_REFRESH_CMD", str(cmd))
+    monkeypatch.setattr(wp, "CAL_REFRESH_LOG", str(tmp_path / "refresh.log"))
     monkeypatch.setattr(wp.subprocess, "Popen",
                         lambda *a, **k: launched.append(a) or None)
 
