@@ -218,6 +218,19 @@ LOCALHOST_PORT = re.compile(r"(?:localhost|127\.0\.0\.1|\[::1\]):(\d{1,5})")
 GOOGLE_ACCOUNT_IN_PATH = re.compile(r"\.google\.com/(?:[^/?#]+/)?u/(\d+)")
 GOOGLE_ACCOUNT_IN_QUERY = re.compile(r"\.google\.com/[^?#]*[?&]authuser=(\d+)")
 
+# Docs is the one Google host the account rule cannot read. Gmail, Calendar and
+# Drive all keep the index in the address for the whole session, but a document
+# settles at "docs.google.com/document/d/<id>/edit" with no index anywhere --
+# 65 samples of one work doc in a single day carried none, while 118 Gmail and
+# Calendar samples the same day carried theirs. So on this host the index is
+# absent rather than personal, and reading its absence as "not the work
+# account" deleted every hour spent reading a doc.
+#
+# The whole host, not a path prefix: docs.google.com serves only the editors
+# (Docs, Sheets, Slides, Forms). A file LISTING is drive.google.com, which
+# keeps its index and is still judged by it.
+DOCS_HOST = "docs.google.com"
+
 # A results page is never work, whoever is signed in. Searching the employer's
 # name is the thing a keyword rule gets wrong most often, and it arrives in two
 # shapes: the raw URL, where the name sits in ?q= and the address rule already
@@ -350,7 +363,8 @@ def is_work_url(url, keywords=None, work_account=None, localhost_ports=None):
     """True if `url` is work on its own: it sits on a host that is work for
     everyone, it names a work keyword, it is a dev server on one of the work
     app's localhost ports, or it is a Google page signed in as the work
-    account.
+    account -- with Docs, where no index is served to read, counted whenever a
+    work account exists at all.
 
     Keywords are matched against the address only, never the query string.
     Googling "rubrik stock price" puts the employer's name in ?q= and nowhere
@@ -376,6 +390,8 @@ def is_work_url(url, keywords=None, work_account=None, localhost_ports=None):
         return True
     if work_account is None:
         return False
+    if DOCS_HOST in address:
+        return True
     return google_account_index(lowered) == work_account
 
 

@@ -22,6 +22,6 @@
     "stride_sec": 240
   },
 
-  "_google_work_account": "The account number in Google URLs: drive.google.com/drive/u/1/home is account 1. Set it only when a separate work Google account exists -- then that account's Gmail, Calendar, Drive and Docs count as work and the personal account's do not. With one Google account there is nothing to tell apart; omit the key.",
+  "_google_work_account": "The account number in Google URLs: drive.google.com/drive/u/1/home is account 1. Set it only when a separate work Google account exists -- then that account's Gmail, Calendar and Drive count as work and the personal account's do not. With one Google account there is nothing to tell apart; omit the key. docs.google.com is the exception: it serves no account index, so with this key set every doc counts under either account.",
   "google_work_account": 1
 }

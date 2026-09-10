@@ -156,6 +156,42 @@ def test_google_with_no_account_configured_is_not_work():
     assert not is_work("https://drive.google.com/drive/u/1/home", account=None)
 
 
+# --- the Docs exception to the account rule ---
+
+def test_a_doc_with_no_account_index_is_work():
+    # The case that started this: a doc settles at /document/d/<id>/edit with
+    # no index anywhere, so judging it by the index deleted every hour of
+    # reading it.
+    assert is_work("https://docs.google.com/document/d/abc/edit?tab=t.0")
+
+
+def test_the_other_editors_on_the_host_are_work_too():
+    assert is_work("https://docs.google.com/spreadsheets/d/abc/edit")
+    assert is_work("https://docs.google.com/presentation/d/abc/edit")
+    assert is_work("https://docs.google.com/forms/d/abc/viewform")
+
+
+def test_a_doc_under_the_personal_account_is_still_work():
+    # A shared link opens under whichever account the sharer had in mind, and
+    # on this host that is not evidence of whose work it is.
+    assert is_work("https://docs.google.com/document/u/0/d/abc/edit")
+
+
+def test_docs_needs_a_work_account_to_exist_at_all():
+    # The gate: with one Google account there is no work/personal split to
+    # speak of, and counting every doc would file a personal one as the job.
+    assert not is_work("https://docs.google.com/document/d/abc/edit", account=None)
+
+
+def test_a_drive_listing_is_still_judged_by_its_account():
+    # Only the editor host is excepted -- drive.google.com keeps its index.
+    assert not is_work("https://drive.google.com/drive/u/0/home")
+
+
+def test_searching_for_a_doc_is_not_work():
+    assert not is_work("https://www.google.com/search?q=docs.google.com+budget")
+
+
 def test_google_account_index_reads_the_number():
     assert wc.google_account_index("https://drive.google.com/drive/u/2/home") == 2
     assert wc.google_account_index("https://news.ycombinator.com/") is None
