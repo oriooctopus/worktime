@@ -114,7 +114,7 @@ GAP_AFTER = 5
 # day's thirty-five periods came to read "08:01-08:01 0m".
 #
 # So: last prompt + TAIL, floored at MIN_PERIOD. With the lead below, a lone
-# focused prompt carries forty seconds of padding and so measures the one-minute
+# focused prompt carries forty seconds of padding, above the thirty-second
 # floor. Small enough that it cannot inflate a day the way a five-minute credit
 # did -- a hundred lone prompts buy well under two hours, and a hundred lone
 # prompts is not a real day.
@@ -141,13 +141,11 @@ LEAD_SEC = 20
 # has not started yet -- still stands for something that really happened, and
 # publishing it as 0m loses it entirely.
 #
-# One minute, not the thirty seconds it reads as: the snapshot publishes
-# minute-of-day boundaries and derives every duration by subtracting them, so a
-# thirty-second span floors to the same minute at both ends, renders "0m", and
-# adds nothing at all to the day's total. A sixty-second floor is the smallest
-# credit this resolution can actually carry -- floor(x) and floor(x + 60)
-# always differ by exactly one -- so it is the floor the rule has to use.
-MIN_PERIOD_SEC = 60
+# Thirty seconds: a glance is worth less than a minute. Durations and totals
+# are published in seconds (len_sec, work_sec) because of it -- the minute-of-day
+# boundaries alone floor a thirty-second span to one minute at both ends, and
+# the day would lose it.
+MIN_PERIOD_SEC = 30
 
 # GAP_AFTER above is the focused rule: five minutes of silence ends a period,
 # applied uniformly, on the assumption that a prompt means hands on the keyboard
@@ -470,10 +468,8 @@ def subtract_spans(spans: list[list[int]],
                    holes: list[list[int]]) -> list[list[int]]:
     """spans minus holes. A hole landing mid-span splits it in two.
 
-    A remnant too short to publish a whole minute is dropped rather than
-    emitted as a 0m period -- it is residue of a stretch already judged to be
-    desktop time, and a zero-length period is exactly what MIN_PERIOD_SEC
-    exists to keep out of the snapshot.
+    A remnant a hole left shorter than MIN_PERIOD_SEC is dropped: it is residue
+    of a stretch already judged to be desktop time, not a period of its own.
     """
     out: list[list[int]] = []
     for s, e in spans:
@@ -489,7 +485,8 @@ def subtract_spans(spans: list[list[int]],
                 if he < pe:
                     nxt.append([max(he, ps), pe])
             pieces = nxt
-        out += [p for p in pieces if p[1] // 60 > p[0] // 60]
+        out += (pieces if pieces == [[s, e]]
+                else [p for p in pieces if p[1] - p[0] >= MIN_PERIOD_SEC])
     return out
 
 
@@ -2579,7 +2576,7 @@ def group_sessions(rows: list[dict], worked: list[dict],
                  # An uncounted run has no length to report: its minutes are
                  # precisely the ones the day total left out, and printing a
                  # span here would read as time credited.
-                 "len": w["len"] if w else 0,
+                 "len_sec": w["len_sec"] if w else 0,
                  "what": (w.get("what") or "") if w else "",
                  "counted": w is not None,
                  "current": live and idx is not None and idx == len(worked) - 1,
@@ -3486,8 +3483,10 @@ def write_vault_snapshot(day: str, events: list[datetime],
     # The stretch after the last one is not a gap: the day is simply still
     # open, and whether it becomes a gap depends on whether work resumes --
     # which is unknowable now and settles itself on a later run.
-    gaps = [{"start": a[1], "end": b[0], "len": b[0] - a[1], "open": False}
-            for a, b in zip(merged, merged[1:]) if b[0] > a[1]]
+    gaps = [{"start": a[1] // 60, "end": b[0] // 60,
+             "start_sec": a[1], "end_sec": b[0], "len_sec": b[0] - a[1],
+             "open": False}
+            for a, b in zip(merged_sec, merged_sec[1:]) if b[0] > a[1]]
 
     # The merged spans ARE the work periods -- the same intervals the gaps are
     # the complement of, so the two lists always tile the day exactly and can
@@ -3525,7 +3524,8 @@ def write_vault_snapshot(day: str, events: list[datetime],
             if apps:
                 what = ", ".join(apps[:3])
         worked.append({
-            "start": a, "end": b, "len": b - a,
+            "start": a, "end": b,
+            "start_sec": lo, "end_sec": hi, "len_sec": hi - lo,
             # Every Slack send inside the period, so the tooltip can show what
             # was actually said in a stretch with no prompts in it at all.
             "slack": sl,
@@ -3676,7 +3676,7 @@ def write_vault_snapshot(day: str, events: list[datetime],
         "fp": fp,
         "gaps": gaps,
         "worked": worked,
-        "gap_minutes": sum(g["len"] for g in gaps),
+        "gap_sec": sum(g["len_sec"] for g in gaps),
         "day_start": merged[0][0] if merged else None,
         "day_end": merged[-1][1] if merged else None,
         "gaps_asked": sum(1 for g in gaps if g["asked"]),
@@ -3691,7 +3691,7 @@ def write_vault_snapshot(day: str, events: list[datetime],
         # A period ends at its last prompt, so this is the time actually spent
         # prompting and nothing more. It is a floor on the working day, not the
         # working day: reading a response is real work that leaves no stamp.
-        "work_minutes": sum(w["len"] for w in worked),
+        "work_sec": sum(w["len_sec"] for w in worked),
         # `events` is prompts and attended foreground minutes together, so it is
         # not the prompt count and must not be published as one -- the
         # dashboard's "N prompts" would otherwise silently start counting focus.
@@ -3750,7 +3750,7 @@ def render_markdown_snapshot(day: str, snap: dict) -> str:
     def hhmm(m):
         return f"{m // 60:02d}:{m % 60:02d}"
 
-    total = sum(w["len"] for w in worked)
+    total = sum(w["len_sec"] for w in worked) // 60
     lines = [
         "---",
         f"generated: {now_local().isoformat(timespec='seconds')}",
@@ -3763,7 +3763,7 @@ def render_markdown_snapshot(day: str, snap: dict) -> str:
         "Written by worktime-probe.py. Read-only — edits are overwritten on the",
         "next run. Prompt text is deliberately not published here.",
         "",
-        "| Start | End | Mins | Prompts | Slack | Marked | Meeting | What |",
+        "| Start | End | Secs | Prompts | Slack | Marked | Meeting | What |",
         "|-------|-----|------|---------|-------|--------|---------|------|",
     ]
     for w in worked:
@@ -3773,14 +3773,14 @@ def render_markdown_snapshot(day: str, snap: dict) -> str:
         marked = "yes" if w.get("marks") else ""
         what = (w.get("what") or "").replace("|", "\\|")
         lines.append(
-            f"| {hhmm(w['start'])} | {hhmm(w['end'])} | {w['len']} | "
+            f"| {hhmm(w['start'])} | {hhmm(w['end'])} | {w['len_sec']} | "
             f"{w.get('n_prompts', 0)} | {w.get('n_slack', 0)} | {marked} | "
             f"{meeting.replace('|', '/')} | {what} |")
     if gaps:
         lines += ["", "## Gaps", "",
-                  "| Start | End | Mins |", "|-------|-----|------|"]
+                  "| Start | End | Secs |", "|-------|-----|------|"]
         for g in gaps:
-            lines.append(f"| {hhmm(g['start'])} | {hhmm(g['end'])} | {g['len']} |")
+            lines.append(f"| {hhmm(g['start'])} | {hhmm(g['end'])} | {g['len_sec']} |")
     return "\n".join(lines) + "\n"
 
 
@@ -4363,7 +4363,7 @@ def status() -> dict:
     # matches and costs a few stats, so idle polling is as cheap as it ever was.
     # This still does not call check() -- the cursor and the label log are its
     # alone, and this remains read-only with respect to both.
-    worked_minutes = 0
+    worked_sec = 0
     periods = []
     sessions = []
     focus_pct = None
@@ -4378,18 +4378,18 @@ def status() -> dict:
         write_vault_snapshot(day, events_for(day), fp_now)
     if os.path.exists(path):
         snap = json.load(open(path))
-        worked_minutes = snap.get("work_minutes", 0)
+        worked_sec = snap["work_sec"]
         worked = snap.get("worked", [])
         ds, de = snap.get("day_start"), snap.get("day_end")
         if ds is not None and de is not None and de > ds:
-            focus_pct = round(100 * worked_minutes / (de - ds))
+            focus_pct = round(100 * worked_sec / ((de - ds) * 60))
         # Newest first, so the menu bar can show the last 3 without slicing
         # from the wrong end. The last entry here is the day's most recent
         # period, open or closed -- whichever it is, it's what "recent
         # activity" means.
         for i, w in enumerate(worked):
             periods.append({
-                "start": w["start"], "end": w["end"], "len": w["len"],
+                "start": w["start"], "end": w["end"], "len_sec": w["len_sec"],
                 "n_prompts": w.get("n_prompts", 0),
                 "n_slack": w.get("n_slack", 0),
                 "what": w.get("what", ""),
@@ -4408,7 +4408,7 @@ def status() -> dict:
     # Read from the same snapshot the menu bar's period list came from, not
     # recomputed here -- this is the on-disk record of the last completed
     # `check()`, and this call is deliberately read-only (see docstring).
-    return {"state": state, "why": why, "worked_minutes": worked_minutes,
+    return {"state": state, "why": why, "worked_sec": worked_sec,
             "at": now.strftime("%H:%M"),
             "quiet_since": last.strftime("%H:%M") if last else None,
             # Precise seconds, not the rounded "why" text -- the menu bar uses
@@ -4458,7 +4458,7 @@ def backfill(days: int) -> None:
         snap = json.load(open(snapshot_path(day)))
         print(f"{day}  {len(snap['worked']):3d} periods  "
               f"{len(snap['gaps']):3d} gaps  "
-              f"{snap['work_minutes'] // 60}h{snap['work_minutes'] % 60:02d}m worked")
+              f"{snap['work_sec'] // 3600}h{snap['work_sec'] // 60 % 60:02d}m worked")
 
 
 if __name__ == "__main__":

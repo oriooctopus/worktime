@@ -22,7 +22,7 @@ import Foundation
 struct ActSession {
     var start = 0
     var end = 0
-    var len = 0
+    var lenSec = 0
     var what = ""
     var counted = true
     var current = false
@@ -45,8 +45,9 @@ struct SessionRow {
     var n = 1
 }
 
-func human(_ m: Int) -> String {
-    m >= 60 ? "\(m / 60)h \(m % 60)m" : "\(m)m"
+func human(_ s: Int) -> String {
+    let m = s / 60
+    return s < 60 ? "\(s)s" : m >= 60 ? "\(m / 60)h \(m % 60)m" : "\(m)m"
 }
 
 // Periods carry minute-of-day integers, not wall-clock strings -- the probe
@@ -70,7 +71,7 @@ let SESSION_WHAT_CHARS = 52
 func sessionStrings(_ s: ActSession) -> (top: String, what: String) {
     let events = "\(s.n) event\(s.n == 1 ? "" : "s")"
     var top = s.counted
-        ? "\(hhmm(s.start))–\(hhmm(s.end)) · \(human(s.len))   \(events)"
+        ? "\(hhmm(s.start))–\(hhmm(s.end)) · \(human(s.lenSec))   \(events)"
         // No length, because these minutes were not credited and printing a
         // span here would read as time that was.
         : "\(hhmm(s.start))–\(hhmm(s.end)) · not counted   \(events)"

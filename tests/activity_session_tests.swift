@@ -14,11 +14,11 @@ func check(_ cond: Bool, _ what: String) {
     if !cond { failures.append(what) }
 }
 
-func session(start: Int = 540, end: Int = 570, len: Int = 30,
+func session(start: Int = 540, end: Int = 570, lenSec: Int = 1800,
              what: String = "", counted: Bool = true, current: Bool = false,
              n: Int = 4, kinds: [(String, Int)] = [("prompt", 4)],
              rows: [SessionRow] = []) -> ActSession {
-    ActSession(start: start, end: end, len: len, what: what, counted: counted,
+    ActSession(start: start, end: end, lenSec: lenSec, what: what, counted: counted,
                current: current, n: n, kinds: kinds, rows: rows)
 }
 
@@ -48,7 +48,7 @@ check(live.top.hasSuffix("·  now"), "the current session read as \"\(live.top)\
 
 // An uncounted run reports no length. Its minutes are precisely the ones the
 // day total left out, so a span here would read as time that was credited.
-let stray = sessionStrings(session(start: 240, end: 242, len: 0, counted: false,
+let stray = sessionStrings(session(start: 240, end: 242, lenSec: 0, counted: false,
                                    n: 2, kinds: [("approval", 2)]))
 check(stray.top == "04:00–04:02 · not counted   2 events",
       "an uncounted session read as \"\(stray.top)\"")
@@ -56,8 +56,12 @@ check(!stray.top.contains("now"),
       "an uncounted session was marked as the current one")
 
 // Hours once a session passes sixty minutes, matching the period rows.
-let long = sessionStrings(session(start: 540, end: 660, len: 120))
+let long = sessionStrings(session(start: 540, end: 660, lenSec: 7200))
 check(long.top.contains("2h 0m"), "a two-hour session read as \"\(long.top)\"")
+
+// A glance is under a minute and says so, rather than reading "0m".
+let glance = sessionStrings(session(start: 540, end: 540, lenSec: 30))
+check(glance.top.contains("· 30s "), "a thirty-second session read as \"\(glance.top)\"")
 
 // The tally arrives biggest-first from the probe and must stay in that order:
 // what falls off the end of a truncated line should be the smallest
@@ -166,7 +170,7 @@ check(sessionKey(a) != sessionKey(b),
 // And it covers the row itself, so a session that changed length still
 // rebuilds.
 check(sessionKey(a) != sessionKey(session(
-    len: 45, n: 1,
+    lenSec: 2700, n: 1,
     rows: [SessionRow(t: "09:03", kind: "prompt", what: "one", n: 1)])),
       "the menu key ignored the session's own line")
 

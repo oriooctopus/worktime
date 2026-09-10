@@ -60,11 +60,11 @@ _pspec = _il.spec_from_file_location("probe_render", os.path.join(ROOT, "bin", "
 SNAP = """---
 generated: 2026-08-31T17:40:00-04:00
 ---
-| Start | End | Mins | Prompts | Slack | Marked | Meeting | What |
+| Start | End | Secs | Prompts | Slack | Marked | Meeting | What |
 |-------|-----|------|---------|-------|--------|---------|------|
-| 09:40 | 11:00 | 80 | 28 | 29 | yes | (busy) | audit benchmark tasks |
-| 13:45 | 16:04 | 139 | 12 | 4 |  | (busy) | ruby implementation |
-| 16:20 | 16:23 | 3 | 0 | 0 | yes |  | marked as working |
+| 09:40 | 11:00 | 4800 | 28 | 29 | yes | (busy) | audit benchmark tasks |
+| 13:45 | 16:04 | 8340 | 12 | 4 |  | (busy) | ruby implementation |
+| 16:20 | 16:23 | 180 | 0 | 0 | yes |  | marked as working |
 """
 
 
@@ -79,7 +79,7 @@ def test_periods_are_most_recent_first():
 def test_period_carries_its_constituent_signals():
     """The point of a session: one span, several kinds of evidence inside it."""
     p = [x for x in web.parse_snapshot(SNAP) if x["start"] == "09:40"][0]
-    assert p["minutes"] == 80 and p["n_prompts"] == 28 and p["n_slack"] == 29
+    assert p["seconds"] == 4800 and p["n_prompts"] == 28 and p["n_slack"] == 29
     assert p["meeting"] == "(busy)" and p["marked"] is True
 
 
@@ -93,7 +93,7 @@ def test_header_and_separator_rows_are_skipped():
 
 
 def test_gap_table_rows_are_not_mistaken_for_periods():
-    doc = SNAP + "\n## Gaps\n\n| Start | End | Mins |\n|---|---|---|\n| 11:00 | 13:45 | 165 |\n"
+    doc = SNAP + "\n## Gaps\n\n| Start | End | Secs |\n|---|---|---|\n| 11:00 | 13:45 | 9900 |\n"
     assert len(web.parse_snapshot(doc)) == 3
 
 
@@ -110,14 +110,14 @@ _pspec.loader.exec_module(_probe)
 
 SNAP_OBJ = {
     "worked": [
-        {"start": 580, "end": 660, "len": 80, "n_prompts": 28, "n_slack": 29,
+        {"start": 580, "end": 660, "len_sec": 4800, "n_prompts": 28, "n_slack": 29,
          "marks": [{"note": "at the desk"}], "what": "audit benchmark tasks",
          "meetings": [{"start": 585, "end": 600, "title": "(busy)", "counts": True}]},
-        {"start": 825, "end": 964, "len": 139, "n_prompts": 12, "n_slack": 4,
+        {"start": 825, "end": 964, "len_sec": 8340, "n_prompts": 12, "n_slack": 4,
          "marks": [], "what": "ruby implementation",
          "meetings": [{"start": 930, "end": 960, "title": "Soccer", "counts": False}]},
     ],
-    "gaps": [{"start": 660, "end": 825, "len": 165, "open": False}],
+    "gaps": [{"start": 660, "end": 825, "len_sec": 9900, "open": False}],
 }
 
 
@@ -127,7 +127,7 @@ def test_probe_output_parses_back_to_the_same_periods():
     got = web.parse_snapshot(md)
     assert [p["start"] for p in got] == ["13:45", "09:40"]
     first = [p for p in got if p["start"] == "09:40"][0]
-    assert first["minutes"] == 80 and first["n_prompts"] == 28
+    assert first["seconds"] == 4800 and first["n_prompts"] == 28
     assert first["n_slack"] == 29 and first["marked"] is True
 
 

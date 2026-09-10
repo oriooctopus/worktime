@@ -123,8 +123,8 @@ def test_no_rows_is_unknown():
 
 def test_report_probe_working_is_green():
     status = {"state": "working", "why": "2m since last activity",
-              "worked_minutes": 183, "mode": "focused", "focus_pct": 78,
-              "periods": [{"start": 540, "end": 600, "len": 60,
+              "worked_sec": 183 * 60, "mode": "focused", "focus_pct": 78,
+              "periods": [{"start": 540, "end": 600, "len_sec": 3600,
                            "n_prompts": 12, "n_slack": 0, "what": "auth fix",
                            "current": True}]}
     code, lines = ind.report_probe(status)
@@ -136,7 +136,7 @@ def test_report_probe_working_is_green():
 
 def test_report_probe_marked_is_blue():
     status = {"state": "marked", "why": "reading a PR",
-              "worked_minutes": 90, "mode": "focused", "focus_pct": None,
+              "worked_sec": 90 * 60, "mode": "focused", "focus_pct": None,
               "periods": []}
     code, lines = ind.report_probe(status)
     assert code == 0
@@ -145,7 +145,7 @@ def test_report_probe_marked_is_blue():
 
 def test_report_probe_idle_is_amber():
     status = {"state": "idle", "why": "quiet 23m",
-              "worked_minutes": 240, "mode": "focused", "focus_pct": 80,
+              "worked_sec": 240 * 60, "mode": "focused", "focus_pct": 80,
               "quiet_since": "14:05", "periods": []}
     code, lines = ind.report_probe(status)
     assert code == 1
@@ -162,12 +162,12 @@ def test_report_probe_unknown_state_is_unusable():
 
 def test_report_probe_periods_are_listed():
     status = {"state": "working", "why": "1m since last activity",
-              "worked_minutes": 60, "mode": "focused", "focus_pct": 90,
+              "worked_sec": 60 * 60, "mode": "focused", "focus_pct": 90,
               "periods": [
-                  {"start": 600, "end": 660, "len": 60,
+                  {"start": 600, "end": 660, "len_sec": 3600,
                    "n_prompts": 5, "n_slack": 0, "what": "fixing bug",
                    "current": True},
-                  {"start": 540, "end": 598, "len": 58,
+                  {"start": 540, "end": 598, "len_sec": 3480,
                    "n_prompts": 8, "n_slack": 2, "what": "code review",
                    "current": False},
               ]}
@@ -207,7 +207,7 @@ def test_report_itself_stays_plain_so_output_can_be_parsed():
 
 
 def test_report_probe_stays_plain():
-    status = {"state": "working", "why": "active", "worked_minutes": 60,
+    status = {"state": "working", "why": "active", "worked_sec": 60 * 60,
               "mode": "focused", "focus_pct": None, "periods": []}
     _, lines = ind.report_probe(status)
     assert all("\033" not in l for l in lines)

@@ -47,7 +47,7 @@ DAY = "2026-03-04"
 def period(start_hhmm, end_hhmm):
     """A snapshot work period, as write_vault_snapshot publishes them."""
     s, e = wp.to_min(start_hhmm), wp.to_min(end_hhmm)
-    return {"start": s, "end": e, "len": e - s}
+    return {"start": s, "end": e, "len_sec": (e - s) * 60}
 
 
 def spans(worked, now_hhmm, minutes, split):

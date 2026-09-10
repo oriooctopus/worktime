@@ -121,9 +121,9 @@ class PeriodModel(unittest.TestCase):
             for g in gaps:
                 self.assertGreaterEqual(g, wp.GAP_AFTER,
                                         f"{extra_sec}s -> {g}m gap")
-            for a, b in mins:
-                self.assertGreaterEqual(b - a, 1,
-                                        f"{extra_sec}s produced a 0m period")
+            for a, b in _sec:
+                self.assertGreaterEqual(b - a, wp.MIN_PERIOD_SEC,
+                                        f"{extra_sec}s produced a sliver")
 
     def test_periods_never_overlap(self):
         stamps = [HH(9, 0), HH(9, 2), HH(9, 40), HH(9, 41), HH(11, 0)]
@@ -174,16 +174,14 @@ class FocusModes(unittest.TestCase):
         mins, _, _ = build(stamps, mode="unfocused")
         self.assertEqual(len(mins), 8, "each isolated prompt is its own bout")
 
-    def test_a_lone_prompt_costs_the_minimum_in_either_mode(self):
-        # Unfocused: no ramp yet, so no lead at all. Focused: LEAD + TAIL is
-        # forty seconds, under the floor. Since the lead came down to twenty the
-        # floor dominates both, so a lone prompt is a minute whatever the mode
-        # -- the modes separate on sustained bouts, not on single prompts.
+    def test_a_lone_prompt_costs_its_padding_or_the_floor(self):
+        # Unfocused: no ramp yet, so no lead, and the tail alone is under the
+        # floor. Focused: LEAD + TAIL is forty seconds, over it.
         _, _, unf = build([HH(10, 0)], mode="unfocused")
         _, _, foc = build([HH(10, 0)], mode="focused")
         self.assertEqual(unf[0][1] - unf[0][0], wp.MIN_PERIOD_SEC)
-        self.assertEqual(foc[0][1] - foc[0][0], wp.MIN_PERIOD_SEC)
-        self.assertLess(wp.LEAD_SEC + wp.TAIL_SEC, wp.MIN_PERIOD_SEC)
+        self.assertEqual(foc[0][1] - foc[0][0], wp.LEAD_SEC + wp.TAIL_SEC)
+        self.assertGreater(wp.LEAD_SEC + wp.TAIL_SEC, wp.MIN_PERIOD_SEC)
 
     def test_a_sustained_unfocused_session_widens_to_the_full_cutoff(self):
         # Ten minutes of prompting every 45s earns the ramp, after which a
@@ -375,22 +373,23 @@ class DesktopSubtraction(unittest.TestCase):
         holes = wp.desktop_holes([HH(9, 0), HH(9, 30)], set(), [(0, "focused")])
         self.assertEqual(len(holes), 2)
 
-    def test_subtraction_never_publishes_a_zero_length_period(self):
-        # A remnant that floors to the same minute at both ends would render
-        # 0m -- the exact thing MIN_PERIOD_SEC keeps out of the snapshot.
+    def test_subtraction_never_publishes_a_sliver(self):
+        # A remnant shorter than the floor is residue of desktop time, not a
+        # period of its own.
         for k in range(1, 40):
             stamps = [HH(10, 0), HH(10, 0) + k * 60]
-            mins, _ = build_desk(stamps, [HH(10, 0) + 30])
-            for s, e in mins:
-                self.assertGreater(e, s, f"zero-length period at k={k}")
+            _, sec = build_desk(stamps, [HH(10, 0) + 30])
+            for s, e in sec:
+                self.assertGreaterEqual(e - s, wp.MIN_PERIOD_SEC,
+                                        f"sliver at k={k}")
 
     def test_periods_stay_sorted_and_disjoint_after_splitting(self):
         stamps = [HH(9, 0) + i * 60 for i in range(121)]
-        mins, _ = build_desk(
+        mins, sec = build_desk(
             stamps, [HH(9, 20), HH(9, 21), HH(10, 5), HH(10, 40), HH(10, 41)])
         for a, b in zip(mins, mins[1:]):
             self.assertLessEqual(a[1], b[0])
-        for s, e in mins:
+        for s, e in sec:
             self.assertGreater(e, s)
 
     def test_fully_covered_period_disappears(self):
