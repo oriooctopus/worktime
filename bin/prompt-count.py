@@ -339,9 +339,10 @@ def transcripts_for(day: str, cutoff: float) -> list[str]:
     """Transcripts that could hold a prompt from `day`.
 
     Two sources, and which one applies is decided by the date rather than by
-    whether a read happens to succeed -- a missing index for a covered day is
-    a broken hook, and quietly walking instead would turn that into a slightly
-    short day nobody would ever notice.
+    whether a read happens to succeed. A covered day with no index file is a
+    day with no prompts yet -- the hook creates the file on the day's first
+    prompt -- so it answers empty rather than walking, which would bring back
+    the very cost the index exists to remove.
 
     THE INDEX, for days the hook covered end to end. The prompt hook records
     the transcript path on every prompt, so the day's sessions are already
@@ -370,18 +371,50 @@ def transcripts_for(day: str, cutoff: float) -> list[str]:
 
     paths = []
     seen = set()
-    with open(os.path.join(INDEX_DIR, f"{day}.jsonl")) as fh:
+    resolved = {}      # recorded path -> where it is now, one lookup each
+    try:
+        fh = open(os.path.join(INDEX_DIR, f"{day}.jsonl"))
+    except FileNotFoundError:
+        return paths
+    with fh:
         for line in fh:
             line = line.strip()
             if not line:
                 continue
-            path = json.loads(line).get("transcript")
-            # A transcript deleted since the prompt was recorded is gone for
-            # good; the walk would not have found it either.
-            if path and path not in seen and os.path.exists(path):
+            row = json.loads(line)
+            recorded = row.get("transcript")
+            if not recorded:
+                continue
+            if recorded not in resolved:
+                resolved[recorded] = (recorded if os.path.exists(recorded)
+                                      else _moved_transcript(row.get("session")))
+            path = resolved[recorded]
+            if path and path not in seen:
                 seen.add(path)
                 paths.append(path)
     return paths
+
+
+def _moved_transcript(session: str | None) -> str | None:
+    """Where a session's transcript went after the path the hook recorded.
+
+    Claude Code files a transcript under its session's working directory and
+    moves it when the session enters a worktree, so the path recorded at the
+    prompt goes stale while every prompt in it is still there -- a background
+    job that is sent one prompt and then works in a worktree would otherwise
+    vanish from the day. One listdir per root finds it by name; a transcript
+    that is found nowhere really was deleted, and the walk would not have
+    found it either.
+    """
+    if not session:
+        return None
+    name = session + ".jsonl"
+    for root in PROJECT_ROOTS:
+        for project in os.listdir(root):
+            path = os.path.join(root, project, name)
+            if os.path.exists(path):
+                return path
+    return None
 
 
 def _mtime_at_least(path: str, cutoff: float) -> bool:
