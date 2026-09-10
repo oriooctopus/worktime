@@ -669,6 +669,16 @@ the current one. The afternoon that produced the section above was spent
 working out from `/tmp` which of the two failures was on the dot, which is
 exactly the question the menu now answers on sight.
 
+## Asking the desktop from the Mac
+
+The Mac cannot reach the WSL box, but both sync the same vault. `wsl-ask.py
+status --wait 600` drops a request in `Dashboard/wsl-inbox/`; `wsl-inbox.py`
+(a one-minute systemd timer on the desktop) runs it and writes the answer to
+`Dashboard/wsl-outbox/<id>.md`. Actions are a fixed list -- `status`,
+`run-exporter`, `restart-exporter`, `pull` -- never a shell string from the
+file. `wsl-ask.py heartbeat` reads `wsl-outbox/heartbeat.md`, rewritten every
+run, so "desktop down or Sync stopped" reads differently from "exporter dead".
+
 ## Install
 
 Copy `config/*.example.json` to `~/.config/`, symlink `bin/*.py` onto your

@@ -1,0 +1,6 @@
+[Unit]
+Description=Answer requests the Mac leaves in the vault's wsl-inbox
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 %h/.claude/bin/wsl-inbox.py
