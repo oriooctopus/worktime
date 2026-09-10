@@ -3267,6 +3267,26 @@ def hhmm_of(m: int) -> str:
     return f"{m // 60:02d}:{m % 60:02d}"
 
 
+def elapsed_s(day: str, now: datetime | None = None) -> int:
+    """How much of `day` has happened, in seconds -- the clamp on every span
+    with declared bounds, so a meeting still running is not credited past now.
+
+    The clock alone is only the answer for today. It used to be the answer for
+    every day: rebuilding 2026-09-09 at 07:56 the next morning clamped that
+    day to 07:56, so every meeting and mark after breakfast fell out of the
+    worked time while staying on the periods as labels. A 12:15 call went back
+    to five minutes of foreground slivers, and nothing said a source was gone.
+    A past day has happened in full; a future one has not started.
+    """
+    now = now or now_local()
+    today = now.strftime("%Y-%m-%d")
+    if day < today:
+        return 24 * 3600
+    if day > today:
+        return 0
+    return now.hour * 3600 + now.minute * 60 + now.second
+
+
 def write_vault_snapshot(day: str, events: list[datetime],
                          fp: str | None = None) -> None:
     """Publish today's work periods where the Obsidian dashboard can read them.
@@ -3308,8 +3328,7 @@ def write_vault_snapshot(day: str, events: list[datetime],
     # single "2h 33m" period could contain three holes of 28, 23 and 23 minutes
     # and still be drawn as one solid block.
     fp = activity_fingerprint(day) if fp is None else fp
-    now_s = (now_local().hour * 3600 + now_local().minute * 60
-             + now_local().second)
+    now_s = elapsed_s(day)
     meetings = calendar_events(day)
     if meetings is None:
         meetings = meetings_from_snapshot(day)
@@ -4209,6 +4228,13 @@ def status() -> dict:
     the dashboard audits. This only reads.
     """
     now = now_local()
+    # Here and not only in check(), because this is the call that actually
+    # runs: the bar polls `status` every minute and nothing schedules `check`
+    # any more. With the trigger in check() alone the refresh never fired
+    # outside a hand-run probe, and the dump went stale again by mid-afternoon.
+    # It writes the calendar dump, not the cursor or the label log, so this
+    # stays read-only with respect to the record check() owns.
+    refresh_calendar_if_stale(now)
     day = now.strftime("%Y-%m-%d")
     now_m = now.hour * 60 + now.minute
     last, stamps, ev_stamps, all_acts = live_activity(day)

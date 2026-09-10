@@ -616,6 +616,32 @@ class SnapshotMeetingRecovery(unittest.TestCase):
             wp.VAULT_SNAPSHOT_DIR = old
 
 
+class ElapsedClamp(unittest.TestCase):
+    """Recovering a past day's meetings is only half of a rebuild. The spans
+    are then clamped to how much of the day has happened, and that clamp read
+    today's clock for every day: 2026-09-09 rebuilt at 07:56 the next morning
+    lost every meeting after 07:56 from its worked time."""
+
+    MORNING = wp.datetime(2026, 9, 10, 7, 56, 0, tzinfo=wp.LOCAL)
+
+    def test_a_past_day_has_happened_in_full(self):
+        self.assertEqual(wp.elapsed_s("2026-09-09", self.MORNING), 24 * 3600)
+
+    def test_today_is_clamped_to_now(self):
+        self.assertEqual(wp.elapsed_s("2026-09-10", self.MORNING), HH(7, 56))
+
+    def test_a_future_day_has_not_started(self):
+        self.assertEqual(wp.elapsed_s("2026-09-11", self.MORNING), 0)
+
+    def test_the_morning_after_keeps_an_afternoon_meeting(self):
+        """The 09-09 shape itself: a 12:15-12:30 work call, rebuilt at 07:56
+        the next day, survives the clamp whole rather than vanishing."""
+        now_s = wp.elapsed_s("2026-09-09", self.MORNING)
+        m = {"start": 12 * 60 + 15, "end": 12 * 60 + 30}
+        self.assertLess(m["start"] * 60, now_s)
+        self.assertEqual(min(m["end"] * 60, now_s), HH(12, 30))
+
+
 class GithubFilter(unittest.TestCase):
     def _visits(self, rows):
         import tempfile
