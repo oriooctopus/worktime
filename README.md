@@ -187,10 +187,16 @@ enumerate one at a time:
   personal side project served from its own port is not the job.
 - **`google_work_account`** (default unset) — the account number in Google
   URLs (`drive.google.com/drive/u/1/home` is account `1`). Set it when there is
-  a separate work Google account: Gmail, Calendar, Drive and Docs under that
-  number count as work, while the same sites under the personal account do
-  not. With one Google account there is nothing to tell apart, so leave it
-  unset.
+  a separate work Google account: Gmail, Calendar and Drive under that number
+  count as work, while the same sites under the personal account do not. With
+  one Google account there is nothing to tell apart, so leave it unset.
+
+  `docs.google.com` is the exception. A document settles at
+  `/document/d/<id>/edit` and serves no account index at all, so judging it by
+  the index read every doc as personal and deleted the time spent reading one.
+  When this key is set, every page on that host counts — under either account.
+  Only the editor host is excepted; `drive.google.com` still keeps its index
+  and is still judged by it.
 
 A third rule needs no configuration: `myworkday.com` is work for everyone,
 whoever they work for. Workday serves every customer from the same host and
