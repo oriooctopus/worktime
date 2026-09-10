@@ -115,16 +115,15 @@ class WhichSourceAnswersTheDay(IndexBase):
         path = self.transcript("walked.jsonl", [("12:00", "hi")])
         self.assertEqual(self.pc.transcripts_for(DAY, self.cutoff()), [path])
 
-    def test_a_covered_day_with_no_index_file_is_loud(self):
-        """A missing index for a day the hook covered means a broken hook.
-
-        Falling back to the walk here would turn that into a day that reads
-        slightly short, with nothing anywhere to say why -- the failure mode
-        this whole design is meant not to have.
-        """
+    def test_a_covered_day_with_no_index_file_has_no_prompts(self):
+        """The hook creates a day's index on its first prompt, so until then
+        the day is empty -- every morning before the first prompt. Raising
+        here turned the dot red each midnight; walking would reintroduce the
+        cost the index removes, and would find transcripts that are not
+        today's anyway."""
         self.since(YESTERDAY)
-        with self.assertRaises(OSError):
-            self.pc.transcripts_for(DAY, self.cutoff())
+        self.transcript("walked.jsonl", [("12:00", "hi")])
+        self.assertEqual(self.pc.transcripts_for(DAY, self.cutoff()), [])
 
 
 class IndexContents(IndexBase):
@@ -150,6 +149,19 @@ class IndexContents(IndexBase):
         self.index(DAY, [p])
         os.remove(p)
         self.assertEqual(self.pc.transcripts_for(DAY, self.cutoff()), [])
+
+    def test_a_transcript_moved_into_a_worktree_is_found_by_session(self):
+        """Entering a worktree moves the transcript to a new project folder.
+
+        The prompts are all still in it, so dropping it would erase a whole
+        background job from the day until its next prompt was recorded.
+        """
+        old = os.path.join(self.roots, "-repo", "abc.jsonl")
+        new = self.transcript("abc.jsonl", [("12:00", "hi")],
+                              project="-repo-worktrees-x")
+        with open(os.path.join(self.pc.INDEX_DIR, f"{DAY}.jsonl"), "w") as fh:
+            fh.write(json.dumps({"transcript": old, "session": "abc"}) + "\n")
+        self.assertEqual(self.pc.transcripts_for(DAY, self.cutoff()), [new])
 
     def test_a_blank_line_is_not_a_transcript(self):
         p = self.transcript("s.jsonl", [("12:00", "hi")])
