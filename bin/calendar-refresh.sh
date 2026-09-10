@@ -37,6 +37,15 @@ CLAUDE="${CLAUDE_BIN:-$HOME/.local/bin/claude}"
 # working directory the bar app happened to have, which is not the repo -- so
 # the directory is pinned here rather than inherited.
 cd "$BIN/.." || exit 1
+
+# The profile, too, is pinned rather than inherited. The Google Calendar
+# connector is on the personal profile only -- the default ~/.claude profile
+# answers "I have eventkit-calendar, but no Google Calendar integration" -- and
+# the bar app that starts this is launched by launchd, whose environment has no
+# CLAUDE_CONFIG_DIR at all. So every refresh the probe launched ran against the
+# default profile and failed, while the same script run from a terminal
+# (where the variable is set) worked, which is why it looked fine by hand.
+export CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude-personal}"
 TODAY="$(date +%Y-%m-%d)"
 OUT="$(mktemp -t calendar-refresh)"
 trap 'rm -f "$OUT" "$OUT.json" "$OUT.err"' EXIT
@@ -78,7 +87,10 @@ EOF
 
 if ! "$CLAUDE" -p --model claude-haiku-4-5-20251001 --output-format text \
      "$PROMPT" >"$OUT" 2>"$OUT.err"; then
-  echo "calendar-refresh: claude failed: $(tail -c 500 "$OUT.err")" >&2
+  # Both streams: `claude -p` reports its own failures -- "Not logged in ·
+  # Please run /login" among them -- on stdout, so stderr alone came back empty
+  # and the one line that named the problem was deleted by the trap.
+  echo "calendar-refresh: claude failed: $(tail -c 500 "$OUT") $(tail -c 500 "$OUT.err")" >&2
   exit 1
 fi
 
