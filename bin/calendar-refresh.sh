@@ -46,6 +46,14 @@ cd "$BIN/.." || exit 1
 # default profile and failed, while the same script run from a terminal
 # (where the variable is set) worked, which is why it looked fine by hand.
 export CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude-personal}"
+
+# And the API routing is dropped, so claude uses that profile's own login. The
+# bar's environment carries ANTHROPIC_BASE_URL for a LiteLLM proxy; inherited,
+# it sent the profile's login token to the proxy, which answered "401 ...
+# Invalid proxy server token" -- the connector lives on the claude.ai account,
+# and only a request made as that account can reach it. A key or auth token
+# would override the login the same way, so all three go.
+unset ANTHROPIC_BASE_URL ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN
 TODAY="$(date +%Y-%m-%d)"
 OUT="$(mktemp -t calendar-refresh)"
 trap 'rm -f "$OUT" "$OUT.json" "$OUT.err"' EXIT
