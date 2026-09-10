@@ -235,6 +235,21 @@ def test_falls_back_to_whichever_location_exists(tmp_path, monkeypatch):
     assert ind.dashboard_dir(env={}, profile_path=str(tmp_path / "none.json")) == str(real)
 
 
+@pytest.mark.parametrize("platform,want", [
+    ("linux", "obsidian-vault/Dashboard"),
+    ("darwin", "Documents/Main/Dashboard"),
+])
+def test_each_platform_ignores_the_other_machines_vault(tmp_path, monkeypatch, platform, want):
+    """Both paths existing on one box must not matter: a stray
+    ~/Documents/Main/Dashboard on the Linux box once captured every export
+    for four days while the synced ~/obsidian-vault went stale."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    for p in ("Documents/Main/Dashboard", "obsidian-vault/Dashboard"):
+        (tmp_path / p).mkdir(parents=True)
+    monkeypatch.setattr(ind.wc, "VAULT_DASHBOARDS", ind.wc.vault_dashboards(platform))
+    assert ind.dashboard_dir(env={}, profile_path=str(tmp_path / "none.json")) == str(tmp_path / want)
+
+
 def test_a_broken_profile_is_raised_not_swallowed(tmp_path):
     """A profile that exists and does not parse means somebody configured a
     dashboard_dir that is being ignored. Falling back quietly renders a

@@ -72,9 +72,17 @@ PROFILE_PATH = os.path.expanduser("~/.config/worktime/profile.json")
 
 DEFAULT_TZ_NAME = "America/New_York"
 
-# This machine keeps the vault under Documents/Main; the Linux box uses
-# ~/obsidian-vault. Hardcoding either breaks the other, so it is resolved.
-VAULT_DASHBOARDS = ["~/Documents/Main/Dashboard", "~/obsidian-vault/Dashboard"]
+# The Mac keeps the vault under Documents/Main; the Linux box uses
+# ~/obsidian-vault. Each platform only probes its own path: probing both let a
+# stray ~/Documents/Main/Dashboard on the Linux box capture every export from
+# Sep 6 while the synced vault went stale.
+def vault_dashboards(platform=sys.platform):
+    if platform == "darwin":
+        return ["~/Documents/Main/Dashboard"]
+    return ["~/obsidian-vault/Dashboard"]
+
+
+VAULT_DASHBOARDS = vault_dashboards()
 
 # Chrome stamps visits in microseconds since 1601, not since 1970.
 CHROME_EPOCH = datetime(1601, 1, 1)
