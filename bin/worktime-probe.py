@@ -2272,6 +2272,30 @@ def desktop_prompts_for(day: str) -> list[datetime]:
     return sorted(out)
 
 
+# The exporter runs every five minutes while the desktop is up, so an hour
+# without a write is the box off or the job dead -- either way the gaps this
+# feed would have explained are going unexplained. Reported beside the dot,
+# never through it: the Mac's own reading is still right, just less informed.
+ACTIVITY_STALE_SEC = 60 * 60
+
+
+def activity_feed_notice(now: datetime) -> str | None:
+    """A one-line note when the desktop's activity export has gone quiet."""
+    names = sorted(n for n in os.listdir(ACTIVITY_DIR) if n.endswith(".md"))
+    if not names:
+        return "Desktop activity feed: no exports yet"
+    path = os.path.join(ACTIVITY_DIR, names[-1])
+    with open(path) as fh:
+        stamp = next(line.split(":", 1)[1].strip() for line in fh
+                     if line.startswith("generated_at:"))
+    at = datetime.fromisoformat(stamp)
+    if (now - at).total_seconds() <= ACTIVITY_STALE_SEC:
+        return None
+    when = at.strftime("%H:%M") if at.date() == now.date() \
+        else at.strftime("%b %-d %H:%M")
+    return f"Desktop activity feed silent since {when}"
+
+
 def events_for(day: str) -> list[datetime]:
     """Everything that proves someone was working.
 
@@ -4374,7 +4398,10 @@ def status() -> dict:
             "activities": all_acts[:ACTIVITY_LIST_N],
             # The same evidence, folded back into those divisions. The menu
             # shows one or the other, never both at once.
-            "sessions": sessions}
+            "sessions": sessions,
+            # Null while the desktop export is current. Shown as a quiet row
+            # under the status line; it never changes `state`.
+            "feed_notice": activity_feed_notice(now)}
 
 
 def backfill(days: int) -> None:
