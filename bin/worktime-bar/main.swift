@@ -195,6 +195,8 @@ struct Status {
     var periods: [Period] = []
     var activities: [Activity] = []
     var sessions: [ActSession] = []
+    // A secondary input gone quiet. Informational only -- never moves the dot.
+    var feedNotice: String?
 }
 
 // Every probe run goes through here, one at a time. The probe is not a cheap
@@ -829,6 +831,30 @@ final class DebugRowView: NSView {
         field.font = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
         field.textColor = .secondaryLabelColor
         field.lineBreakMode = .byTruncatingMiddle
+        field.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(field)
+
+        NSLayoutConstraint.activate([
+            field.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 28),
+            field.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor,
+                                            constant: -14),
+            field.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+}
+
+// Something the reading is missing, not something wrong with it: small and
+// grey so it is there when the menu is opened and invisible otherwise.
+final class NoticeRowView: NSView {
+    init(width: CGFloat, text: String) {
+        super.init(frame: NSRect(x: 0, y: 0, width: width, height: 18))
+
+        let field = NSTextField(labelWithString: "\u{26A0}\u{FE0E} " + text)
+        field.font = NSFont.systemFont(ofSize: 11)
+        field.textColor = .secondaryLabelColor
+        field.lineBreakMode = .byTruncatingTail
         field.translatesAutoresizingMaskIntoConstraints = false
         addSubview(field)
 
@@ -1735,7 +1761,8 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         // is exactly what a rebuild costs: emptying an open menu dismisses it
         // half a second later, which is the whole reason the flip now hides
         // rows instead.
-        let key = ([worked, symbol, why, status.state, status.mode] + debug
+        let key = ([worked, symbol, why, status.state, status.mode,
+                    status.feedNotice ?? ""] + debug
                    + periods.map { p in
                        let s = periodStrings(p)
                        return s.top + "\u{1}" + s.what
@@ -1771,6 +1798,13 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         st.view = StatusRowView(width: debug.isEmpty ? 300 : DEBUG_ROW_WIDTH,
                                 symbol: symbol, text: why, color: color)
         m.addItem(st)
+
+        if let notice = status.feedNotice {
+            let n = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+            n.view = NoticeRowView(width: debug.isEmpty ? 300 : DEBUG_ROW_WIDTH,
+                                   text: notice)
+            m.addItem(n)
+        }
 
         // Directly under the status row it elaborates, above the day: while
         // this is showing there is no reading of the day to lead with, and
@@ -2144,6 +2178,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
             s.mode = j["mode"] as? String ?? "focused"
             s.focusPct = j["focus_pct"] as? Int
             s.linkFrom = j["link_from"] as? String
+            s.feedNotice = j["feed_notice"] as? String
             s.periods = (j["periods"] as? [[String: Any]] ?? []).map { p in
                 Period(start: p["start"] as? Int ?? 0,
                        end: p["end"] as? Int ?? 0,
