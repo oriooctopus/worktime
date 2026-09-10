@@ -45,7 +45,7 @@ CUTOFF = 5 * 60  # the focused-mode cutoff, in seconds
 def period(start_hhmm, end_hhmm):
     """A snapshot work period, as write_vault_snapshot publishes them."""
     s, e = wp.to_min(start_hhmm), wp.to_min(end_hhmm)
-    return {"start": s, "end": e, "len": e - s}
+    return {"start": s, "end": e, "len_sec": (e - s) * 60}
 
 
 class LinkAnchorCase(unittest.TestCase):

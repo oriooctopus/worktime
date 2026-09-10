@@ -99,10 +99,10 @@ async function tick(){
       if(p.n_slack)   bits.push(`<b>${p.n_slack}</b> Slack`);
       if(p.meeting)   bits.push(`meeting ${p.meeting}`);
       if(p.marked)    bits.push("marked");
-      const h=Math.floor(p.minutes/60), m=p.minutes%60;
+      const s=p.seconds, h=Math.floor(s/3600), m=Math.floor(s/60)%60;
       return `<tr><td class="t big">${p.start}–${p.end}</td>
         <td>${p.what||"—"}<div class="parts">${bits.join(" · ")||"&nbsp;"}</div></td>
-        <td class="m">${h?h+"h":""}${h?String(m).padStart(2,"0"):m+"m"}</td></tr>`;
+        <td class="m">${s<60?s+"s":(h?h+"h":"")+(h?String(m).padStart(2,"0"):m+"m")}</td></tr>`;
     }).join("");
   } else { sesswrap.hidden=true; strh.textContent="Stretches"; }
   rows.innerHTML=d.rows.length? d.rows.map(r=>`<tr${r.ongoing?' class="on'+(r.source!=="work"?" personal":"")+'"':""}>
@@ -138,8 +138,8 @@ def parse_snapshot(text):
         m = SNAPSHOT_ROW.match(line)
         if not m or m.group(1) == "Start":
             continue
-        start, end, mins, prompts, slack, marked, meeting, what = m.groups()
-        periods.append({"start": start, "end": end, "minutes": int(mins),
+        start, end, secs, prompts, slack, marked, meeting, what = m.groups()
+        periods.append({"start": start, "end": end, "seconds": int(secs),
                         "n_prompts": int(prompts), "n_slack": int(slack),
                         "marked": bool(marked.strip()),
                         "meeting": meeting.strip(), "what": what.strip()})

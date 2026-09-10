@@ -144,7 +144,7 @@ let BROKEN  = NSColor(srgbRed: 0.850, green: 0.200, blue: 0.200, alpha: 1)
 struct Period {
     var start = 0
     var end = 0
-    var len = 0
+    var lenSec = 0
     var nPrompts = 0
     var nSlack = 0
     var what = ""
@@ -180,7 +180,7 @@ struct Activity {
 struct Status {
     var state = "unknown"
     var why = "not yet polled"
-    var workedMinutes = 0
+    var workedSec = 0
     var at = ""
     var quietSince: String?
     var quietSec: Int?
@@ -732,7 +732,7 @@ func emptyDotImage() -> NSImage {
 // real one-line summary, "in progress" for the still-growing current span,
 // and "no summary" for one that closed too recently to have been summarized.
 func periodStrings(_ p: Period) -> (top: String, what: String) {
-    var top = "\(hhmm(p.start))–\(hhmm(p.end)) · \(human(p.len))   \(p.nPrompts)p"
+    var top = "\(hhmm(p.start))–\(hhmm(p.end)) · \(human(p.lenSec))   \(p.nPrompts)p"
     if p.nSlack > 0 { top += " · \(p.nSlack) slack" }
     var what = !p.what.isEmpty
         ? p.what
@@ -1645,7 +1645,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
     func build() {
         // "worked today" stands alone -- it's the day total, a different
         // metric from anything a period row shows, so it keeps its own row.
-        var worked = "worked today: \(human(status.workedMinutes))"
+        var worked = "worked today: \(human(status.workedSec))"
         if let f = status.focusPct { worked += "   \(f)% focus" }
 
         // "Nm since last activity" / "quiet Nm" used to be its own head row
@@ -2136,7 +2136,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
             var s = Status()
             s.state = j["state"] as? String ?? "unknown"
             s.why = j["why"] as? String ?? ""
-            s.workedMinutes = j["worked_minutes"] as? Int ?? 0
+            s.workedSec = j["worked_sec"] as? Int ?? 0
             s.at = j["at"] as? String ?? ""
             s.quietSince = j["quiet_since"] as? String
             s.quietSec = j["quiet_sec"] as? Int
@@ -2147,7 +2147,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
             s.periods = (j["periods"] as? [[String: Any]] ?? []).map { p in
                 Period(start: p["start"] as? Int ?? 0,
                        end: p["end"] as? Int ?? 0,
-                       len: p["len"] as? Int ?? 0,
+                       lenSec: p["len_sec"] as? Int ?? 0,
                        nPrompts: p["n_prompts"] as? Int ?? 0,
                        nSlack: p["n_slack"] as? Int ?? 0,
                        what: p["what"] as? String ?? "",
@@ -2164,7 +2164,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
             s.sessions = (j["sessions"] as? [[String: Any]] ?? []).map { g in
                 ActSession(start: g["start"] as? Int ?? 0,
                            end: g["end"] as? Int ?? 0,
-                           len: g["len"] as? Int ?? 0,
+                           lenSec: g["len_sec"] as? Int ?? 0,
                            what: g["what"] as? String ?? "",
                            counted: g["counted"] as? Bool ?? true,
                            current: g["current"] as? Bool ?? false,

@@ -36,7 +36,7 @@ def row(t, kind="prompt", what="x", n=1):
 
 
 def period(start, end, what=""):
-    return {"start": start, "end": end, "len": end - start, "what": what}
+    return {"start": start, "end": end, "len_sec": (end - start) * 60, "what": what}
 
 
 class SnapshotFingerprint(unittest.TestCase):

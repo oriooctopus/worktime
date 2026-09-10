@@ -30,7 +30,8 @@ def row(t, kind="prompt", what="x", n=1):
 
 def period(start, end, what="", length=None):
     return {"start": start, "end": end,
-            "len": end - start if length is None else length, "what": what}
+            "len_sec": (end - start if length is None else length) * 60,
+            "what": what}
 
 
 class GroupSessions(unittest.TestCase):
@@ -49,7 +50,7 @@ class GroupSessions(unittest.TestCase):
         # and the period list would give two different answers for one stretch.
         out = wp.group_sessions([row("09:10")], [period(540, 570)])
         self.assertEqual((out[0]["start"], out[0]["end"]), (540, 570))
-        self.assertEqual(out[0]["len"], 30)
+        self.assertEqual(out[0]["len_sec"], 30 * 60)
 
     def test_separate_periods_stay_separate(self):
         rows = [row("14:05"), row("09:10")]
@@ -83,7 +84,7 @@ class GroupSessions(unittest.TestCase):
         self.assertFalse(stray["counted"])
         self.assertEqual((stray["start"], stray["end"]), (240, 240))
         # No length, because none of it was credited.
-        self.assertEqual(stray["len"], 0)
+        self.assertEqual(stray["len_sec"], 0)
 
     def test_uncounted_rows_far_apart_do_not_merge(self):
         rows = [row("11:00", "approval"), row("04:00", "approval")]

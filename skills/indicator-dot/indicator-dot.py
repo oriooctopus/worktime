@@ -84,13 +84,13 @@ def report_probe(status):
     """Format output from probe status JSON. Returns (code, lines)."""
     state = status.get("state", "unknown")
     why = status.get("why", "")
-    worked = status.get("worked_minutes", 0)
     mode = status.get("mode", "focused")
     focus_pct = status.get("focus_pct")
 
     if state in ("working", "marked"):
         colour = "BLUE" if state == "marked" else "GREEN"
         lines = [f"{colour} - {why}"]
+        worked = status["worked_sec"] // 60
         if worked:
             h, m = divmod(worked, 60)
             summary = f"{h}h {m}m worked today, {mode} mode"
@@ -100,8 +100,10 @@ def report_probe(status):
         for p in status.get("periods", [])[:3]:
             s, e = p["start"], p["end"]
             what = p.get("what") or ("in progress" if p.get("current") else "")
+            n = p["len_sec"]
+            took = f"{n}s" if n < 60 else f"{n // 60}m"
             lines.append(f"  {s//60:02d}:{s%60:02d}–{e//60:02d}:{e%60:02d} · "
-                         f"{p['len']}m  {what}".rstrip())
+                         f"{took}  {what}".rstrip())
         return 0, lines
     elif state == "idle":
         lines = [f"AMBER - {why}"]
