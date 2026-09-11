@@ -1,14 +1,25 @@
 #!/usr/bin/env python3
-"""Export WhatsApp/iMessage/Chrome activity to daily markdown files in the
+"""Export WhatsApp/iMessage/Chrome activity to hourly markdown chunks in the
 Obsidian vault, so a dashboard on another machine can explain gaps in the
 workday.
 
-Writes <dashboard>/activity/YYYY-MM-DD.md for today and yesterday (local days)
-by default; `backfill N` writes the last N days (today back through
-today-(N-1)). The dashboard directory and the timezone are both resolved by
+Writes <dashboard>/activity/YYYY-MM-DD/HH.md (one file per LOCAL hour that
+had at least one event, America/New_York wall-clock) plus
+<dashboard>/activity/YYYY-MM-DD/periods.md for today and yesterday by
+default; `backfill N` writes the last N days (today back through
+today-(N-1)). <dashboard>/activity/_status.md carries the run's freshness
+(exported_at) and any source errors, throttled -- see maybe_write_status.
+The dashboard directory and the timezone are both resolved by
 worktime_common, because the vault sits at a different path on each machine and
 this used to name the Linux box's one outright -- so on the Mac the export was
 written where nothing reads it.
+
+Chunking exists because Obsidian Sync keeps every uploaded version of a file
+for a month against a 1GB quota: the old single ~360KB day file got rewritten
+in full on every 5-minute run (frontmatter always carried a fresh
+generated_at), which alone filled the quota. A chunk is written only when its
+own bytes change (write_if_changed) and carries no per-run timestamp, so an
+hour nothing happened to costs nothing on a re-run.
 
 Timezone math uses `zoneinfo.ZoneInfo` (aware datetimes) throughout, never
 the process's OS timezone (`time.tzset`/`time.localtime`/`time.mktime`) --
@@ -1494,134 +1505,205 @@ def save_summary_cache(path, cache):
 
 
 # --------------------------------------------------------------------------
-# Markdown
+# Markdown -- chunked per hour (see module docstring / README "Activity
+# export layout" for why: Obsidian Sync keeps every uploaded version of a
+# file for a month, and rewriting one 360KB day file every 5-minute run --
+# even though only a handful of rows changed -- filled the 1GB Sync quota.
+# Splitting into one small file per LOCAL hour, written only when its own
+# bytes change (write_if_changed), means an unaffected hour costs nothing on
+# a re-run: same historical richness, a small fraction of the versions.
 # --------------------------------------------------------------------------
 
-COUNT_KEYS = [
-    "whatsapp_sent",
-    "whatsapp_assistant",
-    "whatsapp_received",
-    "whatsapp_calls",
-    "imessage_sent",
-    "imessage_received",
-    "chrome_windows",
-    "chrome_synced",
-    "claude_prompts",
-    "phone_calls",
-    "periods",
-    "summaries_llm",
-]
+HOUR_RANGE = [f"{h:02d}" for h in range(24)]
 
 
-def build_markdown(day, generated_at_str, events, errors, cache, llm_call, budget, cap, now_epoch):
-    counts = {k: 0 for k in COUNT_KEYS}
-    last_seen = {}
-
-    def bump_last_seen(key, time_str):
-        if key not in last_seen or time_str > last_seen[key]:
-            last_seen[key] = time_str
-
-    for e in events:
-        if e.source == "whatsapp":
-            if e.direction == "sent":
-                counts["whatsapp_sent"] += 1
-            elif e.direction == "sent (assistant)":
-                counts["whatsapp_assistant"] += 1
-            elif e.direction == "received":
-                counts["whatsapp_received"] += 1
-            bump_last_seen("whatsapp", e.time_str)
-        elif e.source == "call":
-            counts["whatsapp_calls"] += 1
-            bump_last_seen("calls", e.time_str)
-        elif e.source == "imessage":
-            if e.direction == "sent":
-                counts["imessage_sent"] += 1
-            elif e.direction == "received":
-                counts["imessage_received"] += 1
-            bump_last_seen("imessage", e.time_str)
-        elif e.source == "chrome":
-            if e.who == "Windows":
-                counts["chrome_windows"] += 1
-            elif e.who == "synced":
-                counts["chrome_synced"] += 1
-            bump_last_seen("chrome", e.time_str)
-        elif e.source == "claude":
-            counts["claude_prompts"] += 1
-            bump_last_seen("claude", e.time_str)
-        elif e.source == "phone":
-            counts["phone_calls"] += 1
-            bump_last_seen("phone", e.time_str)
-
-    raw_periods = cluster_periods(events)
-    periods = []
-    for p in raw_periods:
-        periods.extend(split_period_by_length(p))
-    start_used = budget["used"]
-    summaries_llm = 0
-    period_summaries = []
-    for period in periods:
-        summary, is_llm = summarize_period(period, cache, llm_call, budget, cap, now_epoch)
-        period_summaries.append(summary)
-        if is_llm:
-            summaries_llm += 1
-    llm_calls_for_day = budget["used"] - start_used
-    counts["periods"] = len(periods)
-    counts["summaries_llm"] = summaries_llm
-
-    lines = []
-    lines.append("---")
-    lines.append(f"date: {day.isoformat()}")
-    lines.append(f"generated_at: {generated_at_str}")
-    lines.append(f"timezone: {TZ_NAME}")
-    counts_str = ", ".join(f"{k}: {counts[k]}" for k in COUNT_KEYS)
-    lines.append(f"counts: {{{counts_str}}}")
-    ls_order = ["whatsapp", "imessage", "chrome", "calls", "claude", "phone"]
-    ls_str = ", ".join(
-        f"{k}: {yaml_quote(last_seen[k])}" for k in ls_order if k in last_seen
-    )
-    lines.append(f"last_seen: {{{ls_str}}}")
-    err_str = ", ".join(yaml_quote(e) for e in errors)
-    lines.append(f"errors: [{err_str}]")
-    lines.append(f"llm_calls: {llm_calls_for_day}")
-    lines.append("---")
-    lines.append("")
-
-    if not events:
-        lines.append("_no activity_")
-    else:
-        lines.append("| time | source | direction | who | detail |")
-        lines.append("|---|---|---|---|---|")
-        for e in sorted(events, key=lambda x: (x.epoch, x.source, x.who, x.detail)):
-            who = sanitize_who(e.who)
-            lines.append(f"| {e.time_str} | {e.source} | {e.direction} | {who} | {e.detail} |")
-
-    if periods:
-        lines.append("")
-        lines.append("## Periods")
-        lines.append("| start | end | summary |")
-        lines.append("|---|---|---|")
-        for period, summary in zip(periods, period_summaries):
-            lines.append(f"| {period[0].time_str} | {period[-1].time_str} | {summary} |")
-    lines.append("")
-    return "\n".join(lines)
-
-
-def write_day_file(vault_dir, day, content):
-    os.makedirs(vault_dir, exist_ok=True)
-    target = os.path.join(vault_dir, f"{day.isoformat()}.md")
-    fd, tmp_path = tempfile.mkstemp(
-        dir=vault_dir, prefix=".tmp-activity-", suffix=".md"
-    )
+def write_if_changed(path, content):
+    """Write `content` to `path` only if it differs from what's on disk --
+    the whole point of chunking (see module note above): a byte-identical
+    rewrite would still create a new Obsidian Sync version even though
+    nothing changed. Returns True iff a write happened (new file or changed
+    bytes), so callers/tests can prove a no-op run touches nothing. Atomic
+    temp+rename, and the temp name starts with '.' so Obsidian's own file
+    watcher ignores it as a dotfile while it's mid-write."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            if f.read() == content:
+                return False
+    except OSError:
+        pass  # doesn't exist yet (or unreadable) -- fall through to write it
+    d = os.path.dirname(path) or "."
+    os.makedirs(d, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=d, prefix=".tmp-activity-", suffix=".md")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(content)
-        os.replace(tmp_path, target)
+        os.replace(tmp_path, path)
     except Exception:
         try:
             os.unlink(tmp_path)
         except OSError:
             pass
         raise
+    return True
+
+
+def delete_if_exists(path):
+    """Best-effort delete -- used when an hour's event count drops to zero
+    (or a day ends up with no periods at all) so a stale chunk doesn't sit
+    around claiming events that no longer belong to it. Missing is not an
+    error: most hours never had a chunk to begin with."""
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def group_events_by_hour(day, events):
+    """This day's events, bucketed by LOCAL wall-clock hour string '00'..'23'.
+
+    Bucketing on the already-computed time_str (not a fresh tz lookup) is
+    what makes the fall-back DST day work for free: on 2026-11-01 both the
+    EDT and EST occurrences of 01:30 format as time_str '01:30', so they
+    land in the same '01' bucket and get ordered against each other purely
+    by epoch (see build_hour_markdown's sort key) -- no special-casing
+    needed here. Spring-forward likewise needs no special-casing: wall-clock
+    02:xx never occurs that day, so no event's time_str ever starts with
+    '02' and no 02.md is ever written."""
+    by_hour = {}
+    for e in events:
+        if e.day != day:
+            continue
+        by_hour.setdefault(e.time_str[:2], []).append(e)
+    return by_hour
+
+
+def build_hour_markdown(day, hour, events):
+    """One hour's chunk: frontmatter (date, hour, timezone, per-source event
+    counts for JUST this hour) + the same |time|source|direction|who|detail|
+    table the old single-day file used, holding only this hour's rows.
+    Deliberately carries NO generated_at/run timestamp (rule: a chunk's
+    bytes must be a pure function of its events, so two independent renders
+    of the same data are byte-identical and a no-op run writes nothing)."""
+    counts = {}
+    for e in events:
+        counts[e.source] = counts.get(e.source, 0) + 1
+    lines = ["---", f"date: {day.isoformat()}", f"hour: {hour}", f"timezone: {TZ_NAME}"]
+    counts_str = ", ".join(f"{k}: {counts[k]}" for k in sorted(counts))
+    lines.append(f"counts: {{{counts_str}}}")
+    lines.append("---")
+    lines.append("")
+    lines.append("| time | source | direction | who | detail |")
+    lines.append("|---|---|---|---|---|")
+    # Same tiebreak as the old single-day table: epoch first, then
+    # (source, who, detail) so re-renders of the same event set are always
+    # byte-identical even when two events share an epoch exactly.
+    for e in sorted(events, key=lambda x: (x.epoch, x.source, x.who, x.detail)):
+        who = sanitize_who(e.who)
+        lines.append(f"| {e.time_str} | {e.source} | {e.direction} | {who} | {e.detail} |")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def write_day_chunks(vault_dir, day, events):
+    """Write/refresh every hour chunk under <vault_dir>/<day>/HH.md, and
+    delete any chunk whose hour now has zero events (a re-parse -- e.g. the
+    Claude redaction cache retroactively redacting a session -- can change
+    which bucket an event's text/who lands in without changing its time_str,
+    but never its epoch, so an hour dropping to zero is a real, if rare,
+    outcome to handle rather than assume can't happen)."""
+    day_dir = os.path.join(vault_dir, day.isoformat())
+    by_hour = group_events_by_hour(day, events)
+    for hour in HOUR_RANGE:
+        path = os.path.join(day_dir, f"{hour}.md")
+        if hour in by_hour:
+            write_if_changed(path, build_hour_markdown(day, hour, by_hour[hour]))
+        else:
+            delete_if_exists(path)
+
+
+def build_periods_markdown(periods, period_summaries):
+    lines = ["| start | end | summary |", "|---|---|---|"]
+    for period, summary in zip(periods, period_summaries):
+        lines.append(f"| {period[0].time_str} | {period[-1].time_str} | {summary} |")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def write_periods_file(vault_dir, day, periods, period_summaries):
+    """periods.md replaces the old single-day file's '## Periods' section.
+    No periods (a day with zero events) means no file, mirroring the old
+    behavior of simply omitting the section."""
+    path = os.path.join(os.path.join(vault_dir, day.isoformat()), "periods.md")
+    if not periods:
+        delete_if_exists(path)
+        return
+    write_if_changed(path, build_periods_markdown(periods, period_summaries))
+
+
+# --------------------------------------------------------------------------
+# _status.md -- the freshness signal a reader (worktime-probe.py) checks
+# instead of any one chunk's mtime, since "which chunk changed most
+# recently" no longer answers "is the export still running". Throttled to
+# at most one write per 10 minutes UNLESS the error list itself changed, so
+# a healthy run every 5 minutes doesn't still create a new Sync version
+# every single time (144/day -> ~1 write per errors-change, or every other
+# run at worst).
+# --------------------------------------------------------------------------
+
+STATUS_FRESHNESS_SECONDS = 10 * 60
+_STATUS_EXPORTED_AT_RE = re.compile(r'^exported_at:\s*(\S+)\s*$', re.MULTILINE)
+_STATUS_ERRORS_RE = re.compile(r'^errors:\s*\[(.*)\]\s*$', re.MULTILINE)
+_YAML_QUOTED_STR_RE = re.compile(r'"((?:[^"\\]|\\.)*)"')
+
+
+def _unyaml_quote(s):
+    return s.replace('\\"', '"').replace("\\\\", "\\")
+
+
+def read_status_file(path):
+    """Best-effort parse of an existing _status.md -> {'exported_at': str,
+    'errors': [str,...]}, or None if it's missing/unreadable/malformed --
+    treated by the caller as "no prior status", i.e. always write."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read()
+    except OSError:
+        return None
+    m = _STATUS_EXPORTED_AT_RE.search(content)
+    if not m:
+        return None
+    e = _STATUS_ERRORS_RE.search(content)
+    errors_raw = e.group(1) if e else ""
+    errors = [_unyaml_quote(s) for s in _YAML_QUOTED_STR_RE.findall(errors_raw)]
+    return {"exported_at": m.group(1), "errors": errors}
+
+
+def build_status_markdown(exported_at_str, errors):
+    lines = ["---", f"exported_at: {exported_at_str}"]
+    err_str = ", ".join(yaml_quote(e) for e in errors)
+    lines.append(f"errors: [{err_str}]")
+    lines.append("---")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def maybe_write_status(vault_dir, now_epoch, errors, generated_at_str):
+    """Write <vault_dir>/_status.md iff the existing exported_at is more
+    than STATUS_FRESHNESS_SECONDS old, or the errors list changed since last
+    write -- never on every run, since a per-run timestamp would otherwise
+    make this file churn a Sync version on every single 5-minute tick."""
+    path = os.path.join(vault_dir, "_status.md")
+    existing = read_status_file(path)
+    if existing is not None:
+        try:
+            old_epoch = datetime.fromisoformat(existing["exported_at"]).timestamp()
+        except ValueError:
+            old_epoch = None
+        stale = old_epoch is None or (now_epoch - old_epoch) >= STATUS_FRESHNESS_SECONDS
+        if not stale and existing["errors"] == list(errors):
+            return False
+    os.makedirs(vault_dir, exist_ok=True)
+    return write_if_changed(path, build_status_markdown(generated_at_str, errors))
 
 
 # --------------------------------------------------------------------------
@@ -1725,25 +1807,53 @@ def gather(paths, days, now_epoch):
 
 
 def run(paths, days, now_epoch):
+    """Orchestrates one export run. `failed` (from gather()) counts sources
+    that raised -- a genuine read failure, never "read fine, zero rows"
+    (imessage's bad-snapshot notes land in `errors` but do NOT bump
+    `failed`, since a corrupt old snapshot file doesn't mean today's real
+    events are missing). Two failure tiers matter here:
+
+    - ALL sources failed: writing anything would mean every chunk/periods
+      file on disk gets replaced by content built from zero events, i.e.
+      this run would look like nothing ever happened. Skip every write.
+    - SOME (not all) sources failed: a partial read is not the same as zero
+      events for that source -- e.g. a WhatsApp DB lock this run would make
+      today's chunks look like WhatsApp went silent, deleting real rows,
+      only for the NEXT successful run to write them right back. That's two
+      needless Sync versions for data that never actually changed. So a
+      partial failure skips ALL chunk/periods writes for this run (not just
+      the failed source's rows -- there's no way to tell which day/hour
+      chunks were touched by which source without redoing the source split),
+      while still letting _status.md's errors field update below so a
+      dashboard reader sees the failure promptly.
+    """
     events_by_day, errors, failed = gather(paths, days, now_epoch)
     generated_at_str = (
         datetime.fromtimestamp(now_epoch, tz=NY_TZ).strftime("%Y-%m-%dT%H:%M:%S")
         + utc_offset_str(now_epoch)
     )
     all_failed = failed == TOTAL_SOURCES
+    any_failed = failed > 0
     if not all_failed:
-        cache_path = paths.get("cache_path", CACHE_PATH)
-        llm_call = paths.get("llm_call") or default_llm_call
-        cap = paths.get("llm_call_cap", LLM_CALL_CAP)
-        cache = load_summary_cache(cache_path)
-        budget = {"used": 0}
-        for day in days:
-            content = build_markdown(
-                day, generated_at_str, events_by_day.get(day, []), errors,
-                cache, llm_call, budget, cap, now_epoch,
-            )
-            write_day_file(paths["vault_dir"], day, content)
-        save_summary_cache(cache_path, cache)
+        if not any_failed:
+            cache_path = paths.get("cache_path", CACHE_PATH)
+            llm_call = paths.get("llm_call") or default_llm_call
+            cap = paths.get("llm_call_cap", LLM_CALL_CAP)
+            cache = load_summary_cache(cache_path)
+            budget = {"used": 0}
+            for day in days:
+                events = events_by_day.get(day, [])
+                periods = []
+                for p in cluster_periods(events):
+                    periods.extend(split_period_by_length(p))
+                period_summaries = [
+                    summarize_period(period, cache, llm_call, budget, cap, now_epoch)[0]
+                    for period in periods
+                ]
+                write_day_chunks(paths["vault_dir"], day, events)
+                write_periods_file(paths["vault_dir"], day, periods, period_summaries)
+            save_summary_cache(cache_path, cache)
+        maybe_write_status(paths["vault_dir"], now_epoch, errors, generated_at_str)
     else:
         print(
             "activity-export: all sources failed: " + "; ".join(errors),

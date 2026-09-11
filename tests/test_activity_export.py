@@ -194,14 +194,25 @@ def paths(tmp_path):
         "chrome_history": str(chrome_history),
         "cache_path": str(cache_path),
         "llm_call": _mock_llm_call,
-        # claude source: points at an empty tmp dir and a deliberately
-        # nonexistent redact config by default, so every test fails the
-        # claude source closed (0 rows) unless it explicitly injects
-        # paths["redact"] or writes its own jsonl fixtures -- tests must
-        # NEVER touch the real ~/.claude/projects or ~/.config/activity-export.
+        # claude source: points at an empty tmp dir, with a valid (but
+        # never-matching) redact config injected directly by default -- so
+        # the claude source SUCCEEDS with 0 rows (an empty projects dir) in
+        # every test that doesn't care about it, exactly like production
+        # with real redaction config configured and no claude activity
+        # touching the fixture's temp dirs. Under the chunked-export design,
+        # any ONE source failing skips writing every chunk/periods file for
+        # the whole run (see run()'s docstring) -- so leaving claude
+        # "failing closed" by default here would silently starve almost
+        # every other test in this file of any written output. Tests that
+        # specifically exercise the missing/malformed-config fail-closed
+        # path override paths["redact_path"] and clear paths["redact"]
+        # themselves (see test_claude_missing_redact_config_fails_closed).
+        # Tests must NEVER touch the real ~/.claude/projects or
+        # ~/.config/activity-export.
         "claude_dir": str(claude_dir),
         "claude_projects_globs": [str(claude_dir / "*" / "*.jsonl")],
         "redact_path": str(tmp_path / "redact-missing.json"),
+        "redact": {"private_roots": [], "private_keywords": ["zz-fixture-never-matches-zz"]},
         # Always a per-test tmp path, never the real cache file, whether or
         # not a given test also injects paths["claude_offset_cache"] directly.
         "claude_offset_cache_path": str(tmp_path / "claude-offsets.json"),
@@ -213,10 +224,48 @@ def paths(tmp_path):
     }
 
 
+def day_dir(paths, day):
+    return os.path.join(paths["vault_dir"], day.isoformat())
+
+
+def hour_chunk_path(paths, day, hour):
+    return os.path.join(day_dir(paths, day), f"{hour}.md")
+
+
+def existing_hours(paths, day):
+    """Sorted list of 'HH' strings that currently have a chunk file on disk
+    -- lets a test assert exactly which hours were written/deleted."""
+    d = day_dir(paths, day)
+    if not os.path.isdir(d):
+        return []
+    return sorted(
+        fn[:-3] for fn in os.listdir(d)
+        if len(fn) == 5 and fn.endswith(".md") and fn[:2].isdigit()
+    )
+
+
 def read_day(paths, day):
-    p = os.path.join(paths["vault_dir"], f"{day.isoformat()}.md")
-    with open(p) as f:
-        return f.read()
+    """Reconstruct one combined string for a day out of its hour chunks +
+    periods.md, in the same overall shape the old single-day file had
+    (events table(s) then '## Periods'), so the bulk of this suite's
+    substring/row assertions -- written against the old format -- still
+    read the right thing. Per-hour frontmatter (date/hour/timezone/counts)
+    is kept as-is per chunk rather than merged into one block; tests that
+    care about the old day-level aggregate fields (counts/last_seen/
+    generated_at/llm_calls -- all removed, see design) assert on the
+    specific chunk/status file directly instead of through this helper."""
+    d = day_dir(paths, day)
+    bodies = []
+    if os.path.isdir(d):
+        for hour in existing_hours(paths, day):
+            with open(os.path.join(d, f"{hour}.md")) as f:
+                bodies.append(f.read())
+    events_part = "\n".join(bodies) if bodies else "_no activity_\n"
+    periods_path = os.path.join(d, "periods.md")
+    if os.path.exists(periods_path):
+        with open(periods_path) as f:
+            return events_part + "\n## Periods\n" + f.read()
+    return events_part
 
 
 def events_only(content):
@@ -317,6 +366,28 @@ def test_dst_fallback_epochs_distinct_one_hour_apart_and_ordered(paths, monkeypa
     idx_edt = content.index("edt one thirty")
     idx_est = content.index("est one thirty")
     assert idx_edt < idx_est  # -04:00 instant is chronologically earlier
+    # Both wall-clock 01:30 occurrences must land in the SAME chunk file
+    # (01.md), not one each -- group_events_by_hour buckets by time_str, not
+    # epoch, so this is the behavior under test, not an accident.
+    assert existing_hours(paths, date(2026, 11, 1)) == ["01"]
+
+
+def test_spring_forward_no_02_chunk_written(paths):
+    # 2026-03-08 in America/New_York: 02:00 EST jumps straight to 03:00 EDT --
+    # wall-clock 02:xx never occurs, so no event's time_str can start with
+    # '02' and no 02.md should ever exist for that day.
+    make_whatsapp_db(
+        str(paths["whatsapp_db"]),
+        chats=[("111@s.whatsapp.net", "Alice")],
+        messages=[
+            ("111@s.whatsapp.net", "111", "just before", "2026-03-08 01:45:00-05:00", 0, None),
+            ("111@s.whatsapp.net", "111", "just after", "2026-03-08 03:15:00-04:00", 0, None),
+        ],
+    )
+    days = [date(2026, 3, 8)]
+    rc = ae.run(paths, days, local_epoch(2026, 3, 8, 12, 0, 0, -4))
+    assert rc == 0
+    assert existing_hours(paths, days[0]) == ["01", "03"]
 
 
 # --------------------------------------------------------------------------
@@ -338,7 +409,9 @@ def test_whatsapp_assistant_vs_sent_vs_received(paths):
     rc = ae.run(paths, days, local_epoch(2026, 8, 25, 12, 0, 0, -4))
     assert rc == 0
     content = read_day(paths, date(2026, 8, 25))
-    assert "counts: {whatsapp_sent: 1, whatsapp_assistant: 1, whatsapp_received: 1" in content
+    # Per-hour counts are keyed by source only now (see build_hour_markdown) --
+    # direction breakdown lives in the table rows themselves, checked below.
+    assert "counts: {whatsapp: 3}" in content
     assert "sent (assistant)" in content
     lines = [l for l in content.splitlines() if l.startswith("|") and "bridge sent this" in l]
     assert lines and "sent (assistant)" in lines[0]
@@ -608,8 +681,9 @@ def test_imessage_corrupt_snapshots_skipped_and_counted(paths):
     rc = ae.run(paths, days, local_epoch(2026, 8, 25, 12, 0, 0, -4))
     assert rc == 0
     content = read_day(paths, date(2026, 8, 25))
-    assert "good row" in content
-    assert "imessage: 2 unreadable snapshots" in content
+    assert "good row" in content  # a corrupt/empty snapshot is a note, not a source failure
+    with open(os.path.join(paths["vault_dir"], "_status.md")) as f:
+        assert "imessage: 2 unreadable snapshots" in f.read()
 
 
 # --------------------------------------------------------------------------
@@ -630,7 +704,12 @@ def test_chrome_visit_time_known_instant_real_data_value():
     assert time_str == "10:38"
 
 
-def test_chrome_corrupt_history_records_error_others_still_export(paths):
+def test_chrome_corrupt_history_a_partial_failure_writes_no_chunks_but_records_status(paths):
+    # Design: a partial source failure (chrome breaks, whatsapp is fine) must
+    # NOT rewrite any chunk/periods file this run -- a failed read is not
+    # zero events, and rewriting would delete-then-restore real rows across
+    # two runs for no reason (see run()'s docstring). The failure still has
+    # to surface somewhere promptly, which is exactly what _status.md is for.
     with open(paths["chrome_history"], "wb") as f:
         f.write(b"not a real sqlite file, truncated garbage")
     make_whatsapp_db(
@@ -640,16 +719,18 @@ def test_chrome_corrupt_history_records_error_others_still_export(paths):
     )
     days = [date(2026, 8, 25)]
     rc = ae.run(paths, days, local_epoch(2026, 8, 25, 12, 0, 0, -4))
-    assert rc == 0
-    content = read_day(paths, date(2026, 8, 25))
-    assert "still here" in content
-    assert any(l.startswith("errors: [") and "chrome:" in l for l in content.splitlines())
+    assert rc == 0  # not ALL sources failed -- exit code stays healthy
+    assert existing_hours(paths, days[0]) == []  # nothing written, whatsapp included
+    with open(os.path.join(paths["vault_dir"], "_status.md")) as f:
+        status = f.read()
+    assert "chrome:" in status
 
 
-def test_all_sources_fail_leaves_existing_file_untouched(paths):
+def test_all_sources_fail_leaves_existing_chunks_untouched(paths):
     day = date(2026, 8, 25)
-    target = os.path.join(paths["vault_dir"], f"{day.isoformat()}.md")
-    preexisting = "---\ndate: 2026-08-25\nPREEXISTING\n---\n\n_no activity_\n"
+    os.makedirs(day_dir(paths, day))
+    preexisting = "---\ndate: 2026-08-25\nhour: 09\nPREEXISTING\n---\n\n_no activity_\n"
+    target = hour_chunk_path(paths, day, "09")
     with open(target, "w") as f:
         f.write(preexisting)
 
@@ -662,12 +743,16 @@ def test_all_sources_fail_leaves_existing_file_untouched(paths):
     paths["imessage_dir"] = None  # glob.glob on a missing/empty dir doesn't raise; force a real error
     with open(paths["chrome_history"], "wb") as f:
         f.write(b"corrupt")
+    paths["redact"] = None  # force the claude source closed too, all 6 sources failing
+    paths["redact_path"] = "/nonexistent/redact.json"
 
     rc = ae.run(paths, [day], local_epoch(2026, 8, 25, 12, 0, 0, -4))
     assert rc == 1
     with open(target) as f:
         after = f.read()
     assert after == preexisting
+    # all-failed also must not create/refresh _status.md -- see rule 4/5.
+    assert not os.path.exists(os.path.join(paths["vault_dir"], "_status.md"))
 
 
 # --------------------------------------------------------------------------
@@ -693,7 +778,7 @@ def test_calls_answered_status(paths):
     assert len(row) == 1
     cells = split_row(row[0])
     assert cells[4] == "answered"  # no duration suffix
-    assert "whatsapp_calls: 1" in content
+    assert "counts: {call: 1}" in content
 
 
 def test_calls_in_progress(paths):
@@ -920,8 +1005,9 @@ def test_chrome_synced_vs_windows_labelling_and_counts(paths):
     content = read_day(paths, date(2026, 8, 25))
     assert "| chrome | visit | Windows |" in content
     assert "| chrome | visit | synced |" in content
-    assert "chrome_windows: 1" in content
-    assert "chrome_synced: 1" in content
+    # Per-hour counts are keyed by source only now (device split lives in the
+    # table's 'who' column, asserted above) -- both visits land in hour 09.
+    assert "counts: {chrome: 2}" in content
 
 
 # --------------------------------------------------------------------------
@@ -963,20 +1049,14 @@ def test_cross_source_ordering(paths):
     assert sources == ["call", "imessage", "whatsapp", "chrome"]
 
 
-def test_last_seen_values(paths):
-    make_whatsapp_db(
-        str(paths["whatsapp_db"]),
-        chats=[("111@s.whatsapp.net", "Alice")],
-        messages=[
-            ("111@s.whatsapp.net", "111", "first", "2026-08-25 08:00:00-04:00", 0, None),
-            ("111@s.whatsapp.net", "111", "last", "2026-08-25 09:45:00-04:00", 0, None),
-        ],
-    )
-    days = [date(2026, 8, 25)]
-    rc = ae.run(paths, days, local_epoch(2026, 8, 25, 12, 0, 0, -4))
-    assert rc == 0
-    content = read_day(paths, date(2026, 8, 25))
-    assert 'last_seen: {whatsapp: "09:45"}' in content
+# NOTE: "last_seen" (day-level, per-source last-activity time embedded in a
+# single day file's frontmatter) was removed by design -- freshness is now
+# read from _status.md's exported_at (see maybe_write_status), and a
+# per-source "when did this last happen today" is directly answerable by
+# scanning the last hour chunk that has that source, so a dedicated field
+# would just be a second copy of data already on disk. Superseded by
+# test_no_op_rerun_writes_nothing_byte_identical and
+# test_status_freshness_59_vs_61_minutes below.
 
 
 # --------------------------------------------------------------------------
@@ -984,7 +1064,12 @@ def test_last_seen_values(paths):
 # --------------------------------------------------------------------------
 
 
-def test_rerun_identical_except_generated_at(paths):
+def test_no_op_rerun_writes_nothing_byte_identical(paths):
+    # Chunks (and periods.md) carry NO per-run timestamp at all now -- unlike
+    # the old single-day file (generated_at every run), a re-render of the
+    # same events must be BYTE-IDENTICAL, not merely identical after
+    # stripping a timestamp line. Proven at the mutation level in
+    # test_mutation_proof_write_if_changed_gate below.
     make_whatsapp_db(
         str(paths["whatsapp_db"]),
         chats=[("111@s.whatsapp.net", "Alice")],
@@ -995,27 +1080,19 @@ def test_rerun_identical_except_generated_at(paths):
     first = read_day(paths, date(2026, 8, 25))
     ae.run(paths, days, local_epoch(2026, 8, 25, 12, 5, 0, -4))
     second = read_day(paths, date(2026, 8, 25))
-
-    def strip_generated_at(s):
-        # llm_calls also legitimately differs: run 1 attempts+caches the
-        # period's summary (llm_calls: 1), run 2 hits the cache (llm_calls: 0).
-        return "\n".join(
-            l for l in s.splitlines()
-            if not l.startswith("generated_at:") and not l.startswith("llm_calls:")
-        )
-
-    assert first != second  # generated_at (and llm_calls) differ
-    assert strip_generated_at(first) == strip_generated_at(second)
+    assert first == second
 
 
-def test_empty_day_has_frontmatter_and_no_activity_marker(paths):
+def test_empty_day_writes_no_chunks_and_no_periods_file(paths):
+    # An empty day has zero events for every hour, so write_day_chunks
+    # writes nothing (nothing to delete either, on a first run) and
+    # write_periods_file writes no periods.md -- there is no longer a
+    # single day file to carry a "_no activity_" marker in.
     days = [date(2026, 8, 25)]
     rc = ae.run(paths, days, local_epoch(2026, 8, 25, 12, 0, 0, -4))
     assert rc == 0
-    content = read_day(paths, date(2026, 8, 25))
-    assert "_no activity_" in content
-    assert "date: 2026-08-25" in content
-    assert "counts: {whatsapp_sent: 0" in content
+    assert existing_hours(paths, days[0]) == []
+    assert not os.path.exists(os.path.join(day_dir(paths, days[0]), "periods.md"))
 
 
 # --------------------------------------------------------------------------
@@ -1064,8 +1141,8 @@ def test_period_clustering_15min_boundary_splits_at_16(paths):
     content = read_day(paths, date(2026, 8, 25))
     rows = periods_rows(content)
     assert [(r[0], r[1]) for r in rows] == [("09:00", "09:24"), ("09:40", "09:40")]
-    assert "counts: {whatsapp_sent: 0, whatsapp_assistant: 0, whatsapp_received: 4" in content
-    assert "periods: 2" in content
+    assert "counts: {whatsapp: 4}" in content
+    assert len(rows) == 2
 
 
 def test_period_clustering_exactly_15min_does_not_split(paths):
@@ -1094,7 +1171,6 @@ def test_period_cache_hit_summarizer_called_once(paths):
     assert ae.run(paths, days, local_epoch(2026, 8, 25, 12, 0, 0, -4)) == 0
     first = read_day(paths, date(2026, 8, 25))
     assert counting.calls == 1
-    assert "summaries_llm: 1" in first
     assert periods_rows(first)[0][2] == "llm summary"
 
     with open(paths["cache_path"]) as f:
@@ -1104,8 +1180,7 @@ def test_period_cache_hit_summarizer_called_once(paths):
     assert ae.run(paths, days, local_epoch(2026, 8, 25, 12, 10, 0, -4)) == 0
     second = read_day(paths, date(2026, 8, 25))
     assert counting.calls == 1  # not called again -- cache hit
-    assert "summaries_llm: 1" in second
-    assert "llm_calls: 0" in second
+    assert periods_rows(second)[0][2] == "llm summary"
 
 
 def test_period_cache_miss_when_row_set_grows(paths):
@@ -1141,9 +1216,7 @@ def test_period_summarizer_failure_falls_back_to_heuristic_uncached(paths, capsy
     days = [date(2026, 8, 25)]
     assert ae.run(paths, days, local_epoch(2026, 8, 25, 12, 0, 0, -4)) == 0
     content = read_day(paths, date(2026, 8, 25))
-    assert failing.calls == 1
-    assert "llm_calls: 1" in content  # the attempt still counts
-    assert "summaries_llm: 0" in content
+    assert failing.calls == 1  # the attempt still counts
     summary = periods_rows(content)[0][2]
     assert "Esme" in summary and "×2" in summary  # heuristic text, not the LLM path
 
@@ -1174,10 +1247,8 @@ def test_period_llm_cap_20_per_run(paths):
     assert ae.run(paths, days, local_epoch(2026, 8, 25, 12, 0, 0, -4)) == 0
     content = read_day(paths, date(2026, 8, 25))
     assert counting.calls == 20
-    assert "periods: 25" in content
-    assert "summaries_llm: 20" in content
-    assert "llm_calls: 20" in content
     rows = periods_rows(content)
+    assert len(rows) == 25
     llm_summaries = [r[2] for r in rows if r[2] == "llm summary"]
     heuristic_summaries = [r[2] for r in rows if r[2] != "llm summary"]
     assert len(llm_summaries) == 20
@@ -1210,7 +1281,7 @@ def test_periods_section_absent_on_empty_day_present_on_normal_day(paths):
     assert rc == 0
     empty_content = read_day(paths, date(2026, 8, 25))
     assert "## Periods" not in empty_content
-    assert "periods: 0" in empty_content
+    assert not os.path.exists(os.path.join(day_dir(paths, days[0]), "periods.md"))
 
     make_whatsapp_db(
         str(paths["whatsapp_db"]),
@@ -1221,7 +1292,6 @@ def test_periods_section_absent_on_empty_day_present_on_normal_day(paths):
     assert rc == 0
     content = read_day(paths, date(2026, 8, 25))
     assert "## Periods" in content
-    assert "periods: 2" in content
     assert len(periods_rows(content)) == 2
 
 
@@ -1246,8 +1316,6 @@ def test_period_open_gets_no_llm_call_closes_next_run(paths):
     assert ae.run(paths, days, T) == 0
     content = read_day(paths, date(2026, 8, 25))
     assert counting.calls == 0
-    assert "llm_calls: 0" in content
-    assert "summaries_llm: 0" in content
     with open(paths["cache_path"]) as f:
         assert json.load(f) == {}  # never cached while open
 
@@ -1255,8 +1323,7 @@ def test_period_open_gets_no_llm_call_closes_next_run(paths):
     assert ae.run(paths, days, T + 25 * 60) == 0
     content2 = read_day(paths, date(2026, 8, 25))
     assert counting.calls == 1
-    assert "llm_calls: 1" in content2
-    assert "summaries_llm: 1" in content2
+    assert periods_rows(content2)[0][2] == "llm summary"
 
 
 # --------------------------------------------------------------------------
@@ -1535,8 +1602,10 @@ def test_claude_session_redacted_once_stays_redacted_in_that_file(paths, tmp_pat
 
 
 def test_claude_missing_redact_config_fails_closed_other_sources_fine(paths, tmp_path):
-    # Fixture default already points redact_path at a nonexistent file and
-    # sets no paths["redact"] -- exercise that default explicitly.
+    # Force the real fail-closed path: no injected config, and redact_path
+    # points at a file that doesn't exist.
+    paths["redact"] = None
+    paths["redact_path"] = str(tmp_path / "redact-missing.json")
     write_claude_project_file(
         paths["claude_dir"], "proj", "s1.jsonl",
         [make_claude_record("2026-08-25T13:00:00.000Z", str(tmp_path / "anywhere"), "sess-1", "a normal prompt")],
@@ -1550,11 +1619,14 @@ def test_claude_missing_redact_config_fails_closed_other_sources_fine(paths, tmp
     days = [date(2026, 8, 25)]
     rc = ae.run(paths, days, local_epoch(2026, 8, 25, 12, 0, 0, -4))
     assert rc == 0  # other 4 sources succeed -- not all-sources-failed
-    content = read_day(paths, date(2026, 8, 25))
-    assert "claude: redaction config unavailable" in content
-    assert "| claude |" not in events_only(content)
-    assert "claude_prompts: 0" in content
-    assert "still here" in content  # whatsapp source unaffected
+    # But claude DID fail (closed) -- under the chunked design a partial
+    # failure writes NO chunks this run at all, whatsapp included, and the
+    # failure surfaces via _status.md instead (see run()'s docstring and
+    # test_chrome_corrupt_history_a_partial_failure_writes_no_chunks_but_records_status).
+    assert existing_hours(paths, days[0]) == []
+    with open(os.path.join(paths["vault_dir"], "_status.md")) as f:
+        status = f.read()
+    assert "claude: redaction config unavailable" in status
 
 
 def test_claude_command_message_only_record_is_skipped(paths, tmp_path):
@@ -1568,9 +1640,9 @@ def test_claude_command_message_only_record_is_skipped(paths, tmp_path):
     )
     days = [date(2026, 8, 25)]
     assert ae.run(paths, days, local_epoch(2026, 8, 25, 12, 0, 0, -4)) == 0
-    content = read_day(paths, date(2026, 8, 25))
-    assert "| claude |" not in events_only(content)
-    assert "claude_prompts: 0" in content
+    # A command-message-only record yields zero real events and nothing else
+    # happened that day -- no chunk exists to have carried a claude row.
+    assert existing_hours(paths, days[0]) == []
 
 
 def test_claude_utc_timestamp_converts_to_ny_local(paths, tmp_path):
@@ -2112,10 +2184,11 @@ def test_phone_calls_zero_files_zero_rows_no_error(paths):
     days = [date(2026, 8, 25)]
     rc = ae.run(paths, days, local_epoch(2026, 8, 25, 12, 0, 0, -4))
     assert rc == 0
-    content = read_day(paths, date(2026, 8, 25))
-    assert "phone_calls: 0" in content
-    assert "phone:" not in content  # no error entry for the (expected) empty glob
-    assert "| phone |" not in events_only(content)
+    assert existing_hours(paths, days[0]) == []  # nothing happened at all that day
+    status_path = os.path.join(paths["vault_dir"], "_status.md")
+    if os.path.exists(status_path):
+        with open(status_path) as f:
+            assert "phone:" not in f.read()  # no error entry for the (expected) empty glob
 
 
 def test_phone_calls_dedupe_overlap_newer_file_wins(paths):
@@ -2265,6 +2338,222 @@ def test_phone_calls_third_party_voip_provider_skipped(paths):
     assert ae.run(paths, days, local_epoch(2026, 8, 25, 12, 0, 0, -4)) == 0
     rows = [l for l in events_only(read_day(paths, date(2026, 8, 25))).splitlines() if "| phone |" in l]
     assert len(rows) == 1 and rows[0].startswith("| 09:30")
+
+
+# --------------------------------------------------------------------------
+# Chunking + freshness (Obsidian Sync quota fix -- see module docstring):
+# a chunk/periods.md/status file must be written only when its own bytes
+# change, so a no-op run creates zero Sync versions.
+# --------------------------------------------------------------------------
+
+
+def _file_snapshot(paths, day):
+    """{relative_path: (mtime_ns, sha) for every file under the day's
+    chunk dir plus _status.md} -- used to prove a run touched nothing."""
+    import hashlib as _hashlib
+    snap = {}
+    d = day_dir(paths, day)
+    if os.path.isdir(d):
+        for fn in os.listdir(d):
+            p = os.path.join(d, fn)
+            with open(p, "rb") as f:
+                snap[fn] = (os.stat(p).st_mtime_ns, _hashlib.sha256(f.read()).hexdigest())
+    return snap
+
+
+def test_no_op_run_writes_zero_files_across_three_runs(paths):
+    make_whatsapp_db(
+        str(paths["whatsapp_db"]),
+        chats=[("111@s.whatsapp.net", "Alice")],
+        messages=[("111@s.whatsapp.net", "111", "steady state", "2026-08-25 09:00:00-04:00", 0, None)],
+    )
+    days = [date(2026, 8, 25)]
+    assert ae.run(paths, days, local_epoch(2026, 8, 25, 12, 0, 0, -4)) == 0
+    snap1 = _file_snapshot(paths, days[0])
+    assert snap1  # something was actually written the first time
+
+    for minute in (5, 10):
+        assert ae.run(paths, days, local_epoch(2026, 8, 25, 12, minute, 0, -4)) == 0
+        snap = _file_snapshot(paths, days[0])
+        assert snap == snap1  # identical mtimes AND hashes -- nothing rewritten
+
+
+def test_mutation_proof_write_if_changed_gate(paths, monkeypatch):
+    """Proves test_no_op_run_writes_zero_files_across_three_runs is a real
+    regression test: patch write_if_changed to always write (as if the
+    unchanged-bytes short-circuit were removed) and confirm the no-op-run
+    assertion then FAILS, i.e. the test can actually see this class of bug."""
+    make_whatsapp_db(
+        str(paths["whatsapp_db"]),
+        chats=[("111@s.whatsapp.net", "Alice")],
+        messages=[("111@s.whatsapp.net", "111", "steady state", "2026-08-25 09:00:00-04:00", 0, None)],
+    )
+    days = [date(2026, 8, 25)]
+    assert ae.run(paths, days, local_epoch(2026, 8, 25, 12, 0, 0, -4)) == 0
+    snap1 = _file_snapshot(paths, days[0])
+
+    real_write_if_changed = ae.write_if_changed
+
+    def always_write(path, content):
+        d = os.path.dirname(path) or "."
+        os.makedirs(d, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
+        return True  # bug: never reports "unchanged", so mtime always bumps
+
+    monkeypatch.setattr(ae, "write_if_changed", always_write)
+    assert ae.run(paths, days, local_epoch(2026, 8, 25, 12, 5, 0, -4)) == 0
+    snap2 = _file_snapshot(paths, days[0])
+    monkeypatch.setattr(ae, "write_if_changed", real_write_if_changed)
+
+    assert snap2 != snap1  # the reinstated bug is visible: mtimes changed
+    # ... even though the actual event data (and thus intended content) is
+    # identical -- proving the bug is specifically "rewrites when it
+    # shouldn't", not "produces wrong content".
+    assert {k: v[1] for k, v in snap1.items()} == {k: v[1] for k, v in snap2.items()}
+
+
+def test_new_event_rewrites_only_its_hour(paths):
+    make_whatsapp_db(
+        str(paths["whatsapp_db"]),
+        chats=[("111@s.whatsapp.net", "Alice")],
+        messages=[("111@s.whatsapp.net", "111", "morning", "2026-08-25 09:00:00-04:00", 0, None)],
+    )
+    days = [date(2026, 8, 25)]
+    assert ae.run(paths, days, local_epoch(2026, 8, 25, 12, 0, 0, -4)) == 0
+    snap1 = _file_snapshot(paths, days[0])
+    assert "09.md" in snap1
+
+    make_whatsapp_db(
+        str(paths["whatsapp_db"]),
+        chats=[("111@s.whatsapp.net", "Alice")],
+        messages=[
+            ("111@s.whatsapp.net", "111", "morning", "2026-08-25 09:00:00-04:00", 0, None),
+            ("111@s.whatsapp.net", "111", "afternoon", "2026-08-25 14:00:00-04:00", 0, None),
+        ],
+    )
+    assert ae.run(paths, days, local_epoch(2026, 8, 25, 15, 0, 0, -4)) == 0
+    snap2 = _file_snapshot(paths, days[0])
+    assert snap2["09.md"] == snap1["09.md"]  # untouched hour: identical mtime+hash
+    assert "14.md" in snap2 and "14.md" not in snap1
+    # periods.md legitimately changes -- a new period was added.
+
+
+def test_late_event_for_yesterday_rewrites_only_yesterdays_hour(paths):
+    make_whatsapp_db(
+        str(paths["whatsapp_db"]),
+        chats=[("111@s.whatsapp.net", "Alice")],
+        messages=[("111@s.whatsapp.net", "111", "yesterday morning", "2026-08-24 09:00:00-04:00", 0, None)],
+    )
+    days = [date(2026, 8, 24), date(2026, 8, 25)]
+    assert ae.run(paths, days, local_epoch(2026, 8, 25, 12, 0, 0, -4)) == 0
+    snap1_y = _file_snapshot(paths, days[0])
+    snap1_t = _file_snapshot(paths, days[1])
+
+    # A late-arriving Chrome sync writes an extra yesterday-evening visit.
+    make_whatsapp_db(
+        str(paths["whatsapp_db"]),
+        chats=[("111@s.whatsapp.net", "Alice")],
+        messages=[
+            ("111@s.whatsapp.net", "111", "yesterday morning", "2026-08-24 09:00:00-04:00", 0, None),
+            ("111@s.whatsapp.net", "111", "yesterday late sync", "2026-08-24 21:00:00-04:00", 0, None),
+        ],
+    )
+    assert ae.run(paths, days, local_epoch(2026, 8, 25, 12, 5, 0, -4)) == 0
+    snap2_y = _file_snapshot(paths, days[0])
+    snap2_t = _file_snapshot(paths, days[1])
+    assert snap2_y["09.md"] == snap1_y["09.md"]  # yesterday's other hour untouched
+    assert "21.md" in snap2_y and "21.md" not in snap1_y
+    assert snap2_t == snap1_t  # today completely untouched
+
+
+def test_hour_dropping_to_zero_events_deletes_its_chunk(paths):
+    # Simulates a re-parse that moves an event out of an hour it previously
+    # occupied (e.g. Claude's redaction cache retroactively redacting a
+    # session doesn't change epoch/time_str, but this drives the same code
+    # path more directly): write_day_chunks must delete a chunk whose
+    # current event count for that hour is zero, not leave a stale file.
+    day = date(2026, 8, 25)
+    ae.write_day_chunks(
+        paths["vault_dir"], day,
+        [ae.Event(local_epoch(2026, 8, 25, 9, 0, 0, -4), day, "09:00", "whatsapp", "received", "Alice", "hi")],
+    )
+    assert existing_hours(paths, day) == ["09"]
+    ae.write_day_chunks(paths["vault_dir"], day, [])  # that hour now has zero events
+    assert existing_hours(paths, day) == []
+
+
+def test_periods_file_not_rewritten_on_no_op_run(paths):
+    make_whatsapp_db(
+        str(paths["whatsapp_db"]),
+        chats=[("111@s.whatsapp.net", "Alice")],
+        messages=[_wa_msg_at(9, 0, "a"), _wa_msg_at(9, 5, "b")],
+    )
+    days = [date(2026, 8, 25)]
+    assert ae.run(paths, days, local_epoch(2026, 8, 25, 12, 0, 0, -4)) == 0
+    p = os.path.join(day_dir(paths, days[0]), "periods.md")
+    assert os.path.exists(p)
+    mtime1 = os.stat(p).st_mtime_ns
+    with open(p, "rb") as f:
+        hash1 = f.read()
+    assert ae.run(paths, days, local_epoch(2026, 8, 25, 12, 5, 0, -4)) == 0
+    assert os.stat(p).st_mtime_ns == mtime1
+    with open(p, "rb") as f:
+        assert f.read() == hash1
+
+
+# --------------------------------------------------------------------------
+# _status.md freshness throttle
+# --------------------------------------------------------------------------
+
+
+def test_status_freshness_9_vs_11_minutes(paths):
+    # STATUS_FRESHNESS_SECONDS = 10 minutes (rule 4 in the design) -- test
+    # just inside and just outside that boundary.
+    day = date(2026, 8, 25)
+    T0 = local_epoch(2026, 8, 25, 9, 0, 0, -4)
+    assert ae.maybe_write_status(paths["vault_dir"], T0, [], "2026-08-25T09:00:00-04:00") is True
+    status_path = os.path.join(paths["vault_dir"], "_status.md")
+    with open(status_path) as f:
+        content0 = f.read()
+
+    # +9min, same errors -- still fresh, no rewrite.
+    T9 = T0 + 9 * 60
+    wrote = ae.maybe_write_status(paths["vault_dir"], T9, [], "2026-08-25T09:09:00-04:00")
+    assert wrote is False
+    with open(status_path) as f:
+        assert f.read() == content0
+
+    # +11min, same errors -- stale, rewrite happens.
+    T11 = T0 + 11 * 60
+    wrote = ae.maybe_write_status(paths["vault_dir"], T11, [], "2026-08-25T09:11:00-04:00")
+    assert wrote is True
+    with open(status_path) as f:
+        content11 = f.read()
+    assert content11 != content0
+    assert "09:11:00" in content11
+
+
+def test_status_errors_change_forces_rewrite_even_when_fresh(paths):
+    T0 = local_epoch(2026, 8, 25, 9, 0, 0, -4)
+    ae.maybe_write_status(paths["vault_dir"], T0, [], "2026-08-25T09:00:00-04:00")
+    T1 = T0 + 60  # 1 minute later -- well inside the freshness window
+    wrote = ae.maybe_write_status(paths["vault_dir"], T1, ["chrome: boom"], "2026-08-25T09:01:00-04:00")
+    assert wrote is True
+    with open(os.path.join(paths["vault_dir"], "_status.md")) as f:
+        assert "chrome: boom" in f.read()
+
+
+def test_status_missing_or_malformed_treated_as_no_prior_status(paths):
+    assert ae.read_status_file(os.path.join(paths["vault_dir"], "_status.md")) is None
+    p = os.path.join(paths["vault_dir"], "_status.md")
+    os.makedirs(paths["vault_dir"], exist_ok=True)
+    with open(p, "w") as f:
+        f.write("not even yaml frontmatter\n")
+    assert ae.read_status_file(p) is None
+    # A malformed existing file must not block a fresh write.
+    wrote = ae.maybe_write_status(paths["vault_dir"], local_epoch(2026, 8, 25, 9, 0, 0, -4), [], "2026-08-25T09:00:00-04:00")
+    assert wrote is True
 
 
 if __name__ == "__main__":

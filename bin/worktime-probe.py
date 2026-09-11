@@ -2046,6 +2046,32 @@ def bridged_idle(day: str, timeline: list[tuple[int, str]]) -> list[list[int]]:
 # Dashboard/Vault Dashboard.md for the full inventory of what it writes.
 ACTIVITY_DIR = os.path.join(wc.dashboard_dir(), "activity")
 
+# Chunk filenames only: exactly two digits then '.md' -- '00.md'..'23.md'.
+# Obsidian Sync leaves a "10 (conflict).md" beside the real file when two
+# devices write the same hour at once; that filename does NOT match this
+# pattern and must never be read as a second copy of hour 10's rows.
+HOUR_CHUNK_RE = re.compile(r"^([0-2][0-9])\.md$")
+
+
+def activity_day_lines(day: str) -> list[str]:
+    """Every line of every hour chunk for `day`, in hour order (00..23) --
+    the chunked replacement for `open(ACTIVITY_DIR/f"{day}.md")`. A day with
+    no export yet (or a day that genuinely had zero events) has no
+    directory or an empty one; both read as no lines, matching the old
+    "file doesn't exist -> []" behavior of the callers below."""
+    day_dir = os.path.join(ACTIVITY_DIR, day)
+    try:
+        names = os.listdir(day_dir)
+    except OSError:
+        return []
+    hours = sorted(m.group(1) for n in names if (m := HOUR_CHUNK_RE.match(n)))
+    lines = []
+    for hour in hours:
+        with open(os.path.join(day_dir, f"{hour}.md")) as fh:
+            lines.extend(fh)
+    return lines
+
+
 CHROME_ROW = re.compile(
     r"^\|\s*(\d{1,2}:\d{2})\s*\|\s*chrome\s*\|\s*visit\s*\|[^|]*\|\s*(.*?)\s*\|\s*$")
 
@@ -2229,12 +2255,9 @@ def github_export_rows(day: str) -> list[tuple[datetime, str]]:
     also carries plain browsing (shopping, general search) that is not work,
     and counting every visit would manufacture "working" out of that.
     """
-    path = os.path.join(ACTIVITY_DIR, f"{day}.md")
-    if not os.path.exists(path):
-        return []
     base = datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=LOCAL)
     out = []
-    for line in open(path):
+    for line in activity_day_lines(day):
         m = CHROME_ROW.match(line)
         if not m:
             continue
@@ -2270,12 +2293,9 @@ def desktop_prompts_for(day: str) -> list[datetime]:
     the ordinary cutoff ends the period without help. It is the other third,
     inside a period the Mac was still holding open, that this exists for.
     """
-    path = os.path.join(ACTIVITY_DIR, f"{day}.md")
-    if not os.path.exists(path):
-        return []
     base = datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=LOCAL)
     out = []
-    for line in open(path):
+    for line in activity_day_lines(day):
         m = DESKTOP_ROW.match(line)
         if not m:
             continue
@@ -2292,15 +2312,31 @@ ACTIVITY_STALE_SEC = 60 * 60
 
 
 def activity_feed_notice(now: datetime) -> str | None:
-    """A one-line note when the desktop's activity export has gone quiet."""
-    names = sorted(n for n in os.listdir(ACTIVITY_DIR) if n.endswith(".md"))
-    if not names:
+    """A one-line note when the desktop's activity export has gone quiet.
+
+    Reads <ACTIVITY_DIR>/_status.md's `exported_at` -- the export's own
+    freshness signal (see activity-export.py's maybe_write_status) -- rather
+    than any one chunk's mtime: under the chunked layout an hour with no new
+    events is never rewritten, so its mtime tells you nothing about whether
+    the export job itself is still alive. `_status.md` is throttled to at
+    most one write per ~10 minutes, which is exactly why ACTIVITY_STALE_SEC
+    (1 hour) stays generous rather than being tightened to match the chunk
+    layout -- a healthy run can legitimately leave exported_at looking
+    ~10-19 minutes old.
+    """
+    path = os.path.join(ACTIVITY_DIR, "_status.md")
+    try:
+        with open(path) as fh:
+            content = fh.read()
+    except OSError:
         return "Desktop activity feed: no exports yet"
-    path = os.path.join(ACTIVITY_DIR, names[-1])
-    with open(path) as fh:
-        stamp = next(line.split(":", 1)[1].strip() for line in fh
-                     if line.startswith("generated_at:"))
-    at = datetime.fromisoformat(stamp)
+    m = re.search(r"^exported_at:\s*(\S+)\s*$", content, re.M)
+    if not m:
+        # A status file that exists but can't be parsed is a distinct,
+        # louder problem than "never ran" -- surface it as its own notice
+        # rather than crashing the probe or silently reading as fresh.
+        return "Desktop activity feed: _status.md is malformed"
+    at = datetime.fromisoformat(m.group(1))
     if (now - at).total_seconds() <= ACTIVITY_STALE_SEC:
         return None
     when = at.strftime("%H:%M") if at.date() == now.date() \
@@ -4176,13 +4212,32 @@ def activity_fingerprint(day: str) -> str:
     for p in (MARKS, APPROVALS, NOTES, MODEFILE, CAL_FILE, IDLE_CLAIMS,
               os.path.join(SLACK_DIR, f"{day}.json"),
               os.path.join(FOCUS_DIR, f"{day}.jsonl"),
-              chrome_history_path() or "chrome-history-absent",
-              os.path.join(ACTIVITY_DIR, f"{day}.md")):
+              chrome_history_path() or "chrome-history-absent"):
         try:
             st = os.stat(p)
             parts.append(f"{p}:{st.st_mtime_ns}:{st.st_size}")
         except OSError:
             parts.append(f"{p}:absent")
+    # The activity export is now one file PER HOUR under ACTIVITY_DIR/<day>/
+    # (see activity-export.py) rather than one file for the whole day, so a
+    # single stat can no longer stand in for "has anything in today's export
+    # changed". Every file in the day's directory is stat'd instead -- a new
+    # or rewritten hour chunk changes this list's sorted joined form, and a
+    # missing directory (no export has run yet, or the day had zero events)
+    # reads as "absent", exactly like the old single-file case.
+    day_dir = os.path.join(ACTIVITY_DIR, day)
+    try:
+        entries = sorted(os.listdir(day_dir))
+    except OSError:
+        parts.append(f"{day_dir}:absent")
+    else:
+        for name in entries:
+            p = os.path.join(day_dir, name)
+            try:
+                st = os.stat(p)
+                parts.append(f"{p}:{st.st_mtime_ns}:{st.st_size}")
+            except OSError:
+                parts.append(f"{p}:absent")
     if day == now_local().strftime("%Y-%m-%d"):
         parts.append(f"slack-window:{int(time.time()) // SLACK_TTL_SEC}")
     return hashlib.sha1("|".join(sorted(parts)).encode()).hexdigest()

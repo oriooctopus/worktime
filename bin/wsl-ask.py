@@ -7,6 +7,12 @@
 The round trip is Obsidian Sync out, the desktop's one-minute timer, and Sync
 back, so expect a few minutes. See wsl-inbox.py for the actions and why they
 are a fixed list.
+
+Note on `heartbeat`: the desktop timer itself still runs every minute, but it
+only REWRITES wsl-outbox/heartbeat.md when the existing one is more than 10
+minutes stale (see wsl-inbox.py's HEARTBEAT_FRESHNESS_SECONDS) -- so "alive
+Nm ago" can legitimately read up to ~10 minutes even on a perfectly healthy
+box, not just when something's actually stuck.
 """
 import argparse
 import importlib.util

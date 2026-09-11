@@ -29,22 +29,24 @@ class FeedNotice(unittest.TestCase):
         wp.ACTIVITY_DIR = self.saved
         shutil.rmtree(self.tmp)
 
-    def export(self, day, generated_at):
-        with open(os.path.join(self.tmp, f"{day}.md"), "w") as fh:
-            fh.write(f"---\ndate: {day}\ngenerated_at: {generated_at}\n---\n")
+    def export(self, exported_at):
+        # New layout: freshness is a single vault-wide _status.md (see
+        # activity-export.py's maybe_write_status), not a per-day file --
+        # a day's own chunks carry no per-run timestamp at all any more.
+        with open(os.path.join(self.tmp, "_status.md"), "w") as fh:
+            fh.write(f"---\nexported_at: {exported_at}\nerrors: []\n---\n")
 
     def test_fresh_export_says_nothing(self):
-        self.export("2026-09-09", "2026-09-09T15:01:00-04:00")
+        self.export("2026-09-09T15:01:00-04:00")
         self.assertIsNone(wp.activity_feed_notice(self.now))
 
     def test_days_old_export_names_the_date(self):
-        self.export("2026-09-05", "2026-09-05T23:56:00-04:00")
-        self.export("2026-09-06", "2026-09-06T13:13:53-04:00")
+        self.export("2026-09-06T13:13:53-04:00")
         self.assertEqual(wp.activity_feed_notice(self.now),
                          "Desktop activity feed silent since Sep 6 13:13")
 
     def test_same_day_lapse_names_only_the_time(self):
-        self.export("2026-09-09", "2026-09-09T12:40:00-04:00")
+        self.export("2026-09-09T12:40:00-04:00")
         self.assertEqual(wp.activity_feed_notice(self.now),
                          "Desktop activity feed silent since 12:40")
 
@@ -52,11 +54,14 @@ class FeedNotice(unittest.TestCase):
         self.assertEqual(wp.activity_feed_notice(self.now),
                          "Desktop activity feed: no exports yet")
 
-    def test_export_without_generated_at_is_an_error(self):
-        with open(os.path.join(self.tmp, "2026-09-09.md"), "w") as fh:
+    def test_status_without_exported_at_is_a_distinct_notice(self):
+        # A malformed/missing _status.md is a louder, different problem than
+        # "never ran" -- it must not crash the probe (StopIteration, as the
+        # old generated_at-scanning code would have) nor silently read fresh.
+        with open(os.path.join(self.tmp, "_status.md"), "w") as fh:
             fh.write("---\ndate: 2026-09-09\n---\n")
-        with self.assertRaises(StopIteration):
-            wp.activity_feed_notice(self.now)
+        self.assertEqual(wp.activity_feed_notice(self.now),
+                         "Desktop activity feed: _status.md is malformed")
 
 
 if __name__ == "__main__":
