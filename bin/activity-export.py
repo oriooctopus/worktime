@@ -1517,6 +1517,18 @@ def save_summary_cache(path, cache):
 HOUR_RANGE = [f"{h:02d}" for h in range(24)]
 
 
+# Obsidian's update-time-on-edit plugin stamps `created:`/`updated:` into the
+# frontmatter of every note it sees change, including chunks that just arrived
+# by Sync. Comparing raw bytes made each stamped chunk look changed, so the
+# exporter rewrote it, the plugin re-stamped it, and the pair ping-ponged a
+# Sync version every run (2026-09-10). Those two keys are never ours.
+PLUGIN_STAMP = re.compile(r"^(created|updated): .*\n", re.M)
+
+
+def without_plugin_stamps(text):
+    return PLUGIN_STAMP.sub("", text)
+
+
 def write_if_changed(path, content):
     """Write `content` to `path` only if it differs from what's on disk --
     the whole point of chunking (see module note above): a byte-identical
@@ -1527,7 +1539,7 @@ def write_if_changed(path, content):
     watcher ignores it as a dotfile while it's mid-write."""
     try:
         with open(path, "r", encoding="utf-8") as f:
-            if f.read() == content:
+            if without_plugin_stamps(f.read()) == without_plugin_stamps(content):
                 return False
     except OSError:
         pass  # doesn't exist yet (or unreadable) -- fall through to write it

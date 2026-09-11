@@ -744,6 +744,19 @@ def test_imessage_corrupt_snapshots_skipped_and_counted(paths):
         assert "imessage: 2 unreadable snapshots" in f.read()
 
 
+def test_a_chunk_stamped_by_the_obsidian_plugin_is_not_rewritten(tmp_path):
+    """The update-time-on-edit plugin adds created:/updated: to chunks after
+    Sync delivers them; treating that as a change rewrote the chunk every run."""
+    path = str(tmp_path / "10.md")
+    content = "---\ndate: 2026-09-10\nhour: 10\n---\n\n| time |\n"
+    assert ae.write_if_changed(path, content)
+    with open(path, "w") as f:
+        f.write(content.replace("hour: 10\n",
+                                "hour: 10\ncreated: 2026-09-10T21:40\nupdated: 2026-09-10T23:40\n"))
+    assert not ae.write_if_changed(path, content)
+    assert ae.write_if_changed(path, content + "| 10:05 |\n")  # real changes still land
+
+
 def test_status_satisfies_a_probe_from_before_the_chunked_layout(paths):
     """A Mac that has not pulled yet runs the old activity_feed_notice: it
     takes the newest top-level .md in activity/ -- now _status.md -- and
