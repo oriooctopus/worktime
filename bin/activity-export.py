@@ -1679,7 +1679,12 @@ def read_status_file(path):
 
 
 def build_status_markdown(exported_at_str, errors):
-    lines = ["---", f"exported_at: {exported_at_str}"]
+    # generated_at duplicates exported_at on purpose: a probe that predates the
+    # chunked layout reads `generated_at:` from the newest top-level .md in
+    # activity/, which is now this file, and raises StopIteration without it.
+    # Keeps a not-yet-pulled Mac working; drop once every probe reads exported_at.
+    lines = ["---", f"exported_at: {exported_at_str}",
+             f"generated_at: {exported_at_str}"]
     err_str = ", ".join(yaml_quote(e) for e in errors)
     lines.append(f"errors: [{err_str}]")
     lines.append("---")

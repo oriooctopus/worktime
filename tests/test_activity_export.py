@@ -686,6 +686,20 @@ def test_imessage_corrupt_snapshots_skipped_and_counted(paths):
         assert "imessage: 2 unreadable snapshots" in f.read()
 
 
+def test_status_satisfies_a_probe_from_before_the_chunked_layout(paths):
+    """A Mac that has not pulled yet runs the old activity_feed_notice: it
+    takes the newest top-level .md in activity/ -- now _status.md -- and
+    next()s over its lines for `generated_at:`. Without that key it raised
+    StopIteration and turned the dot red (2026-09-10)."""
+    now = local_epoch(2026, 8, 25, 12, 0, 0, -4)
+    assert ae.run(paths, [date(2026, 8, 25)], now) == 0
+    names = sorted(n for n in os.listdir(paths["vault_dir"]) if n.endswith(".md"))
+    with open(os.path.join(paths["vault_dir"], names[-1])) as fh:
+        stamp = next(line.split(":", 1)[1].strip() for line in fh
+                     if line.startswith("generated_at:"))
+    assert datetime.fromisoformat(stamp).timestamp() == now
+
+
 # --------------------------------------------------------------------------
 # Chrome visit_time conversion (literal real-data value)
 # --------------------------------------------------------------------------
