@@ -112,13 +112,18 @@ class LongReadCase(unittest.TestCase):
 
 
 class TestOffByDefault(LongReadCase):
-    """The setting is opt-in, and this is the regression guard for that."""
+    """Without long_read, a stay earns on the tight 30s input default."""
 
-    def test_a_long_stay_is_still_a_single_event(self):
-        # Forty minutes in one window, never touched by the switch that would
-        # otherwise end it. This is exactly the day the feature changes, so
-        # with the feature off it must be unchanged: one activation, one point.
+    def test_an_actively_used_stay_earns_every_heartbeat(self):
+        # Forty minutes in one window with input throughout: one event per
+        # 30s heartbeat, so the stay reads as the forty minutes it was.
         self.write(self.stay(9 * 3600, 80))
+        self.assertEqual(self.secs(), [9 * 3600 + 30 * i for i in range(80)])
+
+    def test_a_stay_without_recent_input_is_a_single_event(self):
+        # Reading without touching anything for 45s at a time is past the
+        # default cutoff -- that is what long_read exists to loosen.
+        self.write(self.stay(9 * 3600, 80, idle=45))
         self.assertEqual(self.secs(), [9 * 3600])
 
     def test_obsidian_earns_nothing(self):
@@ -223,7 +228,7 @@ class TestExtraApps(LongReadCase):
         # the default-off test above, one line of profile apart.
         wp._FOCUS_INCLUDE_RESOLVED = wp.FOCUS_INCLUDE | {OBSIDIAN}
         self.write(self.stay(9 * 3600, 3, bundle=OBSIDIAN, step=120))
-        self.assertEqual(self.secs(), [9 * 3600])
+        self.assertEqual(self.secs(), [9 * 3600, 9 * 3600 + 120, 9 * 3600 + 240])
 
     def test_it_adds_and_never_removes(self):
         # An override that replaced the list would silently drop Slack and

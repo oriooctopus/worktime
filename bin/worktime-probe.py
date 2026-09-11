@@ -1763,10 +1763,11 @@ def focus_for(day: str) -> list[datetime]:
 
 
 def focus_dwell_for(day: str) -> list[datetime]:
-    """Events DURING a stay on one thing, for people whose work is reading.
+    """Events DURING a stay on one thing, while somebody keeps touching it.
 
-    Empty unless long_read is enabled, so this changes nothing for a setup
-    that does not ask for it.
+    Always on, gated by focus_dwell_settings(): by default a heartbeat row
+    counts only with input in the 30s before it. long_read loosens both
+    numbers for people whose work is reading without scrolling.
 
     The problem it solves is the one focus_for() names as its accepted cost.
     Credit there is the activation -- the moment somebody reached for an app
@@ -1796,9 +1797,8 @@ def focus_dwell_for(day: str) -> list[datetime]:
     four minutes is enough to hold a bout open under a five-minute cutoff, and
     ninety-nine per hour would be the same day at ninety-nine times the cost.
     """
-    if not _LONG_READ:
-        return []
-    stride = _LONG_READ["stride_sec"]
+    cfg = focus_dwell_settings()
+    stride, max_idle = cfg["stride_sec"], cfg["max_idle_sec"]
     base = datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=LOCAL)
     out, key_prev, anchor = [], None, None
     for r in focus_rows(day):
@@ -1813,10 +1813,25 @@ def focus_dwell_for(day: str) -> list[datetime]:
         if key != key_prev:
             key_prev, anchor = key, at
             continue
-        if at - anchor >= stride and focus_counts(r):
+        if (at - anchor >= stride and focus_app(r)
+                and r.get("idle", 0) <= max_idle):
             out.append(base + timedelta(seconds=at))
             anchor = at
     return out
+
+
+# The default for a stay on one work app: a heartbeat earns credit only if
+# there was a keystroke, click, scroll or mouse move in the 30s before it.
+# Input goes to the front app, so that is "somebody is using this app", not
+# "this app is open" -- a window left in front stops earning half a minute
+# after the last touch. long_read in the profile replaces both numbers.
+FOCUS_ACTIVE_IDLE_SEC = 30
+FOCUS_ACTIVE_STRIDE_SEC = 30
+
+
+def focus_dwell_settings() -> dict:
+    return _LONG_READ or {"max_idle_sec": FOCUS_ACTIVE_IDLE_SEC,
+                          "stride_sec": FOCUS_ACTIVE_STRIDE_SEC}
 
 
 def focus_app_by_minute(day: str) -> dict[int, str]:

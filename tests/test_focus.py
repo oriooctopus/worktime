@@ -27,6 +27,9 @@ spec.loader.exec_module(wp)
 DAY = "2026-03-04"
 SLACK = "com.tinyspeck.slackmacgap"
 ZED = "dev.zed.Zed"
+# Heartbeats with no input in the last 30s but a person still nearby: the
+# activation counts, the rows after it do not. For tests about activations.
+QUIET = wp.FOCUS_ACTIVE_IDLE_SEC + 15
 
 
 def hms(sec):
@@ -84,13 +87,17 @@ class FocusCase(unittest.TestCase):
 
 
 class TestCredit(FocusCase):
-    def test_a_run_in_one_app_is_one_event_however_long_it_holds(self):
-        # 09:00:00 to 09:05:00 in Slack. Under the span model this earned five
-        # minutes and would have earned fifty for fifty; it is one switch, so
-        # it is one point, and what the day makes of that point is the bout
-        # chainer's business rather than this signal's.
-        self.write(self.samples(9 * 3600, 11))
+    def test_a_run_without_recent_input_is_one_event_however_long_it_holds(self):
+        # 09:00:00 to 09:05:00 in Slack with nobody touching it: one switch,
+        # one point. Being in front is not itself credit.
+        self.write(self.samples(9 * 3600, 11, idle=QUIET))
         self.assertEqual(self.minutes(), [540])
+
+    def test_a_run_actually_used_earns_every_heartbeat(self):
+        # The same five minutes with input throughout: each 30s heartbeat is
+        # evidence somebody is using Slack, so a long read keeps counting.
+        self.write(self.samples(9 * 3600, 11))
+        self.assertEqual(len(wp.focus_for(DAY)), 11)
 
     def test_a_single_row_is_a_whole_event(self):
         # The exact inversion of the old rule, which needed a successor to have
@@ -114,7 +121,7 @@ class TestCredit(FocusCase):
         for bundle in sorted(wp.FOCUS_INCLUDE):
             with self.subTest(bundle=bundle):
                 self.setUp()
-                self.write(self.samples(9 * 3600, 11, bundle=bundle))
+                self.write(self.samples(9 * 3600, 11, bundle=bundle, idle=QUIET))
                 self.assertEqual(self.minutes(), [540])
                 self.tearDown()
 
@@ -139,7 +146,7 @@ class TestCredit(FocusCase):
             with self.subTest(bundle=bundle):
                 self.setUp()
                 self.write(self.samples(9 * 3600, 11, bundle=bundle))
-                self.assertEqual(self.minutes(), [540])
+                self.assertEqual(self.minutes()[0], 540)
                 self.tearDown()
 
     def test_a_self_raising_flash_between_other_apps_earns_nothing(self):
@@ -274,6 +281,29 @@ class TestIdle(FocusCase):
         self.write(self.switches(9 * 3600 + 1800, ["dev.zed.Zed"]))
         self.assertEqual(self.minutes(), [570])
 
+    def test_a_heartbeat_counts_only_with_input_in_the_last_30s(self):
+        # Inclusive at the line: 30s since the last touch still counts, 31s
+        # does not -- that second heartbeat is a window left open.
+        for idle, expected in ((wp.FOCUS_ACTIVE_IDLE_SEC, 2),
+                               (wp.FOCUS_ACTIVE_IDLE_SEC + 1, 1)):
+            with self.subTest(idle=idle):
+                self.setUp()
+                self.write(self.samples(9 * 3600, 1)
+                           + self.samples(9 * 3600 + 30, 1, idle=idle))
+                self.assertEqual(len(wp.focus_for(DAY)), expected)
+                self.tearDown()
+
+    def test_idle_stretches_inside_a_stay_earn_nothing(self):
+        # Two minutes used, three minutes untouched, two minutes used: the
+        # middle heartbeats are silent and the gap between is not credited.
+        idle = [0] * 4 + [30 * i for i in range(2, 8)] + [0] * 4
+        self.write([{"day": DAY, "t": hms(9 * 3600 + i * 30), "app": "Slack",
+                     "bundle": SLACK, "idle": v} for i, v in enumerate(idle)])
+        secs = [t.hour * 3600 + t.minute * 60 + t.second
+                for t in wp.focus_for(DAY)]
+        self.assertEqual([s for s in secs if 9 * 3600 + 120 <= s < 9 * 3600 + 300],
+                         [])
+
 
 class TestUntouchedFocus(FocusCase):
     """Being in front is an event, not a subscription.
@@ -325,14 +355,14 @@ class TestUntouchedFocus(FocusCase):
         self.write(self.samples(9 * 3600, 11, idle=wp.FOCUS_IDLE_SEC - 1))
         self.assertEqual(self.minutes(), [540])
 
-    def test_holding_the_front_all_night_is_still_one_event(self):
+    def test_holding_the_front_all_night_earns_only_the_last_touch(self):
         # The 2026-09-02 shape end to end: one touch, then eighty rows with the
-        # idle climbing. The touch is real and earns its activation; the eighty
-        # rows behind it are the subscription this removed.
+        # idle climbing. The activation and the one heartbeat 30s after the
+        # touch count; the seventy-eight behind them are the subscription.
         rows = [{"day": DAY, "t": hms(9 * 3600 + i * 30), "app": "Slack",
                  "bundle": SLACK, "idle": i * 30} for i in range(80)]
         self.write(rows)
-        self.assertEqual(self.minutes(), [540])
+        self.assertEqual(self.minutes(), [540, 540])
 
     def test_the_apps_that_do_not_count_are_still_refused(self):
         # The allow list is a separate reason and outlives the gate: an
@@ -375,7 +405,7 @@ class TestTruncation(FocusCase):
         self.assertEqual(wp.focus_apps(DAY, 10 * 3600, 11 * 3600), [])
 
     def test_rows_from_another_day_are_ignored(self):
-        self.write(self.samples(9 * 3600, 11))
+        self.write(self.samples(9 * 3600, 11, idle=QUIET))
         self.write([{"day": "2026-03-05", "t": "09:00:00", "app": "Slack",
                      "bundle": SLACK, "idle": 0}])
         self.assertEqual(self.minutes(), [540])
@@ -414,7 +444,7 @@ class TestAppByMinute(FocusCase):
         # Labelling and credit answer different questions now: one activation
         # earns one point and still names every minute it held the foreground
         # for. A period built from other evidence needs that name.
-        self.write(self.samples(9 * 3600, 11))
+        self.write(self.samples(9 * 3600, 11, idle=QUIET))
         self.assertEqual(self.minutes(), [540])
         self.assertEqual(sorted(wp.focus_app_by_minute(DAY)),
                          list(range(540, 550)))
@@ -477,7 +507,8 @@ class TestReadsRealWriterFormat(FocusCase):
         rows = wp.focus_rows(DAY)
         self.assertEqual(len(rows), 2)
         self.assertEqual(set(rows[0]), {"day", "t", "app", "bundle", "idle"})
-        self.assertEqual(self.minutes(), [540])
+        # The switch, then a heartbeat with input 3s before it.
+        self.assertEqual(self.minutes(), [540, 540])
 
 
 class TestLastFocusInput(FocusCase):
@@ -622,7 +653,8 @@ class TestChromeTab(FocusCase):
 
     def test_a_work_page_in_the_foreground_counts(self):
         self.write(self.chrome(9 * 3600, 3, "Rubrik AI / RAC Policy",
-                               "https://docs.google.com/document/d/1BgD"))
+                               "https://docs.google.com/document/d/1BgD",
+                               idle=QUIET))
         self.assertEqual(len(wp.focus_for(DAY)), 1)
 
     def test_a_personal_page_in_the_foreground_earns_nothing(self):
@@ -700,7 +732,7 @@ class TestChromeTab(FocusCase):
 
     def test_a_named_app_still_counts_without_any_tab(self):
         """The Chrome branch must not have made the allow list conditional."""
-        self.write(self.samples(9 * 3600, 3))
+        self.write(self.samples(9 * 3600, 3, idle=QUIET))
         self.assertEqual(len(wp.focus_for(DAY)), 1)
 
 

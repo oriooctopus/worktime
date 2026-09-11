@@ -386,21 +386,17 @@ func notify(_ body: String) {
 // deliberately stays at app granularity to avoid asking for that.
 let FOCUS_DIR = ("~/.claude/stats/worktime/focus" as NSString).expandingTildeInPath
 
-// A row is written when the front thing changes, and at no other time. The
-// log is a record of switches.
+// A row is written when the front thing changes, and every thirty seconds
+// while it stays. The repeat rows carry the idle reading, and the probe
+// credits one only when there was input in the 30s before it -- so a long
+// stretch actually used in Slack keeps earning, and a window left in front
+// stops earning half a minute after the last touch. (The old heartbeat was
+// credited on existing alone, which is how 2026-09-02 billed forty-one
+// minutes to untouched Slack.) The threshold stays in the probe.
+let FOCUS_HEARTBEAT_SEC = 30.0
 //
-// It used to also tick every thirty seconds, because the probe credited the
-// span between consecutive rows and needed the span to stay short: without a
-// heartbeat one row would sit there claiming a two-hour sleep. That made
-// being in front a subscription -- an app left in front billed at the same
-// rate all night, and on 2026-09-02 forty-one minutes of untouched Slack
-// became forty-one minutes of work. The probe now credits the ACTIVATION and
-// nothing else, so there is no span to truncate and no reason to tick.
-//
-// What the heartbeat also carried was the live idle reading, which is a
-// genuinely continuous thing and now goes to PRESENCE_PATH: one file,
-// overwritten, no history. Two signals that were sharing a channel because
-// they happened to be sampled together.
+// The live idle reading also goes to PRESENCE_PATH on every poll: one file,
+// overwritten, no history.
 let PRESENCE_PATH = ("~/.claude/stats/worktime/presence.json" as NSString)
     .expandingTildeInPath
 
@@ -616,7 +612,9 @@ final class FocusLog {
         let key = bundle == CHROME_BUNDLE
             ? bundle + "\u{1}" + ((row["tab"] as? String) ?? "")
             : bundle
-        guard key != lastKey else { return }
+        guard key != lastKey
+              || now.timeIntervalSince(lastWrite) >= FOCUS_HEARTBEAT_SEC
+        else { return }
 
         guard let data = try? JSONSerialization.data(withJSONObject: row),
               var line = String(data: data, encoding: .utf8)

@@ -95,11 +95,14 @@ now: a stretch either is or isn't, and there is one place that says what that
 means. The cost, accepted deliberately: a work app parked in the foreground
 all afternoon accrues the afternoon.
 
-**A heartbeat.** The sampler writes every 30 seconds, and the probe credits the
-stretch between consecutive samples only while they stay under
-`FOCUS_MAX_GAP_SEC` (90). Sleep, lock or a crash leaves a hole no sample
-vouches for, rather than one row before lunch claiming the afternoon -- the
-same trap `visit_duration` falls into below.
+**A heartbeat that needs a hand on the machine.** The sampler writes a row on
+every switch and again every 30 seconds while the same app stays in front. A
+repeat row earns an event only if its `idle` reading is 30 seconds or less
+(`FOCUS_ACTIVE_IDLE_SEC`), meaning there was a click, keystroke, scroll or mouse
+movement since the last heartbeat. Reading a long Slack thread counts, because
+scrolling resets idle. A Slack window left untouched earns only the moment it
+was last touched. Before this gate existed, that window billed forty-one minutes.
+Sleep, lock or a crash writes no rows, so nothing is credited for them.
 
 `FOCUS_INCLUDE` is an allow list: an app earns credit only by being named in
 it. It began as an exclude list, on the theory that nearly everything in the
@@ -134,13 +137,12 @@ granularity rather than asking for it.
 Both are off by default, both live in `profile.json`, and both exist because
 the defaults above are claims about one person rather than about work.
 
-**`long_read`.** Credit is the activation — the moment somebody reached for an
-app — and that is sound here only because this is a day of ~569 switches, tight
-enough for `GAP_AFTER` to chain them into periods. Somebody who opens one
-article and reads it for forty minutes produces a single switch, and the
-thirty-nine minutes after it are indistinguishable from an empty room. Enabled,
-a stay keeps emitting events every `stride_sec` (240, deliberately under the
-five-minute cutoff so they chain).
+**`long_read`.** By default a stay earns a heartbeat every 30 seconds, and only
+when there was input in those 30 seconds (above). That is too strict for
+somebody who reads one article for forty minutes and scrolls once every few
+minutes. Enabled, `long_read` loosens both numbers: an event every
+`stride_sec` (240, deliberately under the five-minute cutoff so events chain)
+while idle stays under `max_idle_sec` (300).
 
 This is not the span model returning. That model credited the gap between two
 samples because the samples existed, and samples arrive whether or not anybody
