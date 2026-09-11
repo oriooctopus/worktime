@@ -55,6 +55,6 @@ sessions don't collide.
   prompts count as presence too — if that stops showing up in tracking,
   check both roots are still in `PROJECT_ROOTS` there.
 - **Data lives in Obsidian, never in this repo.**
-  `Dashboard/calendar-today.md`, `Dashboard/activity/<date>.md`,
+  `Dashboard/calendar-today.md`, `Dashboard/activity/<date>/HH.md`,
   `Dashboard/worktime/<date>.json` are read/written by the exporters but
   intentionally never committed here.

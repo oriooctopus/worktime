@@ -21,7 +21,7 @@ config/ example configs only -- real ones live in ~/.config
 ```
 
 Code lives here. **Data lives in Obsidian** and is never committed:
-`Dashboard/calendar-today.md`, `Dashboard/activity/<date>.md`,
+`Dashboard/calendar-today.md`, `Dashboard/activity/<date>/HH.md`,
 `Dashboard/worktime/<date>.json`.
 
 ## The three exporters
@@ -297,7 +297,7 @@ draws a coloured dot; it never recomputes state itself.
   Approving a tool use is a human action; unattended agent activity is not.
 - **GitHub Chrome visits** — code-review pages, read two ways. This Mac's own
   Chrome history is queried directly, about a minute behind the browser; the
-  activity export (`~/Documents/Main/Dashboard/activity/<date>.md`) supplies
+  activity export (`~/Documents/Main/Dashboard/activity/<date>/HH.md`) supplies
   earlier days and the Linux box's synced visits. Where both describe the same
   minute the live row wins. The live read exists because the export is written
   nightly, which made today the one day with no browser evidence at all — a
