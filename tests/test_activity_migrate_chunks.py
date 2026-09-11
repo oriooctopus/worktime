@@ -145,6 +145,41 @@ def test_live_directory_with_extra_rows_is_not_clobbered(activity_dir):
     assert ("10:00", "whatsapp", "received", "Alice", "later message") in rows
 
 
+def test_a_write_fault_that_drops_a_row_is_caught_before_deleting_the_old_file(activity_dir, monkeypatch):
+    """The migration's own safety net (module docstring: 'RE-READ from disk
+    and checked row-for-row ... only on a clean match is the old file
+    deleted') must actually stop the delete when the write comes out wrong
+    -- not just when everything goes right (G4: this verification gate was
+    removed by a mutation and nothing caught it). Faked here by monkeypatching
+    ae.write_day_chunks to silently drop a row, simulating a writer bug/
+    partial write that the naive 'we just wrote it, it must be fine' code
+    path would miss."""
+    rows = [
+        ("09:00", "whatsapp", "received", "Alice", "row one"),
+        ("09:05", "whatsapp", "received", "Alice", "row two"),
+    ]
+    write_old_file(activity_dir, "2026-08-25", rows)
+
+    real_write_day_chunks = mig.ae.write_day_chunks
+
+    def faulty_write_day_chunks(vault_dir, day, events):
+        # Drop the last event before handing off to the real writer -- the
+        # written chunk ends up with one fewer row than old_rows expects.
+        real_write_day_chunks(vault_dir, day, events[:-1])
+
+    monkeypatch.setattr(mig.ae, "write_day_chunks", faulty_write_day_chunks)
+
+    rc = mig.main([activity_dir, "--apply"])
+    assert rc == 1  # reported as a failure, not silently swallowed
+    # The old file must SURVIVE a mismatched write -- deleting it here would
+    # mean the dropped row ("row two") is now gone from both the old file
+    # and the new chunk layout, with nothing left to recover it from.
+    assert os.path.exists(os.path.join(activity_dir, "2026-08-25.md"))
+    day_dir = os.path.join(activity_dir, "2026-08-25")
+    written_rows = mig.events_rows_from_hour_chunks(day_dir)
+    assert ("09:05", "whatsapp", "received", "Alice", "row two") not in written_rows
+
+
 def test_live_directory_missing_an_old_row_is_left_alone(activity_dir):
     """If the live directory somehow does NOT already contain a row the old
     file has, the migration must refuse to delete the old file -- losing a

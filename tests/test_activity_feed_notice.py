@@ -54,6 +54,28 @@ class FeedNotice(unittest.TestCase):
         self.assertEqual(wp.activity_feed_notice(self.now),
                          "Desktop activity feed: no exports yet")
 
+    def test_59_minutes_stale_says_nothing(self):
+        # ACTIVITY_STALE_SEC is 1 hour; 59 minutes must stay under the "silent
+        # since" notice -- boundary case for the "<=" comparison (a mutation
+        # to "<" would make this fire a false notice one second early).
+        self.export("2026-09-09T14:06:00-04:00")  # 59 min before self.now
+        self.assertIsNone(wp.activity_feed_notice(self.now))
+
+    def test_61_minutes_stale_names_the_time(self):
+        # One minute past the boundary must produce the notice.
+        self.export("2026-09-09T14:04:00-04:00")  # 61 min before self.now
+        self.assertEqual(wp.activity_feed_notice(self.now),
+                         "Desktop activity feed silent since 14:04")
+
+    def test_exactly_60_minutes_stale_says_nothing(self):
+        # Exactly ACTIVITY_STALE_SEC old: the "<=" comparison means this is
+        # still "fresh enough" and must NOT produce a notice. A mutation
+        # from "<=" to "<" would flip this one test (and only this one) to
+        # a false notice, which is why it's asserted at the exact boundary
+        # rather than only just inside/outside it.
+        self.export("2026-09-09T14:05:00-04:00")  # exactly 60 min before self.now
+        self.assertIsNone(wp.activity_feed_notice(self.now))
+
     def test_status_without_exported_at_is_a_distinct_notice(self):
         # A malformed/missing _status.md is a louder, different problem than
         # "never ran" -- it must not crash the probe (StopIteration, as the

@@ -372,6 +372,64 @@ def test_dst_fallback_epochs_distinct_one_hour_apart_and_ordered(paths, monkeypa
     assert existing_hours(paths, date(2026, 11, 1)) == ["01"]
 
 
+def test_dst_fallback_day_stable_across_repeated_runs(paths):
+    # The fall-back day's tied wall-clock hour (both EDT and EST 01:30) is
+    # exactly the case most likely to make write_if_changed's byte-identity
+    # check flap between re-renders -- if epoch ever leaked into a chunk's
+    # bytes, or the two same-time_str events sorted differently on a second
+    # pass, every run after the first would rewrite the chunk even though
+    # nothing about the underlying data changed. Three runs back-to-back
+    # with unchanged input must write on run 1 only.
+    make_whatsapp_db(
+        str(paths["whatsapp_db"]),
+        chats=[("111@s.whatsapp.net", "Alice")],
+        messages=[
+            ("111@s.whatsapp.net", "111", "edt one thirty", "2026-11-01 01:30:00-04:00", 0, None),
+            ("111@s.whatsapp.net", "111", "est one thirty", "2026-11-01 01:30:00-05:00", 0, None),
+        ],
+    )
+    days = [date(2026, 11, 1)]
+    now = local_epoch(2026, 11, 1, 12, 0, 0, -5)
+    assert ae.run(paths, days, now) == 0
+    chunk_path = hour_chunk_path(paths, days[0], "01")
+    mtime1 = os.stat(chunk_path).st_mtime_ns
+    with open(chunk_path, "rb") as f:
+        bytes1 = f.read()
+
+    for _ in range(2):
+        assert ae.run(paths, days, now) == 0
+        assert os.stat(chunk_path).st_mtime_ns == mtime1  # never rewritten
+        with open(chunk_path, "rb") as f:
+            assert f.read() == bytes1
+
+
+def test_hour_chunk_boundary_at_the_top_of_the_hour(paths):
+    # An event one second before the hour rolls over must land in the
+    # earlier hour's chunk, and one exactly on the hour in the later one --
+    # group_events_by_hour buckets on time_str[:2], so this pins that the
+    # HH:MM:SS -> HH bucketing itself is inclusive/exclusive at the right
+    # end (a fencepost here would put a 10:00:00 event in 09.md or vice
+    # versa).
+    make_whatsapp_db(
+        str(paths["whatsapp_db"]),
+        chats=[("111@s.whatsapp.net", "Alice")],
+        messages=[
+            ("111@s.whatsapp.net", "111", "just before ten", "2026-08-25 09:59:59-04:00", 0, None),
+            ("111@s.whatsapp.net", "111", "exactly ten", "2026-08-25 10:00:00-04:00", 0, None),
+        ],
+    )
+    days = [date(2026, 8, 25)]
+    rc = ae.run(paths, days, local_epoch(2026, 8, 25, 12, 0, 0, -4))
+    assert rc == 0
+    assert existing_hours(paths, days[0]) == ["09", "10"]
+    with open(hour_chunk_path(paths, days[0], "09")) as f:
+        chunk09 = f.read()
+    with open(hour_chunk_path(paths, days[0], "10")) as f:
+        chunk10 = f.read()
+    assert "just before ten" in chunk09 and "just before ten" not in chunk10
+    assert "exactly ten" in chunk10 and "exactly ten" not in chunk09
+
+
 def test_spring_forward_no_02_chunk_written(paths):
     # 2026-03-08 in America/New_York: 02:00 EST jumps straight to 03:00 EDT --
     # wall-clock 02:xx never occurs, so no event's time_str can start with
@@ -1307,6 +1365,33 @@ def test_periods_section_absent_on_empty_day_present_on_normal_day(paths):
     content = read_day(paths, date(2026, 8, 25))
     assert "## Periods" in content
     assert len(periods_rows(content)) == 2
+
+
+def test_periods_file_is_deleted_when_a_days_periods_drop_to_zero(paths):
+    """A day that HAD periods and, on a later run, has none any more (e.g.
+    the day's only source got wiped/re-parsed away) must have its stale
+    periods.md removed -- exactly the same "count drops to zero -> delete
+    the stale chunk" rule write_day_chunks already applies to hour chunks
+    (M11: this delete branch existed in write_periods_file but had no test
+    proving a real re-run actually exercises it)."""
+    days = [date(2026, 8, 25)]
+    make_whatsapp_db(
+        str(paths["whatsapp_db"]),
+        chats=[("111@s.whatsapp.net", "Alice")],
+        messages=[_wa_msg_at(9, 0, "a"), _wa_msg_at(10, 0, "b")],
+    )
+    assert ae.run(paths, days, local_epoch(2026, 8, 25, 12, 0, 0, -4)) == 0
+    periods_path = os.path.join(day_dir(paths, days[0]), "periods.md")
+    assert os.path.exists(periods_path)
+
+    # Re-run against a whatsapp source that now has no messages at all for
+    # this day (the fixture DB is fully rewritten, as a re-parse/redaction
+    # pass could do in production) -- periods.md must be gone afterward.
+    make_whatsapp_db(str(paths["whatsapp_db"]), chats=[("111@s.whatsapp.net", "Alice")], messages=[])
+    assert ae.run(paths, days, local_epoch(2026, 8, 25, 12, 5, 0, -4)) == 0
+    assert not os.path.exists(periods_path)
+    content = read_day(paths, days[0])
+    assert "## Periods" not in content
 
 
 # --------------------------------------------------------------------------
@@ -2497,6 +2582,33 @@ def test_hour_dropping_to_zero_events_deletes_its_chunk(paths):
     assert existing_hours(paths, day) == []
 
 
+def test_hour_dropping_to_zero_events_deletes_its_chunk_via_run(paths):
+    # Same behavior as the test above, but driven through the real
+    # end-to-end pipeline (ae.run() reading an actual whatsapp fixture DB
+    # across two runs) rather than calling write_day_chunks directly -- the
+    # unit-level test alone can't tell you gather()/run() actually reaches
+    # this delete path with real source data, only that the function does
+    # the right thing when handed an empty list by hand.
+    day = date(2026, 8, 25)
+    days = [day]
+    make_whatsapp_db(
+        str(paths["whatsapp_db"]),
+        chats=[("111@s.whatsapp.net", "Alice")],
+        messages=[_wa_msg_at(9, 0, "only message this hour")],
+    )
+    assert ae.run(paths, days, local_epoch(2026, 8, 25, 12, 0, 0, -4)) == 0
+    assert existing_hours(paths, day) == ["09"]
+
+    # The message is deleted from the source entirely (simulating e.g. a
+    # WhatsApp message the user deleted, or a re-parse that drops it) --
+    # hour 09 now has zero events and its chunk must be removed, not left
+    # stale claiming a row that no longer exists anywhere.
+    make_whatsapp_db(str(paths["whatsapp_db"]), chats=[("111@s.whatsapp.net", "Alice")], messages=[])
+    assert ae.run(paths, days, local_epoch(2026, 8, 25, 12, 5, 0, -4)) == 0
+    assert existing_hours(paths, day) == []
+    assert not os.path.exists(hour_chunk_path(paths, day, "09"))
+
+
 def test_periods_file_not_rewritten_on_no_op_run(paths):
     make_whatsapp_db(
         str(paths["whatsapp_db"]),
@@ -2548,6 +2660,27 @@ def test_status_freshness_9_vs_11_minutes(paths):
     assert "09:11:00" in content11
 
 
+def test_status_freshness_exact_10_minute_boundary_rewrites(paths):
+    # maybe_write_status's staleness check is "(now - old) >= FRESHNESS" --
+    # at exactly the boundary that must be a rewrite. A ">=" -> ">" mutation
+    # only misbehaves at this exact instant (9 and 11 minutes either side
+    # already pass either way), so it needs its own test rather than relying
+    # on the near-boundary cases above.
+    T0 = local_epoch(2026, 8, 25, 9, 0, 0, -4)
+    assert ae.maybe_write_status(paths["vault_dir"], T0, [], "2026-08-25T09:00:00-04:00") is True
+    status_path = os.path.join(paths["vault_dir"], "_status.md")
+    with open(status_path) as f:
+        content0 = f.read()
+
+    T10 = T0 + ae.STATUS_FRESHNESS_SECONDS  # exactly 10 minutes later
+    wrote = ae.maybe_write_status(paths["vault_dir"], T10, [], "2026-08-25T09:10:00-04:00")
+    assert wrote is True
+    with open(status_path) as f:
+        content10 = f.read()
+    assert content10 != content0
+    assert "09:10:00" in content10
+
+
 def test_status_errors_change_forces_rewrite_even_when_fresh(paths):
     T0 = local_epoch(2026, 8, 25, 9, 0, 0, -4)
     ae.maybe_write_status(paths["vault_dir"], T0, [], "2026-08-25T09:00:00-04:00")
@@ -2568,6 +2701,95 @@ def test_status_missing_or_malformed_treated_as_no_prior_status(paths):
     # A malformed existing file must not block a fresh write.
     wrote = ae.maybe_write_status(paths["vault_dir"], local_epoch(2026, 8, 25, 9, 0, 0, -4), [], "2026-08-25T09:00:00-04:00")
     assert wrote is True
+
+
+# --------------------------------------------------------------------------
+# Tied-epoch tiebreak (M9): two events sharing the exact same epoch must
+# render in a fixed order -- (epoch, source, who, detail), per
+# build_hour_markdown's sort key -- independent of input order AND stable
+# across independent process runs (no reliance on dict/set iteration order
+# or anything else that could vary process to process). Run via subprocess
+# with a fresh interpreter each time, since an in-process test could pass
+# by accident on a sort that happens to be stable for THIS run's hash seed.
+# --------------------------------------------------------------------------
+
+_TIEBREAK_RENDER_SCRIPT = '''
+import importlib.util, os, sys
+from datetime import date
+spec = importlib.util.spec_from_file_location(
+    "activity_export", os.path.join(sys.argv[1], "bin", "activity-export.py"))
+ae = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(ae)
+day = date(2026, 8, 25)
+e_bob = ae.Event(epoch=1000, day=day, time_str="09:00", source="whatsapp",
+                  direction="received", who="Bob", detail="second alphabetically")
+e_alice = ae.Event(epoch=1000, day=day, time_str="09:00", source="whatsapp",
+                    direction="received", who="Alice", detail="first alphabetically")
+events = [e_bob, e_alice] if sys.argv[2] == "forward" else [e_alice, e_bob]
+sys.stdout.write(ae.build_hour_markdown(day, "09", events))
+'''
+
+
+def _render_tiebreak(tmp_path, order):
+    script = tmp_path / "render_tiebreak.py"
+    script.write_text(_TIEBREAK_RENDER_SCRIPT)
+    import subprocess
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    out = subprocess.run(
+        [sys.executable, str(script), root, order],
+        capture_output=True, text=True, check=True,
+    )
+    return out.stdout
+
+
+def test_tied_epoch_tiebreak_is_byte_identical_across_runs_and_input_order(tmp_path):
+    forward_run1 = _render_tiebreak(tmp_path, "forward")
+    forward_run2 = _render_tiebreak(tmp_path, "forward")
+    reversed_run1 = _render_tiebreak(tmp_path, "reversed")
+    reversed_run2 = _render_tiebreak(tmp_path, "reversed")
+    # Every render, regardless of insertion order or which process rendered
+    # it, must be the exact same bytes -- and Alice (alphabetically first)
+    # must come before Bob, per the (source, who, detail) tiebreak.
+    assert forward_run1 == forward_run2 == reversed_run1 == reversed_run2
+    assert forward_run1.index("Alice") < forward_run1.index("Bob")
+
+
+# --------------------------------------------------------------------------
+# CI-less TZ=UTC guard (M10): this module's docstring says the whole suite
+# is meant to be run once under the box TZ and once under TZ=UTC (the
+# implementation uses aware zoneinfo datetimes throughout specifically so
+# that holds), but that's a documented CONVENTION a CI config can silently
+# drop -- nothing in the suite itself enforces it. This test makes the
+# invariant self-checking: it re-runs the hour-bucketing-sensitive tests in
+# a fresh subprocess with TZ=UTC forced, regardless of what environment the
+# outer test run happens to use, so a regression that "only fails under
+# TZ=UTC" gets caught even if whoever next runs this file forgets the
+# TZ=UTC leg entirely.
+# --------------------------------------------------------------------------
+
+_HOUR_BUCKETING_TEST_SELECTOR = (
+    "test_dst_fallback_epochs_distinct_one_hour_apart_and_ordered or "
+    "test_dst_fallback_day_stable_across_repeated_runs or "
+    "test_spring_forward_no_02_chunk_written or "
+    "test_hour_chunk_boundary_at_the_top_of_the_hour or "
+    "test_late_local_events_stay_on_local_day_not_utc or "
+    "test_adjacent_day_boundary_exact_midnight"
+)
+
+
+def test_hour_bucketing_tests_pass_under_forced_tz_utc():
+    import subprocess
+    env = dict(os.environ)
+    env["TZ"] = "UTC"  # force the process's OWN timezone away from local/NY
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", os.path.abspath(__file__),
+         "-k", _HOUR_BUCKETING_TEST_SELECTOR, "-q"],
+        env=env, capture_output=True, text=True,
+    )
+    assert result.returncode == 0, (
+        "hour-bucketing tests failed under TZ=UTC (but may pass under the "
+        f"box's own TZ) -- stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
 
 
 if __name__ == "__main__":
