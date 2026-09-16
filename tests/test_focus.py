@@ -192,8 +192,8 @@ class TestCredit(FocusCase):
         # rather than a surprise: a plausible work tool that nobody has added
         # earns nothing at all. It errs low, which is the direction chosen --
         # the fix is to name it, and this test is where that is documented.
-        self.write(self.samples(9 * 3600, 11, bundle="com.figma.Desktop",
-                                app="Figma"))
+        self.write(self.samples(9 * 3600, 11, bundle="notion.id",
+                                app="Notion"))
         self.assertEqual(self.minutes(), [])
 
     def test_the_terminal_earns_nothing(self):
