@@ -1482,6 +1482,7 @@ FOCUS_INCLUDE = {
     "dev.zed.Zed",                # Zed
     "com.granola.app",            # Granola
     "com.github.GitHubClient",    # GitHub Desktop
+    "com.figma.Desktop",          # Figma
 }
 
 # Apps on the list above that put THEMSELVES in front. For everything else,
