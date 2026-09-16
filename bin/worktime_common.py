@@ -199,7 +199,11 @@ DEFAULT_WORK_URL_KEYWORDS = ("rubrik",)
 # opens their employer's Workday for fun -- the reviews, the time off and the
 # expenses in it are all the job -- so the host settles it and the path stops
 # mattering.
-ALWAYS_WORK_HOSTS = ("myworkday.com",)
+#
+# glean.com is the same shape: an internal search tool serving every customer
+# from the same host, with the tenant elsewhere in the address. Nobody
+# searches their employer's Glean instance for anything but the job.
+ALWAYS_WORK_HOSTS = ("myworkday.com", "glean.com")
 
 # A dev server on the machine is the work app itself. Nothing in the address
 # says so -- "localhost:3000/dashboard" names no company and carries no

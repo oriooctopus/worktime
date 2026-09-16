@@ -200,12 +200,13 @@ enumerate one at a time:
   Only the editor host is excepted; `drive.google.com` still keeps its index
   and is still judged by it.
 
-A third rule needs no configuration: `myworkday.com` is work for everyone,
-whoever they work for. Workday serves every customer from the same host and
-puts the tenant somewhere in the path, so whether the employer's name appears
-at all is an accident of the page — and the export row for a task with a long
-title truncates the address away entirely, leaving only the `- Workday` suffix
-the title carries, which the probe matches too.
+A third rule needs no configuration: `myworkday.com` and `glean.com` are work
+for everyone, whoever they work for. Workday and Glean both serve every
+customer from the same host and put the tenant somewhere else in the address,
+so whether the employer's name appears at all is an accident of the page —
+and the export row for a task with a long title truncates the address away
+entirely, leaving only the `- Workday` suffix the title carries, which the
+probe matches too.
 
 ## Thresholds
 

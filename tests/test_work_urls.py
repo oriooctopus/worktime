@@ -101,6 +101,19 @@ def test_searching_for_workday_is_not_work():
     assert not is_work("https://www.google.com/search?q=myworkday.com+login")
 
 
+def test_glean_is_work_wherever_the_tenant_sits_in_the_address():
+    assert is_work("https://rubrik.glean.com/search?q=vpc")
+    assert is_work("https://app.glean.com/search?q=vpc")
+
+
+def test_glean_is_work_for_a_company_the_keywords_never_name():
+    assert is_work("https://acme-corp.glean.com/search?q=vpc", keywords=["rubrik"])
+
+
+def test_searching_for_glean_is_not_work():
+    assert not is_work("https://www.google.com/search?q=glean.com+pricing")
+
+
 # --- the localhost dev-server rule ---
 
 def test_a_dev_server_on_a_work_port_is_work():
