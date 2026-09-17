@@ -1471,6 +1471,9 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
     var detector = CallDetector(minCallSec: MIN_CALL_SEC, settleSec: SETTLE_SEC)
     // Non-nil only while a countdown is on screen.
     var countdown: CountdownPanel?
+    // Tracks the previous filtered-capture state so we only log on the rising
+    // edge (first tick where mic is active but no meeting app is running).
+    var wasFilteredCapturing = false
     // Non-nil only while the track-back panel is on screen. Held so a second
     // double press raises the panel already up rather than stacking a new one
     // behind it, each with its own copy of the number being typed.
@@ -1626,6 +1629,25 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
             panel.close()
             countdown = nil
             FileHandle.standardError.write("call resumed; countdown withdrawn\n".data(using: .utf8)!)
+        }
+
+        // Log once when the mic becomes active but no meeting app is running.
+        // Helps identify which non-meeting tools (e.g. WhisperFlow) are
+        // triggering audio capture that the filter is now blocking.
+        let rawCapturing = anythingIsCapturing()
+        if rawCapturing && !capturing {
+            if !wasFilteredCapturing {
+                let running = NSWorkspace.shared.runningApplications
+                    .compactMap(\.bundleIdentifier)
+                    .filter { !$0.hasPrefix("com.apple") && !$0.hasPrefix("com.google.Chrome") }
+                    .sorted()
+                    .joined(separator: ", ")
+                FileHandle.standardError.write(
+                    "mic active, filtered (no meeting app): \(running)\n".data(using: .utf8)!)
+            }
+            wasFilteredCapturing = true
+        } else {
+            wasFilteredCapturing = false
         }
 
         guard detector.update(capturing: capturing, now: Date()) else { return }
