@@ -3024,6 +3024,113 @@ def refresh_calendar_if_stale(now: datetime | None = None) -> bool:
     return True
 
 
+# The WSL box writes machine-generated telemetry into the vault --
+# Dashboard/activity/<date>/HH.md, rewritten every 5 minutes -- and until now
+# that reached the Mac through Obsidian Sync. Sync keeps a version per write,
+# so a timer rewriting files all day manufactures version history fast enough
+# to peg a 1 GB remote vault quota; once full, Sync rejects EVERY upload and
+# silently stops syncing the real notes too. This happened twice (2026-09-03
+# and again 2026-09-17, the second time undiscovered for six days). Pulling
+# the tree directly over Tailscale sidesteps Sync's versioning entirely.
+#
+# Floor between attempts, for the same reason as CAL_RETRY_AFTER: a broken
+# connection or a dead WSL box would otherwise spawn an rsync every minute,
+# all day.
+ACTIVITY_PULL_RETRY_AFTER = timedelta(minutes=10)
+ACTIVITY_PULL_STAMP = os.path.join(STATE, "activity-pull-attempt")
+# Where the detached pull reports, for the same reason CAL_REFRESH_LOG exists:
+# nothing else reads a fire-and-forget subprocess's exit code.
+ACTIVITY_PULL_LOG = os.path.join(STATE, "activity-pull.log")
+WSL_ACTIVITY_HOST = "esme@100.103.237.24"
+WSL_ACTIVITY_SSH_PORT = "2022"
+# The WSL box's own vault path, not this machine's -- dashboard_dir() below
+# resolves the LOCAL (Mac) side of the copy, and the two are never the same
+# path.
+WSL_VAULT_DASHBOARD = ("/mnt/c/Users/Esme Louise Robinson/Documents/"
+                        "obsidian-vault/Dashboard")
+
+
+def pull_mac_activity_if_stale(now: datetime | None = None) -> bool:
+    """Mirror the WSL box's activity telemetry to this vault over Tailscale.
+
+    Mac-only. The WSL box is the source the telemetry is written on, so
+    running this there would rsync the tree onto itself; this_platform() is
+    the same per-host check dashboard_dir() and the Chrome-history lookup
+    already use to tell the two machines apart; wsl reports "linux" from
+    sys.platform, not "darwin", so this only fires past that check.
+
+    Runs from here, exactly like refresh_calendar_if_stale, because of what
+    reaching the vault costs: it lives under ~/Documents, and a LaunchAgent
+    running rsync or a shell gets "Operation not permitted" on everything
+    there -- macOS grants that access per executable, and only the probe has
+    it, by inheritance from the bar app that spawns it every minute.
+
+    Fire-and-forget, like the calendar refresh: status() is polled every
+    minute by a menu bar under a 30s watchdog, and rsync over a network
+    that's occasionally slow or down must never be the thing that trips it.
+    Nothing here reads the result -- the next run's files are whatever the
+    last rsync (however long ago it finished) left on disk.
+
+    --delete only on activity/, not on the single calendar file, and only
+    because activity/ is exclusively WSL-authored: nothing on the Mac writes
+    into Dashboard/activity/, so mirroring it destructively can only prune
+    files the source itself no longer has. Dashboard/worktime/ (the Mac's own
+    local JSON snapshots) is deliberately never touched by this function.
+
+    Returns whether an attempt was launched, for the tests and for the
+    caller. False is the ordinary answer between the retry floor's attempts.
+    """
+    if wc.this_platform() != "darwin":
+        return False
+
+    now = now or now_local()
+
+    # Stamped BEFORE the attempt, same reasoning as CAL_REFRESH_STAMP: a pull
+    # that hangs or a WSL box that's asleep still has to count as tried, or a
+    # dead connection retries every single minute all day.
+    try:
+        last = datetime.fromtimestamp(
+            os.path.getmtime(ACTIVITY_PULL_STAMP), LOCAL)
+    except OSError:
+        last = None
+    if last and now - last < ACTIVITY_PULL_RETRY_AFTER:
+        return False
+
+    os.makedirs(os.path.dirname(ACTIVITY_PULL_STAMP), exist_ok=True)
+    with open(ACTIVITY_PULL_STAMP, "w") as fh:
+        fh.write(now.isoformat())
+
+    dash = wc.dashboard_dir()
+    ssh_cmd = (f"ssh -p {WSL_ACTIVITY_SSH_PORT} -o BatchMode=yes "
+               "-o ConnectTimeout=10")
+    try:
+        # Overwritten, not appended, for the same reason CAL_REFRESH_LOG is:
+        # one attempt every ten minutes would otherwise grow this forever.
+        log = open(ACTIVITY_PULL_LOG, "w")
+        log.write(f"{now.isoformat()} pull launched\n")
+        log.flush()
+        # Two separate rsyncs, not one covering both paths: calendar-today.md
+        # sits next to activity/ in the same remote directory but is a single
+        # file, not a tree, and --delete has no meaning for it.
+        subprocess.Popen(
+            ["rsync", "-a", "--delete", "-e", ssh_cmd,
+             f"{WSL_ACTIVITY_HOST}:{WSL_VAULT_DASHBOARD}/activity/",
+             os.path.join(dash, "activity") + os.sep],
+            stdout=log, stderr=subprocess.STDOUT,
+            # Detached, so the pull outlives the probe run that started it --
+            # same reasoning as the calendar refresh's Popen below it.
+            start_new_session=True)
+        subprocess.Popen(
+            ["rsync", "-a", "-e", ssh_cmd,
+             f"{WSL_ACTIVITY_HOST}:{WSL_VAULT_DASHBOARD}/calendar-today.md",
+             os.path.join(dash, "calendar-today.md")],
+            stdout=log, stderr=subprocess.STDOUT,
+            start_new_session=True)
+    except OSError:
+        return False
+    return True
+
+
 def calendar_events(day: str) -> list[dict] | None:
     """Busy intervals for one local day, from whichever source can supply them.
 
@@ -4340,6 +4447,10 @@ def status() -> dict:
     # It writes the calendar dump, not the cursor or the label log, so this
     # stays read-only with respect to the record check() owns.
     refresh_calendar_if_stale(now)
+    # Same call shape and the same reason: this writes vault files, not the
+    # cursor or label log, and only status() runs often enough to keep them
+    # from going stale.
+    pull_mac_activity_if_stale(now)
     day = now.strftime("%Y-%m-%d")
     now_m = now.hour * 60 + now.minute
     last, stamps, ev_stamps, all_acts = live_activity(day)
