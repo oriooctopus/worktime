@@ -130,6 +130,13 @@ let AUDIO_POLL_SEC = 2.0
 let MIN_CALL_SEC = 60.0
 let SETTLE_SEC = 5.0
 
+// Only these apps' audio capture counts as a meeting. WhisperFlow, Siri, and
+// other mic users are excluded so dictation does not trigger the call detector.
+let MEETING_APP_BUNDLES: Set<String> = [
+    "us.zoom.xos",               // Zoom
+    "com.tinyspeck.slackmacgap", // Slack (huddles)
+]
+
 // Long enough to read the panel, notice it, and stop it; short enough that
 // waiting it out is not itself an interruption.
 let COUNTDOWN_SEC = 10
@@ -1388,6 +1395,17 @@ func anythingIsCapturing() -> Bool {
     audioDeviceIDs().contains { deviceHasInput($0) && deviceIsRunning($0) }
 }
 
+/// True while a known meeting app (Zoom, Slack) is running AND audio input is
+/// being captured. This excludes dictation tools like WhisperFlow that hold the
+/// mic open without being a meeting.
+func meetingAppIsCapturing() -> Bool {
+    guard anythingIsCapturing() else { return false }
+    let running = NSWorkspace.shared.runningApplications
+    return running.contains { app in
+        MEETING_APP_BUNDLES.contains(app.bundleIdentifier ?? "")
+    }
+}
+
 // MARK: - The menu bar item
 
 final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemValidation {
@@ -1598,7 +1616,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
     // half-hour slot finished in twelve minutes, and it knows it for calls the
     // calendar has never heard of too.
     func tickAudio() {
-        let capturing = anythingIsCapturing()
+        let capturing = meetingAppIsCapturing()
 
         // The call came back while the countdown was still running -- someone
         // rejoined, or a device handoff outlasted the settle. Either way this
