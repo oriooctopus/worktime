@@ -1531,6 +1531,7 @@ GHOSTTY_BUNDLE = "com.mitchellh.ghostty"
 # Resolved once. The profile is a file on disk and focus_app() is called for
 # every row of a ~2,900-row log, several times per poll.
 _FOCUS_INCLUDE_RESOLVED = FOCUS_INCLUDE | wc.focus_extra_apps()
+_GHOSTTY_EXCLUDE_TABS = wc.ghostty_exclude_tabs()
 _LONG_READ = wc.long_read()
 
 
@@ -1566,7 +1567,9 @@ def focus_app(sample: dict) -> bool:
                 or _work_site_hit(sample.get("url", "")))
     if bundle == GHOSTTY_BUNDLE:
         tab = sample.get("tab", "")
-        return bool(tab) and not tab.startswith("[mosh]")
+        return (bool(tab)
+                and not tab.startswith("[mosh]")
+                and tab not in _GHOSTTY_EXCLUDE_TABS)
     return bundle in _FOCUS_INCLUDE_RESOLVED
 
 
