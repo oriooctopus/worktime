@@ -432,6 +432,17 @@ let PRESENCE_PATH = ("~/.claude/stats/worktime/presence.json" as NSString)
 // declined case degrades to the old behaviour rather than to a wrong one.
 let CHROME_BUNDLE = "com.google.Chrome"
 
+// Ghostty is tracked per TAB rather than per app. The same Ghostty window is
+// the front app regardless of which tab is active, and not all tabs are work:
+// a mosh session to the Linux desktop looks identical to a local terminal from
+// the app name alone. Tab titles let the probe distinguish them: a tab whose
+// title starts with "[mosh]" is a remote session and earns nothing; any other
+// tab is a local terminal session and earns credit.
+//
+// AppleScript support is built into Ghostty. The call returns the title of
+// the frontmost window, which is the active tab's title.
+let GHOSTTY_BUNDLE = "com.mitchellh.ghostty"
+
 // Chrome answers in single-digit milliseconds when it is healthy. This is not
 // tuned for the healthy case: it is the wall against a browser wedged behind a
 // modal, where the script never returns and would otherwise hang the poll
@@ -500,6 +511,34 @@ func chromeActiveTab() -> (title: String, url: String)? {
         return nil
     }
     return tab
+}
+
+
+// Ghostty's frontmost window title, which is its active tab title. Nil when
+// Ghostty has no windows or the call times out.
+func ghosttyActiveTab() -> String? {
+    let script = ["-e", "tell application \"Ghostty\" to name of front window"]
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+    p.arguments = script
+    let out = Pipe()
+    p.standardOutput = out
+    p.standardError = out
+    do { try p.run() } catch { return nil }
+
+    let exited = DispatchSemaphore(value: 0)
+    p.terminationHandler = { _ in exited.signal() }
+    let killer = DispatchWorkItem { if p.isRunning { p.terminate() } }
+    DispatchQueue.global().asyncAfter(deadline: .now() + CHROME_TAB_TIMEOUT_SEC,
+                                      execute: killer)
+    let data = out.fileHandleForReading.readDataToEndOfFile()
+    exited.wait()
+    killer.cancel()
+
+    guard p.terminationStatus == 0,
+          let text = String(data: data, encoding: .utf8) else { return nil }
+    let title = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    return title.isEmpty ? nil : title
 }
 
 
@@ -597,14 +636,16 @@ final class FocusLog {
             // drift apart without either one looking wrong.
             "idle": idle,
         ]
-        // Only Chrome carries these, and only when the tab could be read. The
-        // probe treats their absence as "not a page worth counting", which is
-        // the same verdict it reaches for a tab that is genuinely not work --
-        // so a sample written before this field existed, or by a machine that
-        // declined the permission, needs no special handling anywhere.
+        // Chrome and Ghostty carry a tab field. The probe treats its absence as
+        // "not worth counting" -- the same verdict it reaches for a tab that is
+        // genuinely not work -- so old samples and machines that declined the
+        // permission degrade gracefully to the pre-tab behaviour.
         if bundle == CHROME_BUNDLE, let tab = chromeActiveTab() {
             row["tab"] = tab.title
             row["url"] = tab.url
+        }
+        if bundle == GHOSTTY_BUNDLE, let tab = ghosttyActiveTab() {
+            row["tab"] = tab
         }
 
         // The live reading goes out on every poll, switch or not. It is what
@@ -612,11 +653,11 @@ final class FocusLog {
         // continuous.
         writePresence(row)
 
-        // Chrome is keyed by its tab as well as by itself, because Chrome
-        // earns per PAGE: leaving a document for a PR inside the same window
-        // is a switch by every measure the probe cares about, and comparing
-        // bundles alone would file it as no event at all.
-        let key = bundle == CHROME_BUNDLE
+        // Chrome and Ghostty are keyed by tab as well as by bundle: leaving
+        // one tab for another is a switch, and comparing bundles alone would
+        // file it as no event at all.
+        let tabKeyed = bundle == CHROME_BUNDLE || bundle == GHOSTTY_BUNDLE
+        let key = tabKeyed
             ? bundle + "\u{1}" + ((row["tab"] as? String) ?? "")
             : bundle
         guard key != lastKey
