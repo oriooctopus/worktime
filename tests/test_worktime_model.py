@@ -104,10 +104,9 @@ class PeriodModel(unittest.TestCase):
     def test_the_lead_is_flat(self):
         # Asserted in seconds: published minutes are floored, so the lead is
         # invisible there. Opening a conversation used to buy an extra 20s on
-        # top; every prompt now gets the same twenty.
         _, _, plain = build([HH(10, 0)])
         self.assertEqual(HH(10, 0) - plain[0][0], wp.LEAD_SEC)
-        self.assertEqual(wp.LEAD_SEC, 20)
+        self.assertEqual(wp.LEAD_SEC, 10)
 
     def test_both_rules_hold_across_every_silence(self):
         # The pair that used to contradict each other: a >5m silence must
@@ -175,13 +174,13 @@ class FocusModes(unittest.TestCase):
         self.assertEqual(len(mins), 8, "each isolated prompt is its own bout")
 
     def test_a_lone_prompt_costs_its_padding_or_the_floor(self):
-        # Unfocused: no ramp yet, so no lead, and the tail alone is under the
-        # floor. Focused: LEAD + TAIL is forty seconds, over it.
+        # Both unfocused and focused lone prompts hit the floor because
+        # LEAD + TAIL (20s) is under MIN_PERIOD_SEC (30s).
         _, _, unf = build([HH(10, 0)], mode="unfocused")
         _, _, foc = build([HH(10, 0)], mode="focused")
         self.assertEqual(unf[0][1] - unf[0][0], wp.MIN_PERIOD_SEC)
-        self.assertEqual(foc[0][1] - foc[0][0], wp.LEAD_SEC + wp.TAIL_SEC)
-        self.assertGreater(wp.LEAD_SEC + wp.TAIL_SEC, wp.MIN_PERIOD_SEC)
+        self.assertEqual(foc[0][1] - foc[0][0], wp.MIN_PERIOD_SEC)
+        self.assertLess(wp.LEAD_SEC + wp.TAIL_SEC, wp.MIN_PERIOD_SEC)
 
     def test_a_sustained_unfocused_session_widens_to_the_full_cutoff(self):
         # Ten minutes of prompting every 45s earns the ramp, after which a

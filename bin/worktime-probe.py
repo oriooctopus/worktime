@@ -118,7 +118,7 @@ GAP_AFTER = 5
 # floor. Small enough that it cannot inflate a day the way a five-minute credit
 # did -- a hundred lone prompts buy well under two hours, and a hundred lone
 # prompts is not a real day.
-TAIL_SEC = 20
+TAIL_SEC = 10
 
 # And what a period gets BEFORE its first prompt. A prompt is not typed
 # instantly -- a long one is a minute of work that left its stamp only at the
@@ -129,12 +129,8 @@ TAIL_SEC = 20
 # exact contradiction the old five-minute grace period produced -- a dashboard
 # showing gaps shorter than the gap threshold it claims to use.
 #
-# Twenty seconds, flat -- the same as the tail, and applied whether or not the
-# prompt opens a conversation. A minute of credit for writing was generous
-# enough that lone prompts carried real weight on their own; twenty seconds
-# covers the act of sending without paying for time that may not have been
-# spent here.
-LEAD_SEC = 20
+# Ten seconds, flat -- the same as the tail.
+LEAD_SEC = 10
 
 # The least a period can measure, in either mode. A bout whose padding gets
 # clamped away -- by a tight silence on both sides, or by an unfocused ramp that
