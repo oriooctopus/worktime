@@ -363,6 +363,26 @@ def long_read(profile=None):
     return cfg
 
 
+def ghostty_exclude_tabs(profile=None):
+    """Ghostty tab names that should NOT count as work.
+
+    The probe tracks any Ghostty tab whose name is not on this list and
+    doesn't start with '[mosh]'. The default catches a tab literally named
+    'Desktop' (a common name for a remote-desktop or mosh session), so only
+    local Mac tabs earn credit out of the box.
+
+    Override in the profile to match whatever tab names you actually use.
+    Each entry is matched against the full tab title (case-sensitive).
+    """
+    profile = load_profile() if profile is None else profile
+    configured = profile.get("ghostty_exclude_tabs")
+    if configured is None:
+        return {"Desktop"}
+    if not isinstance(configured, list):
+        raise ProfileError("profile: 'ghostty_exclude_tabs' must be a list of strings")
+    return set(configured)
+
+
 def google_account_index(url):
     """The /u/<n> (or ?authuser=<n>) account index in a Google URL, or None."""
     lowered = (url or "").lower()
