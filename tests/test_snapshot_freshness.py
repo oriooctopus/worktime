@@ -46,7 +46,7 @@ class SnapshotFingerprint(unittest.TestCase):
     what is asserted here is only which fingerprint comes out the other end.
     """
 
-    NAMES = ("snapshot_path", "activity_fingerprint", "calendar_events")
+    NAMES = ("snapshot_path", "activity_fingerprint", "meetings_for")
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
@@ -71,17 +71,17 @@ class SnapshotFingerprint(unittest.TestCase):
         self.assertEqual(self.published()["fp"], "taken-before")
 
     def test_without_one_it_takes_its_own_before_deriving(self):
-        # calendar_events is the first read of the day's inputs, so a
-        # fingerprint that still says "before" when the file lands is one taken
-        # ahead of every derivation rather than at the end beside the record.
+        # meetings_for is the first read of the day's inputs, so a fingerprint
+        # that still says "before" when the file lands is one taken ahead of
+        # every derivation rather than at the end beside the record.
         started = []
         wp.activity_fingerprint = lambda day: "after" if started else "before"
 
-        def calendar_events(day):
+        def meetings_for(day):
             started.append(day)
             return []
 
-        wp.calendar_events = calendar_events
+        wp.meetings_for = meetings_for
         wp.write_vault_snapshot(DAY, [])
         self.assertTrue(started, "the derivation never ran")
         self.assertEqual(self.published()["fp"], "before")

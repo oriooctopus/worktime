@@ -126,7 +126,7 @@ class ClosingAMarkNeverLengthensIt(unittest.TestCase):
     minutes turned into 4h25m when End Session was clicked at 14:28.
     """
 
-    NAMES = ("STATE", "MARKS", "MEETING_CUT", "SESSION_END",
+    NAMES = ("STATE", "MARKS", "MEETINGS", "SESSION_END",
              "now_local", "events_for", "write_vault_snapshot",
              "prompts_for", "focus_for")
 
@@ -137,7 +137,7 @@ class ClosingAMarkNeverLengthensIt(unittest.TestCase):
         self.saved = {n: getattr(wp, n) for n in self.NAMES}
         wp.STATE = self.tmp
         wp.MARKS = os.path.join(self.tmp, "marks.jsonl")
-        wp.MEETING_CUT = os.path.join(self.tmp, "meeting-cut.json")
+        wp.MEETINGS = os.path.join(self.tmp, "meetings.jsonl")
         wp.SESSION_END = os.path.join(self.tmp, "session-end.json")
         wp.now_local = lambda: datetime(2026, 9, 4, self.NOW // 60, self.NOW % 60)
         wp.events_for = lambda day: []

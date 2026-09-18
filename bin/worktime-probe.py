@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reconstruct when the day was worked, from prompt timestamps and the calendar.
+"""Reconstruct when the day was worked, from prompt timestamps and the microphone.
 
 Runs unattended. It used to interrupt with a dialog whenever a gap closed,
 asking what the absence had been; that is gone. The dialog was wrong often
@@ -8,9 +8,13 @@ answering it cost more than the label was worth, and the explanation it
 collected is recoverable after the fact from what was on screen at the time.
 Corrections now arrive through `label`, or from context, at leisure.
 
-Only prompt activity and the calendar are wired up. Slack is the remaining
-signal that would resolve real ambiguity, so `sources` is a dict rather than a
-bare list -- adding it should not reshape the record.
+Meetings are observed, not scheduled: a call is a stretch during which a
+meeting app held the microphone, written by the menu bar at both ends. The
+calendar used to supply them and no longer does. It could only ever say what
+was arranged -- it gave a half-hour slot the full half hour when the call ran
+twelve minutes, it had never heard of the call that started as a DM, it counted
+the invitation that was sat out, and on a free/busy-only share it could not
+even supply a title.
 
 Usage:
   worktime-probe.py check          -- classify the window since the last check
@@ -18,9 +22,12 @@ Usage:
   worktime-probe.py report         -- summarize labels collected so far
   worktime-probe.py backfill [n]   -- rebuild the last n days of snapshots
   worktime-probe.py mode [focused|unfocused]  -- read or set the focus mode
-  worktime-probe.py meeting_end    -- the meeting running now ended at this minute
+  worktime-probe.py meeting_start [title] [HH:MM]  -- a call is under way,
+                                          optionally backdated to where the
+                                          capture actually began
+  worktime-probe.py meeting_end    -- the call running now stopped at this minute
   worktime-probe.py end_session [last]  -- end the day: break the period, close
-                                          the mark, cut the meeting, at this
+                                          the mark, close the meeting, at this
                                           minute or at the last entry
   worktime-probe.py note [text]    -- record work this probe cannot see
   worktime-probe.py track <n> [clip|split]  -- claim the last n minutes as
@@ -161,7 +168,6 @@ MIN_PERIOD_SEC = 30
 # cutoff instantly, which is the inflation this mode exists to stop.
 MODES = ("focused", "unfocused")
 MODEFILE = os.path.join(STATE, "mode.jsonl")
-MEETING_CUT = os.path.join(STATE, "meeting-cut.json")
 SESSION_END = os.path.join(STATE, "session-end.json")
 UNFOCUSED_GAP_START = 1
 UNFOCUSED_RAMP_MIN = 10
@@ -1041,6 +1047,143 @@ def close_open_marks(when: int | None = None) -> list[dict]:
     return closed
 
 
+# Meetings, as observed rather than as scheduled. A record is written when a
+# meeting app holds the microphone long enough to count and closed when the
+# capture settles, both by the menu bar; see MIN_CALL_SEC and CallDetector.
+#
+# This replaced the calendar outright. A calendar says what was arranged, which
+# turns out to be a poor witness to what happened: it gave a half-hour slot the
+# full half hour when the call ran twelve minutes, it had never heard of the
+# call that started as a DM, it counted the invitation that was sat out, and on
+# a free/busy-only share it could not even supply a title. The microphone knows
+# only one thing, and it is the thing being asked.
+MEETINGS = os.path.join(STATE, "meetings.jsonl")
+
+# The most an unclosed meeting may claim. The bar writes the end when capture
+# settles, so the only way one is left open is the bar dying mid-call or the
+# machine sleeping through one -- and an open record with nothing to close it
+# credits every minute from its start to now. Three hours clears a genuinely
+# long call and still bounds what a crash can invent.
+MEETING_MAX_OPEN_MIN = 180
+
+
+def meetings_for(day: str) -> list[dict]:
+    """Observed meetings for one day, as concrete spans in minutes.
+
+    Shaped exactly like the calendar rows this replaced -- start, end, title,
+    counts -- so every reader downstream treats a meeting the way it always
+    did and none of them had to learn where meetings now come from.
+
+    Unlike a mark, activity does NOT close an open meeting. A mark is a claim
+    about work the tracker cannot see, so the next prompt supersedes it; a
+    meeting is a claim about a call, and prompting during a call is ordinary.
+    Closing on the next event would end every meeting at the first note taken
+    in it.
+
+    Returns [] rather than None when there is nothing. The calendar needed that
+    distinction because an auth failure and an empty day were indistinguishable
+    through it; a local file that is absent has genuinely had no meetings
+    written to it.
+    """
+    if not os.path.exists(MEETINGS):
+        return []
+    live = now_local().strftime("%Y-%m-%d")
+    now_m = now_local().hour * 60 + now_local().minute
+
+    out = []
+    for line in open(MEETINGS):
+        if not line.strip():
+            continue
+        r = json.loads(line)
+        if r.get("day") != day:
+            continue
+        start = r["start"]
+        is_open = r.get("end") is None
+        if not is_open:
+            end = r["end"]
+        elif r.get("day") == live:
+            end = min(now_m, start + MEETING_MAX_OPEN_MIN)
+        else:
+            # Open on a day that is over: the bar never wrote an end, and
+            # nothing left can say where it was. Granting the cap here would
+            # invent three hours out of a crash, so the span is dropped; if the
+            # call was real its minutes are still claimable through `track`.
+            continue
+        # An open meeting counts from the minute it was opened, including that
+        # minute -- the same reason marks_for admits a zero-length open span.
+        # Requiring end > start left the dot un-green for up to a minute after
+        # a call was detected, which reads as the detection not having worked.
+        # A CLOSED zero-length span is a meeting undone in the minute it began
+        # and contributes nothing.
+        if end > start or (is_open and end == start):
+            out.append({"start": start, "end": end,
+                        "title": r.get("title") or "meeting",
+                        "counts": True, "open": is_open})
+    return sorted(out, key=lambda m: m["start"])
+
+
+def start_meeting(title: str, at: int | None = None) -> dict | None:
+    """Open a meeting. Returns None when one is already running.
+
+    Idempotent on purpose, because the bar can raise a second start against a
+    call that never ended: the end countdown is cancellable, and cancelling
+    leaves the detector disarmed, so audio resuming re-arms it and fires the
+    rising edge again. Appending there would split one call into two records
+    with a hole between them.
+
+    `at` backdates the start. The detector cannot call a run a meeting until it
+    has lasted MIN_CALL_SEC, so the moment the bar learns of a call is always a
+    minute after the call began, and the bar passes the earlier minute.
+    """
+    now = now_local()
+    day = now.strftime("%Y-%m-%d")
+    if any(m["open"] for m in meetings_for(day)):
+        return None
+    start = now.hour * 60 + now.minute if at is None else at
+    rec = {"day": day, "start": start, "end": None, "title": title,
+           "created": now.isoformat()}
+    os.makedirs(STATE, exist_ok=True)
+    with open(MEETINGS, "a") as fh:
+        fh.write(json.dumps(rec) + "\n")
+    return rec
+
+
+def close_open_meetings(when: int | None = None) -> list[dict]:
+    """Stamp an end onto every still-open meeting for today.
+
+    `when` is minutes-of-day; None means the current minute. The bar passes
+    None when capture settles -- the call stopped just now. End Session passes
+    the minute the day was declared over, so a meeting left running cannot hold
+    the day open past the declaration.
+
+    Clamped to the same ceiling an open meeting was already being read under,
+    and never before its own start. Closing stamps on the end a meeting HAD,
+    not a new one: without the ceiling, a meeting opened before a crash and
+    closed by hand hours later would hand back every minute the cap withheld.
+    """
+    if not os.path.exists(MEETINGS):
+        return []
+    now = now_local()
+    day, now_m = now.strftime("%Y-%m-%d"), now.hour * 60 + now.minute
+    end_m = now_m if when is None else when
+    rows = [json.loads(l) for l in open(MEETINGS) if l.strip()]
+    closed = []
+    for r in rows:
+        if r.get("day") == day and r.get("end") is None:
+            r["end"] = max(min(end_m, r["start"] + MEETING_MAX_OPEN_MIN),
+                           r["start"])
+            r["closed"] = now.isoformat()
+            closed.append(r)
+    if not closed:
+        return []
+    tmp = f"{MEETINGS}.{os.getpid()}.tmp"
+    with open(tmp, "w") as fh:
+        for r in rows:
+            fh.write(json.dumps(r) + "\n")
+    os.replace(tmp, MEETINGS)
+    return closed
+
+
 def last_entry_end(events: list[datetime]) -> int:
     """Minute-of-day the day's work ends at, if it ends at the last thing seen.
 
@@ -1074,17 +1217,16 @@ def end_session(at_last: bool = False) -> dict:
     offer someone who never pressed start and is now leaving: the only way to
     say "that was the day" was to click Stop on a mark that did not exist.
 
-    This is that statement. It closes any open mark and cuts any meeting that
-    would otherwise run past the chosen minute, in one step, so the menu item
-    means the same thing whichever of them happened to be true.
+    This is that statement. It closes any open mark and any open meeting in one
+    step, so the menu item means the same thing whichever of them happened to
+    be true.
 
     `at_last` ends at the last entry instead of at this minute, through the same
     last_entry_end the ⌘⌥S stop uses: they are one decision made in two places
     and must not resolve to two different minutes.
 
-    A cut written when no meeting is running is inert -- effective_meeting_end
-    only applies a cut to the meeting it landed inside -- so this does not need
-    to ask whether one is, and cannot get that question wrong.
+    Closing when nothing is open is inert, so this does not need to ask whether
+    a mark or a call is running, and cannot get that question wrong.
 
     And it records the minute itself, which for a long time it did not -- so on
     the ordinary afternoon this exists for, with nothing marked and nothing
@@ -1105,7 +1247,7 @@ def end_session(at_last: bool = False) -> dict:
     events = events_for(day)
     when = last_entry_end(events) if at_last else now.hour * 60 + now.minute
     closed = close_open_marks(when)
-    cuts = append_meeting_cut(when)
+    meetings = close_open_meetings(when)
     ends = append_session_end(when)
     write_vault_snapshot(day, events)
     return {
@@ -1113,7 +1255,8 @@ def end_session(at_last: bool = False) -> dict:
         "at_last_entry": at_last,
         "closed": [{"start": hhmm_of(r["start"]), "end": hhmm_of(r["end"]),
                     "note": r["note"]} for r in closed],
-        "cuts": cuts,
+        "meetings": [{"start": hhmm_of(r["start"]), "end": hhmm_of(r["end"]),
+                      "title": r.get("title")} for r in meetings],
         "ends": [hhmm_of(m) for m in ends],
     }
 
@@ -2726,11 +2869,7 @@ def recent_activities(day: str, limit: int = ACTIVITY_LIST_N) -> list[dict]:
 # is not a transport that can be relied on without that setting. A table in a
 # note syncs, and stays readable in Obsidian besides.
 CAL_FILE = os.path.join(wc.dashboard_dir(), "calendar-today.md")
-CAL_STALE_HOURS = 6
 
-CAL_ROW = re.compile(
-    r"^\|\s*(\d{1,2}:\d{2})\s*\|\s*(\d{1,2}:\d{2})\s*\|\s*(.*?)\s*\|"
-    r"(?:\s*([A-Za-z]+)\s*\|)?")
 # The day the dump covers, read from its heading and nowhere else. An
 # unanchored date matched the frontmatter's `generated:` line first, so a file
 # written today but headed with yesterday read as current -- exactly the shape
@@ -2746,15 +2885,6 @@ CAL_DATE = re.compile(r"^#.*?(\d{4}-\d{2}-\d{2})", re.M)
 # freshness check ran against a naive timestamp the plugin had rewritten.
 CAL_GENERATED = re.compile(r"^generated:\s*(\S+)", re.M)
 CAL_UPDATED = re.compile(r"^updated:\s*(\S+)", re.M)
-
-# Which side of the personal/work line a calendar row falls on. Only work
-# blocks are evidence of *working*; a therapy appointment or a football match
-# is time genuinely spent, but not on the job, and counting it inflated a whole
-# afternoon. Rows from an exporter that predates the Calendar column carry no
-# tag at all -- those stay counted, because the old free/busy feed was the work
-# calendar and silently dropping them would erase every real meeting.
-CAL_WORK_TAGS = {"work", "rubrik", ""}
-
 
 SUMMARIES = os.path.join(STATE, "summaries.json")
 
@@ -2904,84 +3034,13 @@ def summarize_span(day: str, lo: int, hi: int) -> str:
     return text
 
 
-def calendar_from_vault(day: str) -> list[dict] | None:
-    """Read a calendar dump some other client wrote into the vault.
-
-    Exists so a Claude client that already holds a Calendar connection can
-    supply the data without this machine needing its own OAuth grant. Expects a
-    note carrying `updated:` frontmatter, the date in its heading, and a
-    markdown table of `| HH:MM | HH:MM | title |` rows.
-
-    The file is refused once it is older than CAL_STALE_HOURS or is for the
-    wrong day. Silently serving a stale note would be worse than having no
-    calendar at all: the probe would suppress pings against meetings that
-    already ended and mark real idle time as work, and nothing downstream
-    could tell.
-    """
-    try:
-        with open(CAL_FILE) as fh:
-            text = fh.read()
-    except OSError:
-        return None
-
-    head = CAL_DATE.search(text)
-    if not head or head.group(1) != day:
-        return None
-    up = CAL_GENERATED.search(text) or CAL_UPDATED.search(text)
-    if not up:
-        return None
-    try:
-        gen = datetime.fromisoformat(up.group(1))
-    except ValueError:
-        return None
-    if gen.tzinfo is None:
-        gen = gen.replace(tzinfo=LOCAL)
-    if now_local() - gen > timedelta(hours=CAL_STALE_HOURS):
-        return None
-
-    # Identical rows are collapsed. The exporter emits a free/busy calendar
-    # where every block carries the same placeholder title, and it wrote the
-    # 08:15-09:00 block twice on 2026-08-27 -- two rows agreeing on start, end
-    # AND title cannot be distinguished from one another by anything this file
-    # records, so they cannot be two different things as far as presence is
-    # concerned. Kept as boundary normalisation of an external feed, not as a
-    # guard over our own data: overlapping blocks with DIFFERENT titles are
-    # left alone, because those are a real double-booking.
-    out = []
-    seen = set()
-    for line in text.split("\n"):
-        m = CAL_ROW.match(line.strip())
-        if not m:
-            continue
-        if m.groups() in seen:
-            continue
-        seen.add(m.groups())
-        sh, sm = m.group(1).split(":")
-        eh, em = m.group(2).split(":")
-        title = m.group(3)
-        tag = (m.group(4) or "").strip().lower()
-        # A free/busy-only calendar exposes no titles, so the source cannot say
-        # what the block was -- only that it was busy. Recorded as such rather
-        # than invented, since the title is what a later review reads to judge
-        # whether the block really counted as work.
-        out.append({
-            "start": int(sh) * 60 + int(sm),
-            "end": int(eh) * 60 + int(em),
-            "title": title or "(busy)",
-            "confidence": "accepted",
-            "calendar": tag or None,
-            # Kept on every row rather than filtered here, so a personal
-            # appointment still shows in the dashboard tooltip as an
-            # explanation for the quiet -- it just stops counting as work.
-            "counts": tag in CAL_WORK_TAGS,
-        })
-    return out
-
-
-# How old the vault dump may get before a refresh is launched. Well inside
-# CAL_STALE_HOURS so a failed attempt has several more tries before the day
-# actually goes calendar-blind, and long enough that the steady state is a
-# handful of refreshes a day rather than one per idle hour.
+# How old the vault dump may get before a refresh is launched. The probe no
+# longer reads this file for anything -- meetings come from the microphone now
+# -- but it is still a note the human opens, so the probe keeps it current for
+# the same reason it exports everything else into the vault. Two hours leaves a
+# failed attempt several more tries before the note is visibly behind, and
+# keeps the steady state to a handful of refreshes a day rather than one per
+# idle hour.
 CAL_REFRESH_AFTER = timedelta(hours=2)
 # Floor between attempts, which only bites while refreshes are FAILING. A
 # broken connection would otherwise spawn one on every probe run -- once a
@@ -3181,117 +3240,13 @@ def pull_mac_activity_if_stale(now: datetime | None = None) -> bool:
     return True
 
 
-def calendar_events(day: str) -> list[dict] | None:
-    """Busy intervals for one local day, from whichever source can supply them.
-
-    The vault dump is checked first: when it is present and fresh it is the
-    deliberate answer from a client that actually holds the calendar
-    connection, and it should win over an API grant that may not exist. Both
-    paths produce the same shape, so the caller cannot tell them apart and
-    nothing downstream depends on which one answered.
-
-    Returns None when NO source could supply data -- distinct from [], which
-    means "asked, you had nothing". The caller must not conflate the two:
-    treating an auth failure as an empty calendar reproduces the exact bug this
-    integration exists to fix, silently and with more confidence than before.
-
-    Declined invitations and all-day events are dropped. A scheduled event is
-    not proof of attendance, so `confidence` marks which side of that line an
-    event falls on: `accepted` is a strong claim, `tentative` is a weak one the
-    fit should be able to down-weight rather than swallow whole.
-    """
-    vault = calendar_from_vault(day)
-    if vault is not None:
-        return vault
-
-    # gcloud is optional: this machine may have no SDK installed at all, which
-    # is the same answer as an unusable grant -- "no source could supply data",
-    # the None this function is documented to return. Letting the missing
-    # binary raise instead killed the whole status call, and the menu bar has
-    # no way to tell a crash from a real verdict: the dot just went red.
-    try:
-        token = subprocess.run(
-            ["gcloud", "auth", "application-default", "print-access-token"],
-            capture_output=True, text=True,
-        ).stdout.strip()
-    except FileNotFoundError:
-        return None
-    if not token:
-        return None
-
-    start = datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=LOCAL)
-    end = start + timedelta(days=1)
-    url = (
-        "https://www.googleapis.com/calendar/v3/calendars/primary/events"
-        f"?timeMin={start.isoformat()}&timeMax={end.isoformat()}"
-        "&singleEvents=true&orderBy=startTime&maxResults=100"
-    )
-    raw = subprocess.run(
-        ["curl", "-s", "-H", f"Authorization: Bearer {token}", url],
-        capture_output=True, text=True,
-    ).stdout
-    try:
-        data = json.loads(raw)
-    except ValueError:
-        return None
-    if "items" not in data:
-        return None  # error payload (403 scopes, 401 expired) -- not "no meetings"
-
-    out = []
-    for ev in data["items"]:
-        s, e = ev.get("start", {}), ev.get("end", {})
-        if "dateTime" not in s:
-            continue  # all-day: says nothing about any particular hour
-        me = next((a for a in ev.get("attendees", []) if a.get("self")), None)
-        status = me.get("responseStatus") if me else "accepted"
-        if status == "declined":
-            continue
-        if ev.get("transparency") == "transparent":
-            continue  # marked free by the organiser
-        st = datetime.fromisoformat(s["dateTime"]).astimezone(LOCAL)
-        en = datetime.fromisoformat(e["dateTime"]).astimezone(LOCAL)
-        out.append({
-            "start": st.hour * 60 + st.minute,
-            "end": en.hour * 60 + en.minute,
-            "title": ev.get("summary", "(untitled)"),
-            "confidence": "accepted" if status in ("accepted", "needsAction") else status,
-            # This path reads the work account's own primary calendar, so
-            # everything on it is work by construction. The personal/work split
-            # is a property of the vault feed, which merges two accounts.
-            "calendar": "work",
-            "counts": True,
-        })
-    return out
-
-
-def read_meeting_cuts() -> list[int]:
-    """Minutes-of-day at which a meeting was declared over, today."""
-    try:
-        rec = json.load(open(MEETING_CUT))
-    except (OSError, ValueError):
-        return []
-    if rec.get("day") != now_local().strftime("%Y-%m-%d"):
-        return []
-    return sorted(rec.get("cuts", []))
-
-
-def append_meeting_cut(cut_min: int) -> list[int]:
-    """Record that a meeting ended at cut_min. Returns today's full cut list."""
-    cuts = sorted(set(read_meeting_cuts()) | {cut_min})
-    tmp = MEETING_CUT + f".{os.getpid()}.tmp"
-    with open(tmp, "w") as fh:
-        json.dump({"day": now_local().strftime("%Y-%m-%d"), "cuts": cuts}, fh)
-    os.replace(tmp, MEETING_CUT)
-    return cuts
-
-
 def read_session_ends(day: str | None = None) -> list[int]:
     """Minutes-of-day the person declared the day over at, on `day`.
 
-    Kept apart from the meeting cut even though End Session writes both. A cut
-    says a scheduled thing stopped early; this says the person stopped. They
-    happen to coincide when the menu item is clicked, and conflating them would
-    mean every early-exit from a standup also drew a line through the afternoon.
+    Kept apart from closing an open meeting even though End Session does both.
+    Closing a meeting says a call stopped; this says the person stopped. They
+    coincide when the menu item is clicked, and conflating them would mean
+    every early-exit from a standup also drew a line through the afternoon.
     """
     try:
         rec = json.load(open(SESSION_END))
@@ -3373,27 +3328,17 @@ def split_at_session_ends(spans: list[list[int]], ends_sec: list[int],
     return out
 
 
-def effective_meeting_end(m: dict, cuts: list[int]) -> int:
-    """When a meeting actually ended: its scheduled end, or a cut inside it.
-
-    A cut only truncates the meeting it landed inside. Applying the day's cut
-    to every meeting -- which is what a single `cut_min` compared against every
-    row did -- meant ending the 10:00 standup at 10:30 also gave the 14:00
-    review an effective end of 10:30, i.e. an end before its own start, so it
-    could never cover a minute again. One early exit erased every later meeting
-    on the calendar. That was survivable while the only way to cut was a human
-    clicking a menu item once in a while; it is not survivable now that the end
-    of any call can write one.
-    """
-    inside = [c for c in cuts if m["start"] <= c < m["end"]]
-    return min(inside) if inside else m["end"]
-
-
 def covered_by_meeting(when: datetime, meetings: list[dict]) -> dict | None:
+    """The meeting covering `when`, if any.
+
+    No cut machinery any more. A cut existed to say "the scheduled end is a
+    lie, it really stopped here", which was the only way to correct a calendar
+    that could not observe anything. An observed meeting's end IS where it
+    stopped, so there is nothing left to correct.
+    """
     mins = when.hour * 60 + when.minute
-    cuts = read_meeting_cuts()
     for m in meetings:
-        if m["start"] <= mins < effective_meeting_end(m, cuts):
+        if m["start"] <= mins < m["end"]:
             return m
     return None
 
@@ -3468,39 +3413,6 @@ VAULT_SNAPSHOT_DIR = os.path.join(wc.dashboard_dir(), "worktime")
 
 def snapshot_path(day: str) -> str:
     return os.path.join(VAULT_SNAPSHOT_DIR, f"{day}.json")
-
-
-def meetings_from_snapshot(day: str) -> list[dict] | None:
-    """Recover a past day's meetings from the snapshot it already published.
-
-    calendar-today.md holds only today, so calendar_events returns None for
-    every earlier day. Rebuilding one without this -- a backfill, or any re-run
-    after midnight -- dropped every meeting the day had, and with them the work
-    time a meeting was holding open. A `backfill 6` did exactly that: 36 minutes
-    disappeared from 2026-08-28 and nothing in the output said a source had gone
-    missing, because an absent calendar is indistinguishable from a day with no
-    meetings once the read has returned None.
-
-    Reading them back off the snapshot makes a rebuild idempotent, which is the
-    property backfill needed all along.
-    """
-    path = snapshot_path(day)
-    if not os.path.exists(path):
-        return None
-    try:
-        with open(path) as fh:
-            snap = json.load(fh)
-    except (OSError, ValueError):
-        return None
-    seen, out = set(), []
-    for w in snap.get("worked", []):
-        for m in w.get("meetings") or []:
-            key = (m.get("start"), m.get("end"), m.get("title"))
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append(m)
-    return out or None
 
 
 def hhmm_of(m: int) -> str:
@@ -3582,9 +3494,11 @@ def write_vault_snapshot(day: str, events: list[datetime],
     # and still be drawn as one solid block.
     fp = activity_fingerprint(day) if fp is None else fp
     now_s = elapsed_s(day)
-    meetings = calendar_events(day)
-    if meetings is None:
-        meetings = meetings_from_snapshot(day)
+    # Every day, not just today: the meeting log is a durable local file, so a
+    # backfill reads the same record the live day did. The calendar could only
+    # ever answer for today, which is why rebuilding an earlier day used to
+    # drop its meetings and the work time they were holding open.
+    meetings = meetings_for(day)
     # `events` is prompts AND Slack sends, and that union is what the period
     # boundaries are built from. The per-period prompt list has to come from the
     # prompt stream alone: derived from `events` instead, n_prompts counted
@@ -3602,23 +3516,11 @@ def write_vault_snapshot(day: str, events: list[datetime],
     present += [[m["start"] * 60, min(m["end"] * 60, now_s), True]
                 for m in marks_for(day) if m["start"] * 60 < now_s]
 
-    # Work meetings count as presence and are unioned in, so a gap the calendar
-    # explains never reaches the list at all. They carry no tail -- a meeting
-    # has a real end time and does not need one inferred.
-    #
-    # Personal rows are excluded. They are still real appointments and still
-    # explain the silence, which is why they stay on the period for the tooltip
-    # to show, but a therapy session is not time on the job: counting them held
-    # 2026-08-27 open from 14:30 to 16:30 on a football fixture.
-    #
-    # Cuts apply here too, not only to the live dot. Declaring a meeting over
-    # at 10:30 moved the dot to amber but still handed the day the full hour it
-    # was scheduled for, so the total said an hour of work nobody did and the
-    # dot and the total disagreed about the same half hour.
-    cuts = read_meeting_cuts()
-    present += [[m["start"] * 60, min(effective_meeting_end(m, cuts) * 60, now_s),
-                 True]
-                for m in (meetings or [])
+    # Meetings count as presence and are unioned in, so a gap a call explains
+    # never reaches the list at all. They carry no tail -- a meeting has an
+    # observed end and does not need one inferred.
+    present += [[m["start"] * 60, min(m["end"] * 60, now_s), True]
+                for m in meetings
                 if m.get("counts", True) and m["start"] * 60 < now_s]
 
     # The day starts at the first work after DAY_ANCHOR, not at the first work
@@ -3657,13 +3559,13 @@ def write_vault_snapshot(day: str, events: list[datetime],
     # and the two would disagree with nothing to show why.
     #
     # Marks and meetings are exempt. A mark is an explicit declaration and a
-    # work meeting is a scheduled commitment; a prompt fired off on the other
-    # machine contradicts neither, so their spans are cut out of the holes
-    # rather than the other way around.
+    # meeting is an observed call; a prompt fired off on the other machine
+    # contradicts neither, so their spans are cut out of the holes rather than
+    # the other way around.
     protected = [[m["start"] * 60, min(m["end"] * 60, now_s)]
                  for m in marks_for(day) if m["start"] * 60 < now_s]
     protected += [[m["start"] * 60, min(m["end"] * 60, now_s)]
-                  for m in (meetings or [])
+                  for m in meetings
                   if m.get("counts", True) and m["start"] * 60 < now_s]
     merged = subtract_spans(
         merged,
@@ -3768,13 +3670,12 @@ def write_vault_snapshot(day: str, events: list[datetime],
             # The same prompts again, grouped by conversation and carrying
             # their text, for the tooltip.
             "sessions": sessions_in(day, a, b),
-            # A meeting the calendar placed here explains why the period holds
-            # together across a stretch with no prompts in it.
+            # A call observed here explains why the period holds together
+            # across a stretch with no prompts in it.
             "meetings": [{"start": m["start"], "end": m["end"],
                           "title": m.get("title", ""),
-                          "calendar": m.get("calendar"),
                           "counts": m.get("counts", True)}
-                         for m in (meetings or [])
+                         for m in meetings
                          if min(m["end"], b) - max(m["start"], a) > 0],
         })
 
@@ -3908,7 +3809,6 @@ def write_vault_snapshot(day: str, events: list[datetime],
         # different days, and a reader looking at a shredded afternoon needs to
         # be able to tell "I was half-attending" from "the tracker broke".
         "mode": mode_now(),
-        "calendar_available": calendar_events(day) is not None,
         "labels": labels,
         "gap_after_min": GAP_AFTER,
         # A period ends at its last prompt, so this is the time actually spent
@@ -4172,11 +4072,11 @@ def check() -> None:
         verdict = "working"
         detail = f"marked: {mark['note'] or 'marked as working'}"
 
-    # Calendar speaks only to a gap. When prompts are flowing the verdict is
-    # already settled and a meeting overlapping them changes nothing.
-    meetings = calendar_events(now.strftime("%Y-%m-%d"))
+    # A meeting speaks only to a gap. When prompts are flowing the verdict is
+    # already settled and a call overlapping them changes nothing.
+    meetings = meetings_for(now.strftime("%Y-%m-%d"))
     meeting = None
-    if meetings is not None and gap:
+    if gap:
         mid = gap[0] + (gap[1] - gap[0]) / 2
         meeting = covered_by_meeting(mid, [m for m in meetings
                                            if m.get("counts", True)])
@@ -4193,10 +4093,11 @@ def check() -> None:
         "gap_end": gap[1].strftime("%H:%M") if gap else None,
         "sources": {
             "prompts": len(window),
-            # None is load-bearing: it records that calendar could not be
-            # reached, so a later fit can exclude the window instead of
-            # reading a silent auth failure as a confirmed empty calendar.
-            "calendar": None if meetings is None else len(meetings),
+            # A count, never None. The calendar this replaced could fail to
+            # answer at all, and None recorded that so a later fit could
+            # exclude the window rather than read an auth failure as a
+            # confirmed empty day. A local log has no such failure mode.
+            "meetings": len(meetings),
             "meeting": meeting["title"] if meeting else None,
             "mark": mark["note"] or "marked as working" if mark else None,
         },
@@ -4435,7 +4336,7 @@ def activity_fingerprint(day: str) -> str:
     # without waiting for something else to happen. It is the one input that
     # changes on its own while the person is doing nothing this probe can
     # otherwise see, which is the whole reason the live read exists.
-    for p in (MARKS, APPROVALS, NOTES, MODEFILE, CAL_FILE, IDLE_CLAIMS,
+    for p in (MARKS, MEETINGS, APPROVALS, NOTES, MODEFILE, IDLE_CLAIMS,
               os.path.join(SLACK_DIR, f"{day}.json"),
               os.path.join(FOCUS_DIR, f"{day}.jsonl"),
               chrome_history_path() or "chrome-history-absent"):
@@ -4613,8 +4514,7 @@ def status() -> dict:
     ended_at = max(ends) if ends else None
     ended_ts = read_session_end_ts(day, ended_at) if ended_at is not None else None
     in_meeting = covered_by_meeting(now, [
-        m for m in (calendar_events(day) or [])
-        if m.get("counts", True)])
+        m for m in meetings_for(day) if m.get("counts", True)])
     if open_mark:
         state, why = "marked", open_mark["note"] or "marked as working"
     elif in_meeting:
@@ -4818,23 +4718,38 @@ if __name__ == "__main__":
             day = now_local().strftime("%Y-%m-%d")
             write_vault_snapshot(day, events_for(day))
         print(json.dumps({"mode": mode_now()}))
-    elif cmd == "meeting_end":
-        # Declare the current meeting over at this moment. The calendar file
-        # won't update -- it reflects what was scheduled, not what happened --
-        # so without this the dot stays green until the scheduled end time even
-        # when the meeting finished early. Writes a cut record for today; any
-        # meeting whose scheduled end is past this minute is treated as having
-        # ended here instead.
-        # Rebuilds the snapshot the way `mode` does: the cut changes the day
-        # total as well as the dot, so leaving it until the next 20-minute
-        # check would show a dashboard that still counts the part of the
-        # meeting that did not happen.
-        cut = now_local().hour * 60 + now_local().minute
-        cuts = append_meeting_cut(cut)
+    elif cmd == "meeting_start":
+        # A meeting app has been holding the microphone long enough to count.
+        # The bar backdates to where the run actually began, because the
+        # detector cannot call a run a meeting until MIN_CALL_SEC has passed.
+        #
+        # Rebuilds the snapshot the way `mode` does: an open meeting holds the
+        # dot green and holds the period open, and waiting for the next
+        # 20-minute check would leave both stale for the whole of a short call.
+        title = sys.argv[2] if len(sys.argv) > 2 else "meeting"
+        at = to_min(sys.argv[3]) if len(sys.argv) > 3 else None
+        rec = start_meeting(title, at)
         day = now_local().strftime("%Y-%m-%d")
         write_vault_snapshot(day, events_for(day))
-        print(json.dumps({"cut_min": cut, "cuts": cuts,
-                          "at": now_local().strftime("%H:%M")}))
+        print(json.dumps({
+            "started": rec is not None,
+            "at": hhmm_of(rec["start"]) if rec else None,
+            "title": rec["title"] if rec else None,
+        }))
+    elif cmd == "meeting_end":
+        # The capture settled: the call is over. Stamps the end onto every
+        # meeting still open today, which is what makes the span stop growing.
+        #
+        # Rebuilds the snapshot for the same reason meeting_start does -- the
+        # end changes the day total as well as the dot.
+        closed = close_open_meetings()
+        day = now_local().strftime("%Y-%m-%d")
+        write_vault_snapshot(day, events_for(day))
+        print(json.dumps({
+            "closed": [{"start": hhmm_of(r["start"]), "end": hhmm_of(r["end"]),
+                        "title": r.get("title")} for r in closed],
+            "at": now_local().strftime("%H:%M"),
+        }))
     elif cmd == "note":
         # Rebuilds the snapshot the way `mark` and `mode` do. The entry is a
         # claim about the minute it was typed in, so waiting for the next

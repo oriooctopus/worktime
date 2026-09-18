@@ -653,69 +653,6 @@ class IdleExclusion(unittest.TestCase):
         self.assertEqual(got, [])
 
 
-class SnapshotMeetingRecovery(unittest.TestCase):
-    """A rebuild must not drop a source it merely failed to read.
-
-    calendar-today.md holds only today, so calendar_events returns None for any
-    earlier day -- indistinguishable from "no meetings" once it has returned.
-    A backfill therefore erased 36 minutes of meeting-held work from 08-28.
-    """
-
-    def _with_snapshot(self, payload):
-        import tempfile
-        day = "2026-08-28"
-        d = tempfile.mkdtemp()
-        with open(os.path.join(d, f"{day}.json"), "w") as fh:
-            json.dump(payload, fh)
-        old = wp.VAULT_SNAPSHOT_DIR
-        try:
-            wp.VAULT_SNAPSHOT_DIR = d
-            return wp.meetings_from_snapshot(day)
-        finally:
-            wp.VAULT_SNAPSHOT_DIR = old
-
-    def test_meetings_are_read_back_off_the_snapshot(self):
-        got = self._with_snapshot({"worked": [
-            {"start": 600, "end": 660, "meetings": [
-                {"start": 600, "end": 660, "title": "Standup", "counts": True}]}]})
-        self.assertEqual(len(got), 1)
-        self.assertEqual(got[0]["title"], "Standup")
-
-    def test_a_meeting_spanning_two_periods_is_not_duplicated(self):
-        m = {"start": 600, "end": 700, "title": "Review", "counts": True}
-        got = self._with_snapshot({"worked": [
-            {"start": 600, "end": 640, "meetings": [m]},
-            {"start": 660, "end": 700, "meetings": [m]}]})
-        self.assertEqual(len(got), 1)
-
-    def test_no_snapshot_yields_none_not_empty(self):
-        # None means "unknown", [] would mean "known to have none" and would
-        # re-introduce the silent drop this exists to stop.
-        import tempfile
-        old = wp.VAULT_SNAPSHOT_DIR
-        try:
-            wp.VAULT_SNAPSHOT_DIR = tempfile.mkdtemp()
-            self.assertIsNone(wp.meetings_from_snapshot("2026-08-28"))
-        finally:
-            wp.VAULT_SNAPSHOT_DIR = old
-
-    def test_a_day_with_no_meetings_yields_none(self):
-        self.assertIsNone(self._with_snapshot(
-            {"worked": [{"start": 600, "end": 660, "meetings": []}]}))
-
-    def test_corrupt_snapshot_does_not_raise(self):
-        import tempfile
-        d = tempfile.mkdtemp()
-        with open(os.path.join(d, "2026-08-28.json"), "w") as fh:
-            fh.write("{not json")
-        old = wp.VAULT_SNAPSHOT_DIR
-        try:
-            wp.VAULT_SNAPSHOT_DIR = d
-            self.assertIsNone(wp.meetings_from_snapshot("2026-08-28"))
-        finally:
-            wp.VAULT_SNAPSHOT_DIR = old
-
-
 class ElapsedClamp(unittest.TestCase):
     """Recovering a past day's meetings is only half of a rebuild. The spans
     are then clamped to how much of the day has happened, and that clamp read
@@ -1096,250 +1033,129 @@ class GithubLiveHistory(unittest.TestCase):
             wp._gh_live_cache.clear()
 
 
-class CalendarParsing(unittest.TestCase):
-    def test_missing_gcloud_reports_no_source_instead_of_raising(self):
-        # 2026-09-01: the vault dump was still the previous day's, so the API
-        # path ran -- and this machine has no gcloud at all. The uncaught
-        # FileNotFoundError took down the whole `status` call, which the menu
-        # bar can only read as "probe did not answer": a red dot on a morning
-        # that was working normally. A machine without the SDK is the same
-        # answer as an unusable grant, which is None.
-        import tempfile, os
-        day = wp.now_local().strftime("%Y-%m-%d")
-        missing = os.path.join(tempfile.mkdtemp(), "no-calendar-here.md")
-        old_file, old_run = wp.CAL_FILE, wp.subprocess.run
+class ObservedMeetings(unittest.TestCase):
+    """Meetings come from the microphone, written at both ends by the bar.
 
-        def no_such_binary(args, *a, **kw):
-            if args and args[0] == "gcloud":
-                raise FileNotFoundError(2, "No such file or directory", "gcloud")
-            return old_run(args, *a, **kw)
-
-        try:
-            wp.CAL_FILE = missing          # force the vault path to miss
-            wp.subprocess.run = no_such_binary
-            self.assertIsNone(wp.calendar_events(day))
-        finally:
-            wp.CAL_FILE, wp.subprocess.run = old_file, old_run
-
-    def test_identical_rows_collapse(self):
-        # The free/busy exporter emitted the same 08:15-09:00 block twice, and
-        # the tooltip duly rendered "meeting 08:15-09:00 - meeting 08:15-09:00".
-        import tempfile, os
-        from datetime import datetime
-        now = wp.now_local().strftime("%Y-%m-%dT%H:%M")
-        day = wp.now_local().strftime("%Y-%m-%d")
-        text = f"""---
-created: {now}
-updated: {now}
----
-# Calendar - {day}
-
-| Start | End | Event |
-|-------|-----|-------|
-| 08:15 | 09:00 | Busy |
-| 08:15 | 09:00 | Busy |
-| 14:30 | 16:30 | Busy |
-"""
-        d = tempfile.mkdtemp()
-        path = os.path.join(d, "calendar-today.md")
-        open(path, "w").write(text)
-        old = wp.CAL_FILE
-        try:
-            wp.CAL_FILE = path
-            events = wp.calendar_from_vault(day)
-        finally:
-            wp.CAL_FILE = old
-        self.assertIsNotNone(events)
-        spans = [(e["start"], e["end"]) for e in events]
-        self.assertEqual(spans, [(495, 540), (870, 990)],
-                         "duplicate calendar rows were not collapsed")
-
-    def test_distinct_overlapping_rows_are_kept(self):
-        # A real double-booking has different titles and must survive.
-        import tempfile, os
-        now = wp.now_local().strftime("%Y-%m-%dT%H:%M")
-        day = wp.now_local().strftime("%Y-%m-%d")
-        text = f"""---
-created: {now}
-updated: {now}
----
-# Calendar - {day}
-
-| Start | End | Event |
-|-------|-----|-------|
-| 08:15 | 09:00 | Standup |
-| 08:15 | 09:00 | Design review |
-"""
-        d = tempfile.mkdtemp()
-        path = os.path.join(d, "calendar-today.md")
-        open(path, "w").write(text)
-        old = wp.CAL_FILE
-        try:
-            wp.CAL_FILE = path
-            events = wp.calendar_from_vault(day)
-        finally:
-            wp.CAL_FILE = old
-        self.assertEqual(len(events), 2, "a real double-booking was collapsed")
-
-    def _parse(self, table: str, front: str = "") -> list[dict]:
-        import tempfile, os
-        now = wp.now_local().strftime("%Y-%m-%dT%H:%M")
-        day = wp.now_local().strftime("%Y-%m-%d")
-        text = (f"---\ncreated: {now}\nupdated: {now}\n{front}---\n"
-                f"# Calendar - {day}\n\n{table}")
-        path = os.path.join(tempfile.mkdtemp(), "calendar-today.md")
-        open(path, "w").write(text)
-        old = wp.CAL_FILE
-        try:
-            wp.CAL_FILE = path
-            return wp.calendar_from_vault(day)
-        finally:
-            wp.CAL_FILE = old
-
-    def test_personal_rows_do_not_count_as_work(self):
-        # The whole point of the Calendar column. A therapy session and a
-        # football fixture are real appointments but not time on the job; on
-        # 2026-08-27 counting them added 110 minutes to the day.
-        rows = self._parse(
-            "| Start | End | Event | Calendar |\n"
-            "|-------|-----|-------|----------|\n"
-            "| 08:15 | 09:00 | Talkspace therapy session | personal |\n"
-            "| 09:30 | 10:00 | (busy) | work |\n")
-        self.assertEqual([r["counts"] for r in rows], [False, True])
-        self.assertEqual([r["calendar"] for r in rows], ["personal", "work"])
-
-    def test_untagged_rows_still_count(self):
-        # An exporter predating the column emitted the work free/busy feed and
-        # nothing else. Defaulting those to "personal" would silently erase
-        # every real meeting rather than fix anything.
-        rows = self._parse(
-            "| Start | End | Event |\n"
-            "|-------|-----|-------|\n"
-            "| 09:30 | 10:00 | Busy |\n")
-        self.assertEqual(len(rows), 1)
-        self.assertTrue(rows[0]["counts"], "an untagged row stopped counting")
-        self.assertIsNone(rows[0]["calendar"])
-
-    def test_generated_wins_over_rewritten_updated(self):
-        # Obsidian's update-time-on-edit plugin rewrites `updated:` moments
-        # after any write and drops the offset while doing it, so freshness has
-        # to key off `generated:`, which nothing touches. A stale `updated:`
-        # must not be able to reject a file the exporter just wrote.
-        import datetime
-        stale = (wp.now_local()
-                 - datetime.timedelta(hours=wp.CAL_STALE_HOURS + 2))
-        day = wp.now_local().strftime("%Y-%m-%d")
-        fresh = wp.now_local().isoformat()
-        import tempfile, os
-        text = (f"---\nupdated: {stale.strftime('%Y-%m-%dT%H:%M')}\n"
-                f"generated: {fresh}\n---\n# Calendar - {day}\n\n"
-                "| Start | End | Event | Calendar |\n"
-                "|-------|-----|-------|----------|\n"
-                "| 09:30 | 10:00 | (busy) | work |\n")
-        path = os.path.join(tempfile.mkdtemp(), "calendar-today.md")
-        open(path, "w").write(text)
-        old = wp.CAL_FILE
-        try:
-            wp.CAL_FILE = path
-            rows = wp.calendar_from_vault(day)
-        finally:
-            wp.CAL_FILE = old
-        self.assertIsNotNone(rows, "a fresh generated: was rejected as stale")
-        self.assertEqual(len(rows), 1)
-
-    def test_personal_meeting_is_not_presence(self):
-        # End to end through the period builder: a two-hour personal block with
-        # no prompts in it must not hold a work period open.
-        at = wp.now_local().replace(hour=15, minute=30, second=0, microsecond=0)
-        personal = [{"start": 14 * 60 + 30, "end": 16 * 60 + 30,
-                     "title": "Brighton Tromso", "calendar": "personal",
-                     "counts": False}]
-        work = [dict(personal[0], calendar="work", counts=True)]
-        quiet = wp.covered_by_meeting(
-            at, [m for m in personal if m.get("counts", True)])
-        self.assertIsNone(quiet, "a personal block still explained a gap")
-        self.assertIsNotNone(
-            wp.covered_by_meeting(at,
-                                  [m for m in work if m.get("counts", True)]),
-            "a work block stopped explaining a gap")
-
-
-class MeetingCuts(unittest.TestCase):
-    """Ending a meeting early must end that meeting and no other.
-
-    These matter more than they used to. A cut used to be written only when a
-    human clicked "Meeting ended early", a few times a week; the audio watcher
-    writes one at the end of every call, so a cut that reached beyond its own
-    meeting would now blind the tracker to the rest of the day's calendar
-    within one morning.
+    The calendar these replaced is gone, and with it the class of bug that
+    made the change worth making: a scheduled end is not an observed one. What
+    has to hold now is that a record opened by one probe invocation is read
+    back the same way by every later one, including after midnight, and that
+    nothing can leave an unbounded span accruing time on its own.
     """
 
+    DAY = "2026-09-18"
+
     def setUp(self):
-        self.old = wp.MEETING_CUT
-        wp.MEETING_CUT = os.path.join(tempfile.mkdtemp(), "meeting-cut.json")
-        self.morning = {"start": 10 * 60, "end": 11 * 60, "title": "Standup",
-                        "calendar": "work", "counts": True}
-        self.afternoon = {"start": 14 * 60, "end": 15 * 60, "title": "Review",
-                          "calendar": "work", "counts": True}
+        self.tmp = tempfile.mkdtemp()
+        self.saved = {n: getattr(wp, n) for n in ("MEETINGS", "STATE", "now_local")}
+        wp.STATE = self.tmp
+        wp.MEETINGS = os.path.join(self.tmp, "meetings.jsonl")
+        self.at(14, 0)
 
     def tearDown(self):
-        wp.MEETING_CUT = self.old
+        for name, value in self.saved.items():
+            setattr(wp, name, value)
 
     def at(self, hh, mm):
-        return wp.now_local().replace(hour=hh, minute=mm, second=0, microsecond=0)
+        from datetime import datetime
+        wp.now_local = lambda: datetime(2026, 9, 18, hh, mm,
+                                        tzinfo=wp.LOCAL)
 
-    def covered(self, when):
-        m = wp.covered_by_meeting(when, [self.morning, self.afternoon])
-        return m["title"] if m else None
+    def test_a_closed_meeting_reads_back_as_its_own_span(self):
+        wp.start_meeting("standup", 13 * 60 + 45)
+        self.at(14, 9)
+        wp.close_open_meetings()
+        self.assertEqual([(m["start"], m["end"], m["title"])
+                          for m in wp.meetings_for(self.DAY)],
+                         [(13 * 60 + 45, 14 * 60 + 9, "standup")])
 
-    def test_cut_ends_the_meeting_it_landed_in(self):
-        wp.append_meeting_cut(10 * 60 + 30)
-        self.assertIsNone(self.covered(self.at(10, 30)),
-                          "the cut meeting still covered its own scheduled tail")
-        self.assertEqual(self.covered(self.at(10, 15)), "Standup",
-                         "the cut retroactively erased time before it")
+    def test_an_open_meeting_runs_to_now(self):
+        wp.start_meeting("standup", 13 * 60 + 45)
+        self.at(14, 9)
+        self.assertEqual([(m["start"], m["end"], m["open"])
+                          for m in wp.meetings_for(self.DAY)],
+                         [(13 * 60 + 45, 14 * 60 + 9, True)])
 
-    def test_cut_does_not_touch_a_later_meeting(self):
-        # The regression: one `cut_min` compared against every row gave the
-        # afternoon meeting an effective end of 10:30, before its own start,
-        # so it could never cover a minute again.
-        wp.append_meeting_cut(10 * 60 + 30)
-        self.assertEqual(self.covered(self.at(14, 30)), "Review",
-                         "ending the standup early also erased the afternoon")
+    def test_an_open_meeting_is_visible_in_the_minute_it_began(self):
+        # The dot must go green at once. Requiring end > start left it amber
+        # for up to a minute after a call was detected, which reads as the
+        # detection not having worked at all.
+        wp.start_meeting("standup")
+        self.assertEqual([(m["start"], m["end"]) for m in wp.meetings_for(self.DAY)],
+                         [(14 * 60, 14 * 60)])
 
-    def test_each_meeting_can_be_cut_independently(self):
-        wp.append_meeting_cut(10 * 60 + 30)
-        wp.append_meeting_cut(14 * 60 + 20)
-        self.assertIsNone(self.covered(self.at(10, 45)))
-        self.assertEqual(self.covered(self.at(14, 10)), "Review")
-        self.assertIsNone(self.covered(self.at(14, 30)))
+    def test_activity_does_not_close_an_open_meeting(self):
+        # The difference from a mark. Taking a note during a call is ordinary,
+        # and a rule that ended the meeting at the next prompt would end every
+        # meeting at its first note.
+        wp.start_meeting("standup", 13 * 60 + 45)
+        wp.prompts_for = lambda day: [wp.now_local()]
+        self.at(14, 9)
+        self.assertEqual([m["end"] for m in wp.meetings_for(self.DAY)],
+                         [14 * 60 + 9])
 
-    def test_cut_between_meetings_truncates_neither(self):
-        # 12:00 is inside nothing, so it is not an early end for anything.
-        wp.append_meeting_cut(12 * 60)
-        self.assertEqual(self.covered(self.at(10, 30)), "Standup")
-        self.assertEqual(self.covered(self.at(14, 30)), "Review")
+    def test_a_second_start_does_not_split_one_call_in_two(self):
+        # The cancelled-countdown path: cancelling leaves the detector
+        # disarmed, so resuming audio raises the rising edge again against a
+        # meeting that never closed.
+        wp.start_meeting("standup", 13 * 60 + 45)
+        self.at(14, 2)
+        self.assertIsNone(wp.start_meeting("standup"))
+        self.assertEqual(len(wp.meetings_for(self.DAY)), 1)
 
-    def test_earliest_cut_inside_a_meeting_wins(self):
-        wp.append_meeting_cut(10 * 60 + 50)
-        wp.append_meeting_cut(10 * 60 + 20)
-        self.assertIsNone(self.covered(self.at(10, 30)),
-                          "a later cut in the same meeting undid an earlier one")
+    def test_an_open_meeting_cannot_accrue_past_the_cap(self):
+        # A bar that dies mid-call leaves a record nothing will close, and an
+        # uncapped one credits every minute from its start to now.
+        wp.start_meeting("standup", 9 * 60)
+        self.at(23, 0)
+        self.assertEqual([m["end"] for m in wp.meetings_for(self.DAY)],
+                         [9 * 60 + wp.MEETING_MAX_OPEN_MIN])
 
-    def test_cuts_expire_with_the_day(self):
-        wp.append_meeting_cut(10 * 60 + 30)
-        rec = json.load(open(wp.MEETING_CUT))
-        rec["day"] = "2001-01-01"
-        json.dump(rec, open(wp.MEETING_CUT, "w"))
-        self.assertEqual(wp.read_meeting_cuts(), [],
-                         "yesterday's cut still applied to today")
+    def test_closing_never_hands_back_what_the_cap_withheld(self):
+        # Closing stamps on the end the meeting HAD. Writing the closing minute
+        # flat would grant hours that every earlier reading had withheld.
+        wp.start_meeting("standup", 9 * 60)
+        self.at(23, 0)
+        wp.close_open_meetings()
+        self.assertEqual([m["end"] for m in wp.meetings_for(self.DAY)],
+                         [9 * 60 + wp.MEETING_MAX_OPEN_MIN])
 
-    def test_cut_shortens_the_day_total_too(self):
-        # The dot and the day total read the same cut, so a meeting that ended
-        # early cannot be amber on the menu bar and a full hour in the total.
-        cuts = [10 * 60 + 30]
-        self.assertEqual(wp.effective_meeting_end(self.morning, cuts), 10 * 60 + 30)
-        self.assertEqual(wp.effective_meeting_end(self.afternoon, cuts), 15 * 60)
+    def test_a_meeting_left_open_on_a_finished_day_is_dropped(self):
+        # Nothing left can say where it ended, and granting the cap would
+        # invent three hours out of a crash.
+        wp.start_meeting("standup", 13 * 60 + 45)
+        self.assertEqual(wp.meetings_for("2026-09-17"), [])
+        self.at(14, 0)
+        wp.now_local = lambda: __import__("datetime").datetime(
+            2026, 9, 19, 10, 0, tzinfo=wp.LOCAL)
+        self.assertEqual(wp.meetings_for(self.DAY), [])
+
+    def test_a_past_day_keeps_the_meetings_it_had(self):
+        # The property the calendar never had: it could only answer for today,
+        # so rebuilding an earlier day dropped every meeting on it along with
+        # the work time they were holding open.
+        wp.start_meeting("standup", 13 * 60 + 45)
+        wp.close_open_meetings(14 * 60 + 9)
+        wp.now_local = lambda: __import__("datetime").datetime(
+            2026, 9, 19, 10, 0, tzinfo=wp.LOCAL)
+        self.assertEqual([(m["start"], m["end"])
+                          for m in wp.meetings_for(self.DAY)],
+                         [(13 * 60 + 45, 14 * 60 + 9)])
+
+    def test_a_meeting_undone_in_the_minute_it_began_contributes_nothing(self):
+        wp.start_meeting("standup")
+        wp.close_open_meetings()
+        self.assertEqual(wp.meetings_for(self.DAY), [])
+
+    def test_covered_by_meeting_stops_at_the_observed_end(self):
+        from datetime import datetime
+        wp.start_meeting("standup", 13 * 60 + 45)
+        wp.close_open_meetings(14 * 60)
+        meetings = wp.meetings_for(self.DAY)
+        inside = datetime(2026, 9, 18, 13, 50, tzinfo=wp.LOCAL)
+        after = datetime(2026, 9, 18, 14, 5, tzinfo=wp.LOCAL)
+        self.assertEqual(wp.covered_by_meeting(inside, meetings)["title"], "standup")
+        self.assertIsNone(wp.covered_by_meeting(after, meetings))
 
 
 class ApprovalMatching(unittest.TestCase):

@@ -76,7 +76,7 @@ class EndSessionCase(unittest.TestCase):
     the reader, and nothing in the menu would show it if they did.
     """
 
-    NAMES = ("STATE", "MARKS", "MEETING_CUT", "SESSION_END",
+    NAMES = ("STATE", "MARKS", "MEETINGS", "SESSION_END",
              "now_local", "events_for", "write_vault_snapshot", "mark_stamps")
 
     def setUp(self):
@@ -84,7 +84,7 @@ class EndSessionCase(unittest.TestCase):
         self.saved = {name: getattr(wp, name) for name in self.NAMES}
         wp.STATE = self.tmp
         wp.MARKS = os.path.join(self.tmp, "marks.jsonl")
-        wp.MEETING_CUT = os.path.join(self.tmp, "meeting-cut.json")
+        wp.MEETINGS = os.path.join(self.tmp, "meetings.jsonl")
         wp.SESSION_END = os.path.join(self.tmp, "session-end.json")
         wp.now_local = lambda: at(16, 40)
         # The day's events and the snapshot write are not what these tests are
@@ -150,39 +150,48 @@ class EndSessionCase(unittest.TestCase):
         self.assertEqual(self.marks()[0]["end"],
                          15 * 60 + wp.MARK_MAX_OPEN_MIN)
 
-    def test_writes_a_meeting_cut_even_with_nothing_marked(self):
-        # The case the menu item exists for: no mark running, the dot green off
-        # prompts or a meeting. A version that only closed marks would do
-        # nothing at all here and still pass every test that had one.
+    def test_is_not_a_no_op_when_nothing_is_marked(self):
+        # The case the menu item exists for: no mark running, no call running,
+        # the dot green off prompts alone. A version that only closed marks
+        # would do nothing at all here and still pass every test that had one.
         out = wp.end_session()
         self.assertEqual(out["closed"], [])
-        self.assertEqual(out["cuts"], [16 * 60 + 40])
-        self.assertEqual(wp.read_meeting_cuts(), [16 * 60 + 40])
+        self.assertEqual(out["meetings"], [])
+        self.assertEqual(wp.read_session_ends(DAY), [16 * 60 + 40])
 
-    def test_the_cut_only_truncates_the_meeting_it_lands_inside(self):
-        # Ending the day at 16:40 must not reach back and erase the 10:00
-        # standup, which is what one cut compared against every meeting did.
+    def test_closes_a_call_still_running(self):
+        # A meeting left open holds the day open past the minute it was
+        # declared over, which is the whole thing End Session is for.
+        wp.start_meeting("standup", 16 * 60)
+        out = wp.end_session()
+        self.assertEqual(out["meetings"],
+                         [{"start": "16:00", "end": "16:40", "title": "standup"}])
+        self.assertEqual([m["end"] for m in wp.meetings_for(DAY)], [16 * 60 + 40])
+        self.assertEqual([m["open"] for m in wp.meetings_for(DAY)], [False])
+
+    def test_does_not_reach_back_into_a_call_that_already_ended(self):
+        # Ending the day at 16:40 must not touch the 10:00 standup, which is
+        # what a single day-wide cut applied to every meeting used to do.
+        wp.start_meeting("standup", 10 * 60)
+        wp.close_open_meetings(10 * 60 + 30)
         wp.end_session()
-        cuts = wp.read_meeting_cuts()
-        standup = {"start": 10 * 60, "end": 10 * 60 + 30}
-        running = {"start": 16 * 60, "end": 17 * 60}
-        self.assertEqual(wp.effective_meeting_end(standup, cuts), 10 * 60 + 30)
-        self.assertEqual(wp.effective_meeting_end(running, cuts), 16 * 60 + 40)
+        self.assertEqual([(m["start"], m["end"]) for m in wp.meetings_for(DAY)],
+                         [(10 * 60, 10 * 60 + 30)])
 
     def test_records_the_declaration_itself(self):
-        # The thing that was missing: with nothing marked and nothing
-        # scheduled, closing marks and cutting meetings are both inert, and
-        # the click left no trace anything downstream could read. The minute
-        # the day was declared over is now a record in its own right.
+        # The thing that was missing: with nothing marked and no call running,
+        # closing marks and closing meetings are both inert, and the click left
+        # no trace anything downstream could read. The minute the day was
+        # declared over is now a record in its own right.
         out = wp.end_session()
         self.assertEqual(out["ends"], ["16:40"])
         self.assertEqual(wp.read_session_ends(DAY), [16 * 60 + 40])
 
-    def test_the_declaration_is_kept_apart_from_the_meeting_cut(self):
+    def test_the_declaration_is_kept_apart_from_the_meeting_log(self):
         # Both are written by the same click, and conflating them would mean
         # every early exit from a standup also drew a line through the day.
         wp.end_session()
-        self.assertNotEqual(wp.MEETING_CUT, wp.SESSION_END)
+        self.assertNotEqual(wp.MEETINGS, wp.SESSION_END)
         self.assertEqual(wp.read_session_ends("2026-03-05"), [])
 
     def test_rebuilds_the_snapshot(self):

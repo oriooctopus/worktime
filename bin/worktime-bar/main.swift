@@ -1515,6 +1515,10 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
     // Tracks the previous filtered-capture state so we only log on the rising
     // edge (first tick where mic is active but no meeting app is running).
     var wasFilteredCapturing = false
+    // Previous tick's detector.inCall, so a meeting is opened on the rising
+    // edge alone. Reading inCall flat would fire a start on every 2s tick for
+    // the whole of a call.
+    var wasInCall = false
     // Non-nil only while the track-back panel is on screen. Held so a second
     // double press raises the panel already up rather than stacking a new one
     // behind it, each with its own copy of the number being typed.
@@ -1655,10 +1659,11 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         }
     }
 
-    // The calendar says when a meeting was scheduled to end; the microphone
-    // says when the talking actually stopped. Only the second one knows that a
-    // half-hour slot finished in twelve minutes, and it knows it for calls the
-    // calendar has never heard of too.
+    // The microphone is the only source of meetings. It says when the talking
+    // started and when it stopped, which is what was wanted all along: the
+    // calendar it replaced knew only what had been arranged, so it gave a
+    // half-hour slot the full half hour when the call ran twelve minutes and
+    // had nothing at all to say about a call that was never invited.
     func tickAudio() {
         let capturing = meetingAppIsCapturing()
 
@@ -1691,14 +1696,36 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
             wasFilteredCapturing = false
         }
 
-        guard detector.update(capturing: capturing, now: Date()) else { return }
+        let ended = detector.update(capturing: capturing, now: Date())
 
-        // Only a calendar meeting can be ended early, because only a calendar
-        // meeting holds the dot green on a schedule that can outlive the call.
-        // A manual mark is a human declaration and is not something a
-        // microphone reading gets to revoke; ordinary prompt activity lapses on
-        // its own. So when the probe is not currently leaning on a meeting,
-        // there is nothing for this to stop and no reason to interrupt.
+        // A call has been running long enough to count: open a meeting. The
+        // detector cannot say so until MIN_CALL_SEC has elapsed, so the run
+        // began that long ago and the start is backdated to there -- otherwise
+        // every meeting would lose its first minute.
+        //
+        // The probe ignores a start while one is already open, which is what
+        // makes a cancelled end-countdown safe: cancelling leaves the detector
+        // disarmed, so resuming audio re-arms it and raises this edge again
+        // against a meeting that never closed.
+        if detector.inCall && !wasInCall {
+            let began = Date().addingTimeInterval(-MIN_CALL_SEC)
+            let hhmm = DateFormatter()
+            hhmm.dateFormat = "HH:mm"
+            let at = hhmm.string(from: began)
+            FileHandle.standardError.write(
+                "call detected; opening meeting at \(at)\n".data(using: .utf8)!)
+            probeQueue.async {
+                _ = runProbe(["meeting_start", "meeting", at])
+                DispatchQueue.main.async { self.refresh() }
+            }
+        }
+        wasInCall = detector.inCall
+
+        guard ended else { return }
+
+        // Nothing to close unless the probe says a meeting is running. It is
+        // the source of truth for that, not a flag here: the bar restarts, and
+        // a meeting opened before the restart must still be closable after it.
         guard status.why.hasPrefix("in ") else {
             FileHandle.standardError.write(
                 "call ended, no meeting to close (\(status.why))\n".data(using: .utf8)!)
@@ -1712,7 +1739,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
             meeting: meeting, seconds: COUNTDOWN_SEC,
             onExpire: { [weak self] in
                 self?.countdown = nil
-                self?.endMeetingEarly()
+                self?.endMeeting()
             },
             onCancel: { [weak self] in
                 self?.countdown = nil
@@ -2098,9 +2125,12 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         endHost.submenu = endSub
         m.addItem(endHost)
 
+        // "early" no longer means anything -- there is no schedule to be early
+        // against. The row is the manual way to close a call the microphone is
+        // still hearing, e.g. a Zoom window left open in an empty room.
         if status.why.hasPrefix("in ") {
-            m.addItem(NSMenuItem(title: "Meeting ended early",
-                                 action: #selector(endMeetingEarly), keyEquivalent: ""))
+            m.addItem(NSMenuItem(title: "Meeting ended",
+                                 action: #selector(endMeeting), keyEquivalent: ""))
         }
         // Here as well as on ⌥W, because a shortcut nothing in the interface
         // mentions is a shortcut that is forgotten by the week after it ships.
@@ -2611,7 +2641,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         item.action == #selector(linkLastSession) ? status.linkFrom != nil : true
     }
 
-    @objc func endMeetingEarly() {
+    @objc func endMeeting() {
         probeQueue.async {
             _ = runProbe(["meeting_end"])
             DispatchQueue.main.async { self.refresh() }

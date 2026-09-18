@@ -326,18 +326,17 @@ class MergesTheGapCase(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         for name, leaf in [("MARKS", "marks.jsonl"), ("NOTES", "notes.jsonl"),
-                           ("MEETING_CUT", "meeting-cut.json"),
+                           ("MEETINGS", "meetings.jsonl"),
                            ("LABELS", "labels.jsonl"),
-                           ("CAL_FILE", "calendar-today.md"),
                            ("STATE", ""),
                            ("VAULT_SNAPSHOT_DIR", "worktime")]:
             self.patch(name, os.path.join(self.tmp.name, leaf))
         self.now = datetime(2026, 3, 4, 12, 15)
         self.patch("now_local", lambda: self.now)
         # The day's other signals stubbed to empty: this is about prompts and
-        # marks, and a calendar or a focus log would only add spans that make a
+        # marks, and a meeting or a focus log would only add spans that make a
         # merge easier to achieve than it really is.
-        self.patch("calendar_events", lambda day: [])
+        self.patch("meetings_for", lambda day: [])
         self.patch("slack_for", lambda day: [])
         self.patch("focus_for", lambda day, *a, **k: [])
         self.patch("prompts_for", lambda day: [])

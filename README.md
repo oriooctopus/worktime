@@ -1,11 +1,11 @@
 # worktime
 
 Reconstructs when you were actually working, by fusing signals that each miss
-something on their own: Claude Code prompts, calendar events, and classified
+something on their own: Claude Code prompts, observed calls, and classified
 browsing.
 
 The problem it solves: a meeting produces no prompts, and reviewing a pull
-request for twenty minutes produces neither prompts nor a calendar event. To a
+request for twenty minutes produces neither prompts nor a call. To a
 prompt-only probe both look identical to lunch.
 
 ## Layout
@@ -26,11 +26,12 @@ Code lives here. **Data lives in Obsidian** and is never committed:
 
 ## The three exporters
 
-**`calendar-export.py`** writes `Dashboard/calendar-today.md`, the file the
-probe reads. Pulls the personal account's own calendars plus a work free/busy
-share. Work-calendar mirrors of personal events are dropped so each event
-appears once. Applies hand corrections from `overrides.json` and merges derived
-browsing blocks.
+**`calendar-export.py`** writes `Dashboard/calendar-today.md`. Pulls the
+personal account's own calendars plus a work free/busy share. Work-calendar
+mirrors of personal events are dropped so each event appears once. Applies hand
+corrections from `overrides.json` and merges derived browsing blocks. This is a
+note to read, not an input: the probe keeps it fresh but no longer derives
+anything from it — see **Meetings** below for why.
 
 **`chrome-work-blocks.py`** turns Chrome history into work blocks. Each visit
 becomes an interval and overlapping intervals are unioned, so a redirect chain
@@ -309,16 +310,13 @@ draws a coloured dot; it never recomputes state itself.
   subtracted from Mac work periods.
 - **Manual marks** — written by `worktime-probe.py mark [note]`. The strongest
   signal: a human declaration overrides silence.
-- **Calendar events** — from `~/Documents/Main/Dashboard/calendar-today.md`
-  (written by `bin/calendar-export.py`). Work-tagged meetings extend presence
-  across a quiet stretch.
-- **Meeting cuts** — written by `worktime-probe.py meeting_end`. A meeting that
-  finished early stops counting from that minute on, both for the live dot and
-  for the day's total.
+- **Meetings** — written by `worktime-probe.py meeting_start` / `meeting_end`,
+  both driven by the menu bar watching the microphone. A meeting extends
+  presence across a quiet stretch. See **Meetings** below.
 - **End of session** — written by `worktime-probe.py end_session [last]`. Closes
-  any open mark *and* cuts any meeting still running, at one minute: this one,
-  or (`last`) the last entry the tracker saw. It is the "that was the day"
-  statement, and unlike `unmark` it does not assume a mark was ever started.
+  any open mark *and* any open meeting, at one minute: this one, or (`last`) the
+  last entry the tracker saw. It is the "that was the day" statement, and unlike
+  `unmark` it does not assume a mark was ever started.
 
 **How it decides working vs not working:**
 
@@ -353,17 +351,10 @@ For the live dot (`status`), the verdict is:
 
 1. **Green** — a prompt arrived or the machine was attended at the front of a
    work app within the current cutoff, OR a manual mark is active right now, OR
-   a work calendar meeting covers the current minute.
+   an observed meeting covers the current minute.
 2. **Blue** — a manual mark is active (shown distinctly so it's clear the green
    is asserted, not derived).
 3. **Amber** — none of the above.
-
-**How work vs personal calendar rows are treated:**
-
-Rows tagged `work`, `rubrik`, or with an empty Calendar column count as work
-meetings and extend presence. Rows tagged `personal` are visible in the
-dashboard tooltip (they explain a quiet stretch) but do not contribute worked
-time. A therapy appointment or football fixture is not time on the job.
 
 **Schedule:** `worktime-probe.py check` writes a label record and updates the
 Obsidian snapshot every 20 minutes (driven by launchd). The menu bar polls
@@ -405,38 +396,64 @@ wide menu whose halves obeyed different rules. The cost is that it can't be
 walked with the arrow keys — nothing in it is a target, so what's lost is
 moving a selection through items that were never selectable.
 
-## Ending a meeting when the call ends
+## Meetings
 
-A scheduled meeting keeps the dot green until its scheduled end, so a half-hour
-slot that broke up after ten minutes hands the day twenty minutes nobody
-worked. The menu bar app closes that gap by watching the microphone.
+A meeting is a stretch during which a meeting app held the microphone. Both
+ends are observed; nothing is read off a calendar.
 
-Every two seconds it asks CoreAudio whether any input device is running
+**Why the calendar is gone.** It could only say what had been *arranged*, which
+turns out to be a poor witness to what happened. It gave a half-hour slot the
+full half hour when the call broke up after twelve minutes. It had never heard
+of the call that started as a DM. It counted the invitation that was sat out by
+closing the laptop. On the Rubrik free/busy share it could not even supply a
+title, so every meeting read `(busy)`. And it could only ever answer for
+*today*, so rebuilding an earlier day silently dropped every meeting on it.
+
+The microphone knows exactly one thing and it is the thing being asked. The
+record lives in `~/.claude/stats/worktime/meetings.jsonl`, one line per call,
+which is a local durable file — so a backfill reads back what the live day saw.
+
+Every two seconds the menu bar asks CoreAudio whether any input device is running
 (`kAudioDevicePropertyDeviceIsRunningSomewhere`, filtered to devices that
 actually have input streams — the built-in speakers report *running* at rest,
 and without that filter the answer is permanently yes). This is a property
-read, not a capture: no microphone permission, no orange recording dot, and no
-knowledge of which app is on the call. Zoom, a browser tab, a phone app
-screen-sharing — all the same reading.
+read, not a capture: no microphone permission and no orange recording dot.
+
+That reading is device-level and cannot say *which* app is capturing, so it is
+gated on a meeting app being in the running applications at all
+(`MEETING_APP_BUNDLES` in `main.swift` — currently Zoom and Slack, the latter
+for huddles). Without that gate, dictating into WhisperFlow for a minute opened
+a meeting.
 
 The rules around that reading, in `bin/worktime-bar/CallDetector.swift`:
 
 - capture must run **60 seconds** before it counts as a call, so Siri, a
-  notification chime or a two-second mic test never end a meeting;
+  notification chime or a two-second mic test never open a meeting;
 - silence must last **5 seconds** before the call is over. Not for the HAL,
   which clears the flag in about 0.23s, but for device handoff: AirPods dying
   mid-call hands over to the built-in mic with a gap in between.
 
-When a call ends while a **calendar** meeting is live, a panel appears at the
-top right — the meeting's name, "Ended — stopping tracking in 10s", and a
-**Keep tracking** button. Left alone it runs `worktime-probe.py meeting_end`;
-pressed, it does nothing at all. If capture resumes during those ten seconds
-the panel withdraws itself, so stepping out to a second call is not a
-decision the user has to make.
+**Start.** The first tick where the detector calls the run a meeting runs
+`worktime-probe.py meeting_start`, backdated by those 60 seconds — otherwise
+every meeting would lose its first minute. The probe ignores a start while one
+is already open, so one call can never split into two records.
 
-Only calendar meetings are ever ended this way. A manual mark is a human
-declaration and a microphone reading does not get to revoke it; ordinary prompt
-activity lapses on its own and needs no help.
+**End.** When capture settles, a panel appears at the top right — the meeting's
+name, "Ended — stopping tracking in 10s", and a **Keep tracking** button. Left
+alone it runs `worktime-probe.py meeting_end`, which stamps the end onto the
+open record; pressed, it does nothing at all. If capture resumes during those
+ten seconds the panel withdraws itself, so stepping out to a second call is not
+a decision the user has to make.
+
+A manual mark is never ended this way: it is a human declaration and a
+microphone reading does not get to revoke it. Ordinary prompt activity lapses
+on its own and needs no help.
+
+**If the bar dies mid-call** the record is left open. An open meeting runs to
+now, capped at `MEETING_MAX_OPEN_MIN` (3 hours), so a crash cannot quietly
+inflate a day; one still open on a day that has ended is dropped entirely,
+since nothing left can say where it stopped. `track` recovers those minutes by
+hand.
 
 It is a panel rather than a notification because a banner dismisses itself after
 about five seconds — half the countdown — Focus suppresses delivery and a
@@ -494,13 +511,13 @@ the other row names the double press in its title, as a menu cannot express one
 Carbon hot key, ⌘E is consumed before the frontmost app sees it — Finder's Eject
 and "Use Selection for Find" lose it while the bar is running.
 
-Either closes an open mark and cuts a meeting that would otherwise run past
-that minute, in one step. A cut written when no meeting is running is inert:
-`effective_meeting_end` only applies a cut to the meeting it landed inside.
+Either closes an open mark and any open meeting, at that minute, in one step.
+Closing when neither is running is inert, so the item does not have to ask
+which was true and cannot get that question wrong.
 
 And either records the minute itself, in `session-end.json`, which for a long
 time it did not — so on the ordinary afternoon the item exists for, with nothing
-marked and nothing scheduled, both of the steps above were inert and the click
+marked and no call running, both of the steps above were inert and the click
 changed nothing anybody could see. The dot stayed green, because prompting was
 what was holding it green, and the period ran straight on through the minute the
 day had just been declared over at: the menu showed `08:34–08:46 · now` on a
