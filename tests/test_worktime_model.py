@@ -1147,6 +1147,15 @@ class ObservedMeetings(unittest.TestCase):
         wp.close_open_meetings()
         self.assertEqual(wp.meetings_for(self.DAY), [])
 
+    def test_a_call_can_be_recorded_after_the_fact(self):
+        # A meeting the microphone never saw -- taken on a phone, or before any
+        # of this was installed. Both ends given by hand.
+        wp.start_meeting("offsite", 10 * 60)
+        wp.close_open_meetings(11 * 60 + 30)
+        self.assertEqual([(m["start"], m["end"], m["open"])
+                          for m in wp.meetings_for(self.DAY)],
+                         [(10 * 60, 11 * 60 + 30, False)])
+
     def test_covered_by_meeting_stops_at_the_observed_end(self):
         from datetime import datetime
         wp.start_meeting("standup", 13 * 60 + 45)

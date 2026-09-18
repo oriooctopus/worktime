@@ -25,7 +25,8 @@ Usage:
   worktime-probe.py meeting_start [title] [HH:MM]  -- a call is under way,
                                           optionally backdated to where the
                                           capture actually began
-  worktime-probe.py meeting_end    -- the call running now stopped at this minute
+  worktime-probe.py meeting_end [HH:MM]  -- the call running now stopped, at
+                                          this minute or at the one given
   worktime-probe.py end_session [last]  -- end the day: break the period, close
                                           the mark, close the meeting, at this
                                           minute or at the last entry
@@ -4740,9 +4741,15 @@ if __name__ == "__main__":
         # The capture settled: the call is over. Stamps the end onto every
         # meeting still open today, which is what makes the span stop growing.
         #
+        # The bar passes no minute -- the call stopped just now. An explicit
+        # HH:MM is for recording a call after the fact, the same way
+        # meeting_start takes one: a meeting the microphone never saw, because
+        # it happened on a phone or before this was installed.
+        #
         # Rebuilds the snapshot for the same reason meeting_start does -- the
         # end changes the day total as well as the dot.
-        closed = close_open_meetings()
+        closed = close_open_meetings(
+            to_min(sys.argv[2]) if len(sys.argv) > 2 else None)
         day = now_local().strftime("%Y-%m-%d")
         write_vault_snapshot(day, events_for(day))
         print(json.dumps({
