@@ -1824,15 +1824,8 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         // collapsed row is a cheap place to keep them.
         let periods = status.periods
 
-        // Active Ghostty tab, read from presence.json on every menu rebuild.
-        // Only shown when Ghostty is frontmost and its tab was readable.
-        var ghosttyTab: String? = nil
-        if let data = try? Data(contentsOf: URL(fileURLWithPath: PRESENCE_PATH)),
-           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           json["bundle"] as? String == GHOSTTY_BUNDLE,
-           let tab = json["tab"] as? String {
-            ghosttyTab = tab
-        }
+        // Active Ghostty tab from presence.json — also shown next to the dot in apply().
+        let ghosttyTab = currentGhosttyTab()
 
         // Keyed on exactly the strings that get rendered, so a poll that
         // changes nothing visible costs nothing and cannot flicker an open
@@ -2328,6 +2321,15 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         }
     }
 
+    /// Active Ghostty tab name from presence.json, or nil when Ghostty isn't frontmost.
+    private func currentGhosttyTab() -> String? {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: PRESENCE_PATH)),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              json["bundle"] as? String == GHOSTTY_BUNDLE,
+              let tab = json["tab"] as? String else { return nil }
+        return tab
+    }
+
     func apply(_ s: Status) {
         status = s
         lastActivityAt = s.quietSec.map { Date().addingTimeInterval(-Double($0)) }
@@ -2338,13 +2340,13 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         case "broken":  item.button?.image = dotImage(BROKEN, hollow: false)
         default:        item.button?.image = dotImage(AWAY, hollow: true)
         }
-        // A dot and only a dot, in every state including red. Words beside it
-        // were tried and are not worth their room: the menu bar is shared with
-        // a dozen other icons, a red dot is already the thing the eye catches,
-        // and what a failure needs said about it is more than a tag's worth --
-        // which is what the menu holds. The tooltip carries the whole failure
-        // for a pointer that pauses on the way there.
-        item.button?.imagePosition = .imageOnly
+        if let tab = currentGhosttyTab() {
+            item.button?.title = tab
+            item.button?.imagePosition = .imageLeft
+        } else {
+            item.button?.title = ""
+            item.button?.imagePosition = .imageOnly
+        }
         item.button?.toolTip = s.state == "broken" ? probeFail?.report ?? s.why
             : "\(s.state) — \(s.why) (as of \(s.at))"
         build()
