@@ -406,6 +406,108 @@ class DesktopSubtraction(unittest.TestCase):
                              sum(e - s for s, e in plain))
 
 
+def build_desk_prompt(mac_stamps, desktop_stamps, mode="focused"):
+    """Pipeline for desktop_prompt_holes: bouts from mac_stamps, then subtract.
+
+    mac_stamps and desktop_stamps are both seconds-of-day. Mirrors
+    write_vault_snapshot's order (merge first, subtract after).
+    """
+    tl = [(0, mode)]
+    present = wp.build_bouts(sorted(mac_stamps), tl)
+    merged = wp.merge_spans(present, tl)
+    holes = wp.desktop_prompt_holes(desktop_stamps, mac_stamps)
+    merged = wp.subtract_spans(merged, holes)
+    return [[s // 60, e // 60] for s, e in merged], merged
+
+
+class DesktopPromptHoles(unittest.TestCase):
+    """desktop_prompt_holes: hole = [last_mac_before, desktop], gated on a following mac."""
+
+    def test_no_desktop_stamps_no_holes(self):
+        self.assertEqual(wp.desktop_prompt_holes([], [HH(10, 0)]), [])
+
+    def test_no_mac_stamps_no_holes(self):
+        self.assertEqual(wp.desktop_prompt_holes([HH(10, 0)], []), [])
+
+    def test_desktop_with_no_preceding_mac_makes_no_hole(self):
+        # Desktop before any Mac prompt -- nothing to anchor to.
+        holes = wp.desktop_prompt_holes([HH(9, 0)], [HH(10, 0)])
+        self.assertEqual(holes, [])
+
+    def test_desktop_with_no_following_mac_makes_no_hole(self):
+        # The session ends at the last Mac prompt; nothing to subtract.
+        holes = wp.desktop_prompt_holes([HH(10, 30)], [HH(10, 0)])
+        self.assertEqual(holes, [])
+
+    def test_desktop_between_two_mac_prompts_creates_hole(self):
+        # Canonical example: Mac, desktop 20s later, Mac 80s later.
+        mac = [HH(10, 0), HH(10, 0) + 80]
+        desktop = [HH(10, 0) + 20]
+        holes = wp.desktop_prompt_holes(desktop, mac)
+        self.assertEqual(holes, [[HH(10, 0), HH(10, 0) + 20]])
+
+    def test_hole_end_is_the_desktop_stamp_not_a_minute_wide(self):
+        # Unlike desktop_holes, no one-minute rounding.
+        mac = [HH(10, 0), HH(10, 5)]
+        desktop = [HH(10, 0) + 45]
+        holes = wp.desktop_prompt_holes(desktop, mac)
+        self.assertEqual(holes, [[HH(10, 0), HH(10, 0) + 45]])
+
+    def test_multiple_desktops_between_same_mac_pair_merge(self):
+        # Both holes share the same m_before, so they merge into one.
+        mac = [HH(10, 0), HH(10, 10)]
+        desktop = [HH(10, 1), HH(10, 3)]
+        holes = wp.desktop_prompt_holes(desktop, mac)
+        self.assertEqual(holes, [[HH(10, 0), HH(10, 3)]])
+
+    def test_desktop_in_gap_between_mac_periods_makes_no_hole(self):
+        # Desktop is after all Mac work of the day -- session ends naturally.
+        mac = [HH(10, 0), HH(10, 2), HH(10, 4)]
+        desktop = [HH(14, 0)]
+        holes = wp.desktop_prompt_holes(desktop, mac)
+        self.assertEqual(holes, [])
+
+    def test_pipeline_desktop_in_gap_changes_nothing(self):
+        # A desktop stamp after all Mac work should not remove any period.
+        mac = [HH(10, 0), HH(10, 2), HH(10, 4)]
+        plain, _ = build_desk_prompt(mac, [])
+        with_desk, _ = build_desk_prompt(mac, [HH(14, 0)])
+        self.assertEqual(plain, with_desk)
+
+    def test_pipeline_hole_removes_dead_time(self):
+        # Mac at 10:00, desktop 20s later, Mac at 10:02. Dead time = 20s.
+        # The period is shorter after subtraction; the cut period starts no
+        # earlier than the desktop prompt time (the LEAD before the hole
+        # becomes a sliver and is also dropped).
+        mac = [HH(10, 0), HH(10, 2)]
+        desktop = [HH(10, 0) + 20]
+        plain, plain_sec = build_desk_prompt(mac, [])
+        cut, cut_sec = build_desk_prompt(mac, desktop)
+        plain_dur = sum(e - s for s, e in plain_sec)
+        cut_dur = sum(e - s for s, e in cut_sec)
+        self.assertLess(cut_dur, plain_dur)
+        # The surviving period starts at or after the desktop stamp.
+        self.assertGreaterEqual(cut_sec[0][0], HH(10, 0) + 20)
+
+    def test_pipeline_no_following_mac_no_subtraction(self):
+        # Mac at 10:00, desktop prompt, then nothing. No hole.
+        mac = [HH(10, 0)]
+        desktop = [HH(10, 0) + 20]
+        plain, _ = build_desk_prompt(mac, [])
+        with_desk, _ = build_desk_prompt(mac, desktop)
+        self.assertEqual(plain, with_desk)
+
+    def test_subtraction_never_publishes_a_sliver(self):
+        # Remnants shorter than MIN_PERIOD_SEC are dropped.
+        for k in range(1, 40):
+            mac = [HH(10, 0), HH(10, 0) + k * 60]
+            desktop = [HH(10, 0) + 30]
+            _, sec = build_desk_prompt(mac, desktop)
+            for s, e in sec:
+                self.assertGreaterEqual(e - s, wp.MIN_PERIOD_SEC,
+                                        f"sliver at k={k}")
+
+
 class IdleExclusion(unittest.TestCase):
     """Silence inside a working period, taken back out of it.
 
