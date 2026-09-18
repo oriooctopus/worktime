@@ -464,6 +464,52 @@ def desktop_holes(stamps_sec: list[int], work_minutes: set[int],
     return runs
 
 
+def desktop_prompt_holes(desktop_stamps_sec: list[int],
+                         mac_stamps_sec: list[int]) -> list[list[int]]:
+    """Holes to cut from Mac work periods when the desktop is used between prompts.
+
+    Each desktop stamp creates a hole [last Mac prompt before it, desktop stamp],
+    but only when a Mac prompt also follows. Without a following Mac prompt the
+    session ends at the last Mac prompt naturally -- no subtraction needed.
+
+    The interval [last_mac_before, desktop] captures the "thinking time" model:
+    the moment you switched machines, everything since your last Mac prompt was
+    already not Mac work.
+
+    Unlike desktop_holes this works at second resolution and needs no mode
+    timeline: the boundaries are defined by neighbouring Mac prompts, not by
+    consecutive desktop stamps chaining under a gap cutoff.
+    """
+    if not desktop_stamps_sec or not mac_stamps_sec:
+        return []
+    mac = sorted(mac_stamps_sec)
+    holes = []
+    for d in sorted(desktop_stamps_sec):
+        # Last mac prompt strictly before this desktop stamp
+        before = [s for s in mac if s < d]
+        if not before:
+            continue
+        m_before = before[-1]
+        # Any mac prompt strictly after this desktop stamp (if none, the
+        # session ends at m_before naturally and nothing needs subtracting)
+        if not any(s > d for s in mac):
+            continue
+        holes.append([m_before, d])
+    if not holes:
+        return []
+    # Merge overlapping holes (multiple desktop stamps between the same pair
+    # of Mac prompts each produce [same_m_before, d_i]; merge resolves them
+    # into one hole spanning [m_before, last_desktop_before_next_mac]).
+    holes.sort()
+    merged = [list(holes[0])]
+    for s, e in holes[1:]:
+        if s <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], e)
+        else:
+            merged.append([s, e])
+    return merged
+
+
 def subtract_spans(spans: list[list[int]],
                    holes: list[list[int]]) -> list[list[int]]:
     """spans minus holes. A hole landing mid-span splits it in two.
@@ -3626,9 +3672,10 @@ def write_vault_snapshot(day: str, events: list[datetime],
     merged = subtract_spans(
         merged,
         subtract_spans(
-            desktop_holes([t.hour * 3600 + t.minute * 60
-                           for t in desktop_prompts_for(day)],
-                          {s // 60 for s in stamps}, tl),
+            desktop_prompt_holes(
+                [t.hour * 3600 + t.minute * 60
+                 for t in desktop_prompts_for(day)],
+                prompt_stamps),
             protected))
 
     # Cut out the stretches nobody touched the machine, on the same terms and
