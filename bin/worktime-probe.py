@@ -3482,6 +3482,19 @@ def elapsed_s(day: str, now: datetime | None = None) -> int:
     return now.hour * 3600 + now.minute * 60 + now.second
 
 
+def _sans_clock(snap: dict) -> dict:
+    """`snap` with the one field that changes on a no-op run left out.
+
+    `updated` is stamped fresh on every call to write_vault_snapshot even when
+    nothing about the day changed -- it is this run's clock, not a fact
+    derived from the events. Everything else in `snap` is a function of the
+    day's actual inputs (events, marks, calendar, labels), so comparing with
+    just this key dropped is what tells a real change from a tick of the
+    clock. Used on both the new snapshot and whatever is already on disk.
+    """
+    return {k: v for k, v in snap.items() if k != "updated"}
+
+
 def write_vault_snapshot(day: str, events: list[datetime],
                          fp: str | None = None) -> None:
     """Publish today's work periods where the Obsidian dashboard can read them.
@@ -3878,19 +3891,73 @@ def write_vault_snapshot(day: str, events: list[datetime],
     # dashboard sat an hour stale with no error anywhere to explain it.
     os.makedirs(VAULT_SNAPSHOT_DIR, exist_ok=True)
     path = snapshot_path(day)
-    tmp = f"{path}.{os.getpid()}.tmp"
-    with open(tmp, "w") as fh:
-        json.dump(snap, fh, indent=1)
-    os.replace(tmp, path)
+    # WorktimeBar polls the probe every 60s, and most polls find nothing new --
+    # only `updated` (this run's clock, not a fact about the day) differs from
+    # what is already on disk. Writing anyway pushed 1440 versions/day at
+    # Obsidian Sync's 1 GB quota and forced the markdown sidecar below to
+    # re-render, which re-renders every open Dataview block on the dashboard
+    # and shows up as the whole page jumping once a minute. `updated` is
+    # excluded on both sides of the comparison rather than left out of `snap`
+    # entirely, because the dashboard still reads it (the live day's timeline
+    # right edge, the "as of" label) -- it just should say when the content
+    # last actually changed, which is what status()'s own write-gate already
+    # keys off `fp` for instead of `updated`, for the same reason.
+    existing = json.load(open(path)) if os.path.exists(path) else None
+    if existing is None or _sans_clock(existing) != _sans_clock(snap):
+        tmp = f"{path}.{os.getpid()}.tmp"
+        with open(tmp, "w") as fh:
+            json.dump(snap, fh, indent=1)
+        os.replace(tmp, path)
 
     # Same conclusions in markdown, because the .json above never leaves this
     # machine. Written with the same raise-don't-swallow rule: a sidecar that
     # silently stopped updating is indistinguishable from a quiet day.
     md_path = markdown_snapshot_path(day)
-    md_tmp = f"{md_path}.{os.getpid()}.tmp"
-    with open(md_tmp, "w") as fh:
-        fh.write(render_markdown_snapshot(day, snap))
-    os.replace(md_tmp, md_path)
+    md_new = render_markdown_snapshot(day, snap)
+    # Same skip, decided independently of the JSON's -- the two files carry
+    # different content (the .md drops prompt text and the `fp`/`mode`/etc.
+    # fields entirely, see render_markdown_snapshot's docstring), so a run
+    # that only changes something JSON-only must not force a markdown rewrite,
+    # and vice versa.
+    #
+    # The comparison can't just diff bytes, though. render_markdown_snapshot
+    # only ever emits `generated:` -- see its frontmatter block below -- but
+    # Obsidian's "update time on edit" plugin adds `created:`/`updated:` next
+    # to it and rewrites them within seconds of ANY write, including a
+    # no-op one (the same plugin CAL_FILE works around, see the comment above
+    # calendar_from_vault). Left in, those lines would make the file on disk
+    # differ from this function's own last write even when nothing here
+    # changed, and the skip would never trigger.
+    existing_md = open(md_path).read() if os.path.exists(md_path) else None
+    if existing_md is None or (_sans_clock_md(existing_md)
+                                != _sans_clock_md(md_new)):
+        md_tmp = f"{md_path}.{os.getpid()}.tmp"
+        with open(md_tmp, "w") as fh:
+            fh.write(md_new)
+        os.replace(md_tmp, md_path)
+
+
+# Frontmatter keys nothing downstream may rely on being current on disk.
+# `generated:` is this file's own per-run timestamp; `created:`/`updated:`
+# are not this file's at all -- see the comment beside their strip in
+# write_vault_snapshot. Anchored to the start of a line so a value that
+# happens to contain one of these words is never touched, and this file's
+# frontmatter block is always exactly one key per line (see render_
+# markdown_snapshot below), so a line-oriented regex is enough; a body line
+# can never collide because the table rows all start with `|`.
+_VOLATILE_MD_FRONTMATTER = re.compile(
+    r"^(?:generated|created|updated):.*\n", re.M)
+
+
+def _sans_clock_md(text: str) -> str:
+    """`text` with the volatile frontmatter timestamp lines dropped.
+
+    Used to compare a freshly rendered snapshot against what is already on
+    disk without either this function's own `generated:` stamp or Obsidian's
+    plugin-added `created:`/`updated:` lines forcing a rewrite on a run where
+    the actual content (the table of periods and gaps) did not change.
+    """
+    return _VOLATILE_MD_FRONTMATTER.sub("", text)
 
 
 def render_markdown_snapshot(day: str, snap: dict) -> str:
