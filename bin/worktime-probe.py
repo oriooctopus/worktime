@@ -1525,6 +1525,7 @@ FOCUS_SELF_RAISING = {
 # strictly narrower than the allow list -- an hour of Hacker News in the
 # foreground still earns nothing.
 CHROME_BUNDLE = "com.google.Chrome"
+GHOSTTY_BUNDLE = "com.mitchellh.ghostty"
 
 
 # Resolved once. The profile is a file on disk and focus_app() is called for
@@ -1560,10 +1561,13 @@ def focus_app(sample: dict) -> bool:
     string truncates a title placed after it. Two calls have neither problem.
     """
     bundle = sample.get("bundle")
-    if bundle != CHROME_BUNDLE:
-        return bundle in _FOCUS_INCLUDE_RESOLVED
-    return (_work_site_hit(sample.get("tab", ""))
-            or _work_site_hit(sample.get("url", "")))
+    if bundle == CHROME_BUNDLE:
+        return (_work_site_hit(sample.get("tab", ""))
+                or _work_site_hit(sample.get("url", "")))
+    if bundle == GHOSTTY_BUNDLE:
+        tab = sample.get("tab", "")
+        return bool(tab) and not tab.startswith("[mosh]")
+    return bundle in _FOCUS_INCLUDE_RESOLVED
 
 
 def focus_counts(sample: dict) -> bool:
@@ -1597,9 +1601,10 @@ def focus_name(sample: dict) -> str:
     identically, and the tab title is the only part of either that anybody
     would recognise as the thing they were doing.
     """
-    if sample.get("bundle") == CHROME_BUNDLE and sample.get("tab"):
+    bundle = sample.get("bundle")
+    if bundle in (CHROME_BUNDLE, GHOSTTY_BUNDLE) and sample.get("tab"):
         return sample["tab"]
-    return sample.get("app") or sample["bundle"]
+    return sample.get("app") or bundle
 
 
 def self_raised(prev: dict | None, sample: dict) -> bool:
@@ -1685,8 +1690,8 @@ def focus_activations(day: str):
     """
     prev = None
     for r in focus_rows(day):
-        key = (r.get("bundle"), r.get("tab") if r.get("bundle") == CHROME_BUNDLE
-               else None)
+        b = r.get("bundle")
+        key = (b, r.get("tab") if b in (CHROME_BUNDLE, GHOSTTY_BUNDLE) else None)
         if key != prev:
             yield r
         prev = key
@@ -1803,8 +1808,8 @@ def focus_dwell_for(day: str) -> list[datetime]:
     base = datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=LOCAL)
     out, key_prev, anchor = [], None, None
     for r in focus_rows(day):
-        key = (r.get("bundle"),
-               r.get("tab") if r.get("bundle") == CHROME_BUNDLE else None)
+        b = r.get("bundle")
+        key = (b, r.get("tab") if b in (CHROME_BUNDLE, GHOSTTY_BUNDLE) else None)
         at = sec_of(r["t"])
         # A switch restarts the clock: the activation itself is focus_for()'s
         # to credit, and this function only ever adds to a stay already under
