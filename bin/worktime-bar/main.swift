@@ -1824,6 +1824,16 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         // collapsed row is a cheap place to keep them.
         let periods = status.periods
 
+        // Active Ghostty tab, read from presence.json on every menu rebuild.
+        // Only shown when Ghostty is frontmost and its tab was readable.
+        var ghosttyTab: String? = nil
+        if let data = try? Data(contentsOf: URL(fileURLWithPath: PRESENCE_PATH)),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           json["bundle"] as? String == GHOSTTY_BUNDLE,
+           let tab = json["tab"] as? String {
+            ghosttyTab = tab
+        }
+
         // Keyed on exactly the strings that get rendered, so a poll that
         // changes nothing visible costs nothing and cannot flicker an open
         // menu. quiet_sec ticking every 5s is deliberately not in here -- the
@@ -1841,7 +1851,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         // half a second later, which is the whole reason the flip now hides
         // rows instead.
         let key = ([worked, symbol, why, status.state, status.mode,
-                    status.feedNotice ?? ""] + debug
+                    status.feedNotice ?? "", ghosttyTab ?? ""] + debug
                    + periods.map { p in
                        let s = periodStrings(p)
                        return s.top + "\u{1}" + s.what
@@ -1877,6 +1887,12 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         st.view = StatusRowView(width: debug.isEmpty ? 300 : DEBUG_ROW_WIDTH,
                                 symbol: symbol, text: why, color: color)
         m.addItem(st)
+
+        if let tab = ghosttyTab {
+            let g = NSMenuItem(title: "Ghostty: \(tab)", action: nil, keyEquivalent: "")
+            g.isEnabled = false
+            m.addItem(g)
+        }
 
         if let notice = status.feedNotice {
             let n = NSMenuItem(title: "", action: nil, keyEquivalent: "")
