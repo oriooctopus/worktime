@@ -1719,6 +1719,7 @@ GHOSTTY_BUNDLE = "com.mitchellh.ghostty"
 _FOCUS_INCLUDE_RESOLVED = FOCUS_INCLUDE | wc.focus_extra_apps()
 _GHOSTTY_EXCLUDE_TABS = wc.ghostty_exclude_tabs()
 _LONG_READ = wc.long_read()
+_SHORT_FOCUS_MIN_SEC = wc.short_focus_min_sec()
 
 
 def focus_idle_limit() -> int:
@@ -1951,9 +1952,14 @@ def focus_for(day: str) -> list[datetime]:
     """
     base = datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=LOCAL)
     acts = list(focus_activations(day))
-    out = [base + timedelta(seconds=sec_of(a["t"]))
-           for a, nxt in zip(acts, acts[1:] + [None])
-           if focus_counts(a) and not self_raised(nxt, a)]
+    out = []
+    for a, nxt in zip(acts, acts[1:] + [None]):
+        if not focus_counts(a) or self_raised(nxt, a):
+            continue
+        if (_SHORT_FOCUS_MIN_SEC is not None and nxt is not None
+                and sec_of(nxt["t"]) - sec_of(a["t"]) < _SHORT_FOCUS_MIN_SEC):
+            continue
+        out.append(base + timedelta(seconds=sec_of(a["t"])))
     return sorted(set(out) | set(focus_dwell_for(day)))
 
 

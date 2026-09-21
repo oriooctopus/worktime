@@ -363,6 +363,37 @@ def long_read(profile=None):
     return cfg
 
 
+def short_focus_min_sec(profile=None):
+    """Minimum seconds a focus activation must last to renew a work session.
+
+    When set, activations shorter than this threshold are dropped from the
+    event stream entirely. They cannot chain with surrounding events and
+    cannot extend a session across a gap. Off by default (returns None).
+
+    The problem it solves: a three-second glance at a work window while
+    otherwise away generates a focus activation that chains with the prior
+    work period via GAP_AFTER, causing several minutes of silence to count
+    as worked time. With this enabled, only activations that last at least
+    min_sec earn that credit.
+
+    Configure in profile.json:
+      {"short_focus_min_sec": 7}
+    """
+    profile = load_profile() if profile is None else profile
+    configured = profile.get("short_focus_min_sec")
+    if configured is None:
+        return None
+    try:
+        val = int(configured)
+    except (TypeError, ValueError):
+        raise ProfileError(
+            "profile: 'short_focus_min_sec' must be a positive integer")
+    if val <= 0:
+        raise ProfileError(
+            "profile: 'short_focus_min_sec' must be a positive integer")
+    return val
+
+
 def ghostty_exclude_tabs(profile=None):
     """Ghostty tab names that should NOT count as work.
 
