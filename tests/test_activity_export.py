@@ -1640,7 +1640,7 @@ def test_claude_cwd_under_root_is_redacted(paths, tmp_path):
     assert ae.run(paths, days, now) == 0
     content = read_day(paths, date(2026, 8, 25))
     row = [l for l in events_only(content).splitlines() if "| claude |" in l][0]
-    assert row == "| 09:00 | claude | prompt | autojournal | autojournal work |"
+    assert row == "| 09:00 | claude | prompt | gen | gen work |"
 
 
 def test_claude_worktree_path_under_root_is_redacted(paths, tmp_path):
@@ -1656,7 +1656,7 @@ def test_claude_worktree_path_under_root_is_redacted(paths, tmp_path):
     assert ae.run(paths, days, local_epoch(2026, 8, 25, 12, 0, 0, -4)) == 0
     content = read_day(paths, date(2026, 8, 25))
     row = [l for l in events_only(content).splitlines() if "| claude |" in l][0]
-    assert row == "| 09:00 | claude | prompt | autojournal | autojournal work |"
+    assert row == "| 09:00 | claude | prompt | gen | gen work |"
 
 
 def test_claude_keyword_in_text_unrelated_cwd_is_redacted(paths, tmp_path):
@@ -1672,7 +1672,7 @@ def test_claude_keyword_in_text_unrelated_cwd_is_redacted(paths, tmp_path):
     assert ae.run(paths, days, local_epoch(2026, 8, 25, 12, 0, 0, -4)) == 0
     content = read_day(paths, date(2026, 8, 25))
     row = [l for l in events_only(content).splitlines() if "| claude |" in l][0]
-    assert row == "| 09:00 | claude | prompt | autojournal | autojournal work |"
+    assert row == "| 09:00 | claude | prompt | gen | gen work |"
 
 
 def test_claude_keyword_match_is_case_insensitive(paths, tmp_path):
@@ -1688,7 +1688,7 @@ def test_claude_keyword_match_is_case_insensitive(paths, tmp_path):
     assert ae.run(paths, days, local_epoch(2026, 8, 25, 12, 0, 0, -4)) == 0
     content = read_day(paths, date(2026, 8, 25))
     row = [l for l in events_only(content).splitlines() if "| claude |" in l][0]
-    assert row == "| 09:00 | claude | prompt | autojournal | autojournal work |"
+    assert row == "| 09:00 | claude | prompt | gen | gen work |"
 
 
 def test_claude_session_redacted_once_stays_redacted_in_that_file(paths, tmp_path):
@@ -1709,7 +1709,7 @@ def test_claude_session_redacted_once_stays_redacted_in_that_file(paths, tmp_pat
     rows = [l for l in events_only(content).splitlines() if "| claude |" in l]
     assert len(rows) == 2
     for row in rows:
-        assert row.endswith("| claude | prompt | autojournal | autojournal work |")
+        assert row.endswith("| claude | prompt | gen | gen work |")
     assert "totally unrelated harmless prompt" not in content
 
 
@@ -1786,11 +1786,11 @@ def test_claude_who_derivation_repo_worktree_job():
 def test_claude_redacted_row_prompt_never_leaks_keyword_or_root(paths, tmp_path):
     redact, root = fake_redact(tmp_path)
     base = local_epoch(2026, 8, 25, 9, 0, 0, -4)
-    redacted_event = ae.Event(base, date(2026, 8, 25), "09:00", "claude", "prompt", "autojournal", "autojournal work")
+    redacted_event = ae.Event(base, date(2026, 8, 25), "09:00", "claude", "prompt", "gen", "gen work")
     normal_event = ae.Event(base + 60, date(2026, 8, 25), "09:01", "whatsapp", "received", "Alice", "hi there")
     period = [redacted_event, normal_event]
     prompt = ae.build_period_prompt(period)
-    assert "autojournal work" in prompt
+    assert "gen work" in prompt
     assert "zzzprivate" not in prompt.lower()
     assert root.lower() not in prompt.lower()
 

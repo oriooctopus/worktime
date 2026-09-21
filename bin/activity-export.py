@@ -620,8 +620,11 @@ _COMMAND_MESSAGE_RE = re.compile(r"<command-message>.*?</command-message>", re.D
 _COMMAND_NAME_RE = re.compile(r"<command-name>.*?</command-name>", re.DOTALL)
 _SYSTEM_REMINDER_RE = re.compile(r"<system-reminder>.*?</system-reminder>", re.DOTALL)
 
-REDACTED_WHO = "autojournal"
-REDACTED_DETAIL = "autojournal work"
+# Cover text substituted into a redacted row. Changed from "autojournal" on
+# 2026-09-21: the old wording was indistinguishable from real autojournal
+# activity in the dashboards, so a redacted row read as genuine work.
+REDACTED_WHO = "gen"
+REDACTED_DETAIL = "gen work"
 
 # Noise filters -- things Oliver never typed himself: background-agent
 # notices, skill-body injections, pasted tool/scrape output, automation
