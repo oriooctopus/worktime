@@ -4631,18 +4631,21 @@ def status() -> dict:
         # the whole point of the sessions view is that its divisions are the
         # period list's divisions, so it has to read the same copy of them.
         sessions = group_sessions(all_acts, worked, live=live)
-        # Absorb not-counted sessions that immediately follow a counted session
-        # with desktop dead time: collapse them into one row so the counted row
-        # shows "3m / 6m" over the full span instead of a counted row + a
-        # separate "not counted" row.
+        # Absorb not-counted sessions that chronologically follow a counted
+        # session with desktop dead time: collapse them into one row.
+        # Sessions are newest-first, so the not-counted session appears in
+        # the list BEFORE the counted session it should merge into. When we
+        # encounter a counted session with dead_sec > 0 and the last item in
+        # merged is a not-counted session, pop it and extend this session's
+        # end to cover the full span, so it shows "3m / 6m" as one row.
         merged = []
         for s in sessions:
-            if (merged and merged[-1].get("counted")
-                    and merged[-1].get("dead_sec", 0) > 0
-                    and not s.get("counted")):
-                merged[-1]["end"] = s["end"]
-            else:
-                merged.append(s)
+            if (s.get("counted") and s.get("dead_sec", 0) > 0
+                    and merged and not merged[-1].get("counted")):
+                not_counted = merged.pop()
+                s = dict(s)
+                s["end"] = not_counted["end"]
+            merged.append(s)
         sessions = merged
         # Off the same periods the list above was drawn from, so the item can
         # only offer a minute the person can see on screen. None greys it out.
