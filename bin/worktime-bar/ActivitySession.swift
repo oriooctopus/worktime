@@ -71,13 +71,15 @@ let SESSION_WHAT_CHARS = 52
 // these are spans and read better as spans.
 func sessionStrings(_ s: ActSession) -> (top: String, what: String) {
     let events = "\(s.n) event\(s.n == 1 ? "" : "s")"
+    let duration: String = s.counted && s.deadSec > 0
+        ? "\(human(s.lenSec)) / \(human(s.lenSec + s.deadSec))"
+        : human(s.lenSec)
     var top = s.counted
-        ? "\(hhmm(s.start))–\(hhmm(s.end)) · \(human(s.lenSec))   \(events)"
+        ? "\(hhmm(s.start))–\(hhmm(s.end)) · \(duration)   \(events)"
         // No length, because these minutes were not credited and printing a
         // span here would read as time that was.
         : "\(hhmm(s.start))–\(hhmm(s.end)) · not counted   \(events)"
     if s.current && s.counted { top += "   ·  now" }
-    if s.counted && s.deadSec > 0 { top += "   \(human(s.deadSec)) dead" }
 
     var what = s.kinds.map { "\($0.1) \($0.0)" }.joined(separator: " · ")
     // The period's own summary, when it has earned one, after the tally. The
