@@ -4599,9 +4599,9 @@ def status() -> dict:
         # follows it (between this period's end and the next one's start).
         _d_stamps = [d["t"].hour * 3600 + d["t"].minute * 60
                      for d in desktop_prompts_for(day)]
-        _mac_stamps = sorted([t.hour * 60 + t.minute
+        _mac_stamps = sorted([t.hour * 3600 + t.minute * 60
                                for t in prompts_for(day)]
-                              + [t.hour * 60 + t.minute
+                              + [t.hour * 3600 + t.minute * 60
                                  for t in focus_for(day)])
         _holes = desktop_prompt_holes(_d_stamps, _mac_stamps) if _d_stamps else []
         for i, w in enumerate(worked):
