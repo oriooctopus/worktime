@@ -1293,11 +1293,24 @@ final class SessionRowView: NSView {
         super.init(frame: NSRect(x: 0, y: 0, width: width, height: 34))
         let (top, what) = sessionStrings(s)
 
-        let topField = NSTextField(labelWithString: top)
-        topField.font = NSFont.systemFont(ofSize: 12,
-                                          weight: s.current ? .semibold : .regular)
-        topField.textColor = s.counted ? .labelColor : .secondaryLabelColor
+        let topFont = NSFont.systemFont(ofSize: 12, weight: s.current ? .semibold : .regular)
+        let topColor: NSColor = s.counted ? .labelColor : .secondaryLabelColor
+        let topField = NSTextField(labelWithString: "")
         topField.lineBreakMode = .byTruncatingTail
+        // Option A: dim the "/ Ym" portion to tertiaryLabelColor when dead
+        // time is present, leaving the credited time at full brightness.
+        if s.deadSec > 0 && s.counted,
+           let dimRange = top.range(of: " / \(human((s.end - s.start) * 60))") {
+            let attr = NSMutableAttributedString(string: top,
+                attributes: [.font: topFont, .foregroundColor: topColor])
+            attr.addAttribute(.foregroundColor, value: NSColor.tertiaryLabelColor,
+                              range: NSRange(dimRange, in: top))
+            topField.attributedStringValue = attr
+        } else {
+            topField.stringValue = top
+            topField.font = topFont
+            topField.textColor = topColor
+        }
 
         let whatField = NSTextField(labelWithString: what)
         whatField.font = ACTIVITY_FONT
