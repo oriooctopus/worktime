@@ -193,6 +193,7 @@ struct Status {
     var quietSec: Int?
     var gapAfterSec: Int?
     var mode = "focused"
+    var shortFocusMinSec: Int?
     var focusPct: Int?
     // HH:MM the link item would claim from, nil when there is nothing to link
     // to. Decided by the probe off the same periods the list is drawn from --
@@ -2163,6 +2164,13 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
             mi.state = status.mode == name ? .on : .off
             m.addItem(mi)
         }
+        let sfSec = status.shortFocusMinSec ?? 7
+        let sfItem = NSMenuItem(
+            title: "Ignore glances < \(sfSec)s",
+            action: #selector(toggleShortFocus),
+            keyEquivalent: "")
+        sfItem.state = status.shortFocusMinSec != nil ? .on : .off
+        m.addItem(sfItem)
         m.addItem(.separator())
 
         if !periods.isEmpty {
@@ -2295,6 +2303,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
             s.quietSec = j["quiet_sec"] as? Int
             s.gapAfterSec = j["gap_after_sec"] as? Int
             s.mode = j["mode"] as? String ?? "focused"
+            s.shortFocusMinSec = j["short_focus_min_sec"] as? Int
             s.focusPct = j["focus_pct"] as? Int
             s.linkFrom = j["link_from"] as? String
             s.feedNotice = j["feed_notice"] as? String
@@ -2528,6 +2537,14 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         guard let name = sender.representedObject as? String else { return }
         probeQueue.async {
             _ = runProbe(["mode", name])
+            DispatchQueue.main.async { self.refresh() }
+        }
+    }
+
+    @objc func toggleShortFocus() {
+        let cmd = status.shortFocusMinSec != nil ? "off" : "on"
+        probeQueue.async {
+            _ = runProbe(["short_focus", cmd])
             DispatchQueue.main.async { self.refresh() }
         }
     }

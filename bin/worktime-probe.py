@@ -170,6 +170,7 @@ MIN_PERIOD_SEC = 30
 MODES = ("focused", "unfocused")
 MODEFILE = os.path.join(STATE, "mode.jsonl")
 SESSION_END = os.path.join(STATE, "session-end.json")
+SHORT_FOCUS_FILE = os.path.join(STATE, "short-focus.json")
 UNFOCUSED_GAP_START = 1
 UNFOCUSED_RAMP_MIN = 10
 
@@ -213,6 +214,45 @@ def set_mode(mode: str) -> str:
     with open(MODEFILE, "a") as fh:
         fh.write(json.dumps({"t": now_local().isoformat(), "mode": mode}) + "\n")
     return mode
+
+
+def short_focus_state() -> int | None:
+    """The current short-focus threshold from the state file, or None when off.
+
+    The state file takes precedence over profile.json. This lets the menu bar
+    toggle the feature on/off without touching the persistent profile config.
+    When the state file is absent the profile.json setting governs, so the
+    two work together: profile sets the preferred threshold, the bar toggles it.
+    """
+    if not os.path.exists(SHORT_FOCUS_FILE):
+        return None
+    try:
+        with open(SHORT_FOCUS_FILE) as fh:
+            data = json.load(fh)
+        v = data.get("min_sec")
+        return int(v) if v is not None and int(v) > 0 else None
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def set_short_focus(on: bool) -> int | None:
+    """Enable or disable the short-focus filter via the state file.
+
+    When enabling, uses the profile.json threshold or falls back to 7.
+    Returns the active min_sec (or None when disabling).
+    """
+    os.makedirs(STATE, exist_ok=True)
+    if on:
+        min_sec = wc.short_focus_min_sec() or 7
+        with open(SHORT_FOCUS_FILE, "w") as fh:
+            json.dump({"min_sec": min_sec}, fh)
+        return min_sec
+    else:
+        try:
+            os.remove(SHORT_FOCUS_FILE)
+        except FileNotFoundError:
+            pass
+        return None
 
 
 def mode_timeline(day: str) -> list[tuple[int, str]]:
@@ -1719,7 +1759,8 @@ GHOSTTY_BUNDLE = "com.mitchellh.ghostty"
 _FOCUS_INCLUDE_RESOLVED = FOCUS_INCLUDE | wc.focus_extra_apps()
 _GHOSTTY_EXCLUDE_TABS = wc.ghostty_exclude_tabs()
 _LONG_READ = wc.long_read()
-_SHORT_FOCUS_MIN_SEC = wc.short_focus_min_sec()
+# State file takes precedence over profile.json; either may set the threshold.
+_SHORT_FOCUS_MIN_SEC = short_focus_state() or wc.short_focus_min_sec()
 
 
 def focus_idle_limit() -> int:
@@ -4671,6 +4712,7 @@ def status() -> dict:
             # minutes it may never be granted.
             "gap_after_sec": cutoff_sec,
             "mode": mode_now(),
+            "short_focus_min_sec": short_focus_state() or wc.short_focus_min_sec(),
             "focus_pct": focus_pct,
             # The minute "Link with last session" would claim from, as HH:MM,
             # or null when there is nothing to link to. The menu greys the item
@@ -4768,6 +4810,18 @@ if __name__ == "__main__":
             day = now_local().strftime("%Y-%m-%d")
             write_vault_snapshot(day, events_for(day))
         print(json.dumps({"mode": mode_now()}))
+    elif cmd == "short_focus":
+        # `short_focus on` enables, `short_focus off` disables. Rebuilds the
+        # snapshot immediately so the menu reflects the change on the next poll.
+        if len(sys.argv) > 2:
+            on = sys.argv[2] == "on"
+            min_sec = set_short_focus(on)
+            day = now_local().strftime("%Y-%m-%d")
+            write_vault_snapshot(day, events_for(day))
+            print(json.dumps({"short_focus_min_sec": min_sec}))
+        else:
+            print(json.dumps({"short_focus_min_sec":
+                              short_focus_state() or wc.short_focus_min_sec()}))
     elif cmd == "meeting_start":
         # A meeting app has been holding the microphone long enough to count.
         # The bar backdates to where the run actually began, because the
