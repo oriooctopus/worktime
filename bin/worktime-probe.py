@@ -2470,10 +2470,12 @@ def github_visits_for(day: str) -> list[datetime]:
 
 
 DESKTOP_ROW = re.compile(
-    r"^\|\s*(\d{1,2}:\d{2})\s*\|\s*claude\s*\|\s*prompt\s*\|")
+    r"^\|\s*(\d{1,2}:\d{2})\s*\|\s*claude\s*\|\s*prompt\s*\|"
+    r"\s*([^|]*?)\s*\|"
+    r"(?:\s*([^|]*?)\s*\|)?")
 
 
-def desktop_prompts_for(day: str) -> list[datetime]:
+def desktop_prompts_for(day: str) -> list[dict]:
     """Claude prompts sent from the OTHER machine, per its activity export.
 
     The desktop runs personal projects only -- Overland-iOS, property-search,
@@ -2487,6 +2489,9 @@ def desktop_prompts_for(day: str) -> list[datetime]:
     tracker had closed anyway -- switching machines makes the Mac go quiet, and
     the ordinary cutoff ends the period without help. It is the other third,
     inside a period the Mac was still holding open, that this exists for.
+
+    Returns a list of dicts with keys `t` (datetime) and `what` (project name
+    from the activity export, stripped).
     """
     base = datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=LOCAL)
     out = []
@@ -2495,8 +2500,10 @@ def desktop_prompts_for(day: str) -> list[datetime]:
         if not m:
             continue
         h, mnt = m.group(1).split(":")
-        out.append(base.replace(hour=int(h), minute=int(mnt)))
-    return sorted(out)
+        t = base.replace(hour=int(h), minute=int(mnt))
+        what = m.group(2).strip() if m.group(2) else ""
+        out.append({"t": t, "what": what})
+    return sorted(out, key=lambda d: d["t"])
 
 
 # The exporter runs every five minutes while the desktop is up, so an hour
@@ -2695,6 +2702,12 @@ def activity_rows(day: str) -> list[dict]:
             "t": f"{lo // 3600:02d}:{lo // 60 % 60:02d}", "kind": "idle",
             "what": f"away {round((hi - lo) / 60)}m{fate}"}))
 
+    for d in desktop_prompts_for(day):
+        hm = d["t"].strftime("%H:%M")
+        rows.append((f"{hm}:00", {
+            "t": hm, "kind": "desktop",
+            "what": d["what"] or "desktop prompt"}))
+
     spoken = {k[:5] for k, _ in rows}
     by_minute = focus_app_by_minute(day)
     for when in attended:
@@ -2823,6 +2836,7 @@ def group_sessions(rows: list[dict], worked: list[dict],
                  # precisely the ones the day total left out, and printing a
                  # span here would read as time credited.
                  "len_sec": w["len_sec"] if w else 0,
+                 "dead_sec": w["dead_sec"] if w and "dead_sec" in w else 0,
                  "what": (w.get("what") or "") if w else "",
                  "counted": w is not None,
                  "current": live and idx is not None and idx == len(worked) - 1,
@@ -3572,8 +3586,8 @@ def write_vault_snapshot(day: str, events: list[datetime],
         merged,
         subtract_spans(
             desktop_prompt_holes(
-                [t.hour * 3600 + t.minute * 60
-                 for t in desktop_prompts_for(day)],
+                [d["t"].hour * 3600 + d["t"].minute * 60
+                 for d in desktop_prompts_for(day)],
                 prompt_stamps),
             protected))
 
@@ -4581,6 +4595,21 @@ def status() -> dict:
         snap = json.load(open(path))
         worked_sec = snap["work_sec"]
         worked = snap.get("worked", [])
+        # Annotate each period with desktop-caused dead time in the gap that
+        # follows it (between this period's end and the next one's start).
+        _d_stamps = [d["t"].hour * 3600 + d["t"].minute * 60
+                     for d in desktop_prompts_for(day)]
+        _mac_stamps = sorted([t.hour * 60 + t.minute
+                               for t in prompts_for(day)]
+                              + [t.hour * 60 + t.minute
+                                 for t in focus_for(day)])
+        _holes = desktop_prompt_holes(_d_stamps, _mac_stamps) if _d_stamps else []
+        for i, w in enumerate(worked):
+            gap_lo = w.get("end_sec", w["end"] * 60)
+            gap_hi = (worked[i + 1].get("start_sec", worked[i + 1]["start"] * 60)
+                      if i + 1 < len(worked) else gap_lo)
+            w["dead_sec"] = sum(
+                max(0, min(h[1], gap_hi) - max(h[0], gap_lo)) for h in _holes)
         ds, de = snap.get("day_start"), snap.get("day_end")
         if ds is not None and de is not None and de > ds:
             focus_pct = round(100 * worked_sec / ((de - ds) * 60))
@@ -4591,6 +4620,7 @@ def status() -> dict:
         for i, w in enumerate(worked):
             periods.append({
                 "start": w["start"], "end": w["end"], "len_sec": w["len_sec"],
+                "dead_sec": w.get("dead_sec", 0),
                 "n_prompts": w.get("n_prompts", 0),
                 "n_slack": w.get("n_slack", 0),
                 "what": w.get("what", ""),

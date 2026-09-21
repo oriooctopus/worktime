@@ -1169,9 +1169,10 @@ final class ActivityRowView: NSView {
         kindField.font = ACTIVITY_FONT
         kindField.textColor = .tertiaryLabelColor
 
+        let whatColor: NSColor = a.kind == "desktop" ? .systemOrange : .labelColor
         let line = NSMutableAttributedString(string: a.what, attributes: [
             .font: ACTIVITY_FONT,
-            .foregroundColor: NSColor.labelColor,
+            .foregroundColor: whatColor,
         ])
         // Only when it collapsed something. A "×1" on every other row would be
         // noise standing in for the ordinary case.
@@ -2318,6 +2319,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
                 ActSession(start: g["start"] as? Int ?? 0,
                            end: g["end"] as? Int ?? 0,
                            lenSec: g["len_sec"] as? Int ?? 0,
+                           deadSec: g["dead_sec"] as? Int ?? 0,
                            what: g["what"] as? String ?? "",
                            counted: g["counted"] as? Bool ?? true,
                            current: g["current"] as? Bool ?? false,

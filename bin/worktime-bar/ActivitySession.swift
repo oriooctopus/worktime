@@ -23,6 +23,7 @@ struct ActSession {
     var start = 0
     var end = 0
     var lenSec = 0
+    var deadSec = 0
     var what = ""
     var counted = true
     var current = false
@@ -76,6 +77,7 @@ func sessionStrings(_ s: ActSession) -> (top: String, what: String) {
         // span here would read as time that was.
         : "\(hhmm(s.start))–\(hhmm(s.end)) · not counted   \(events)"
     if s.current && s.counted { top += "   ·  now" }
+    if s.counted && s.deadSec > 0 { top += "   \(human(s.deadSec)) dead" }
 
     var what = s.kinds.map { "\($0.1) \($0.0)" }.joined(separator: " · ")
     // The period's own summary, when it has earned one, after the tally. The
