@@ -736,5 +736,78 @@ class TestChromeTab(FocusCase):
         self.assertEqual(len(wp.focus_for(DAY)), 1)
 
 
+class TestShortFocusMinSec(FocusCase):
+    """short_focus_min_sec filters activations shorter than the threshold.
+
+    A 3-second glance at a work window currently generates a focus event that
+    chains with surrounding work via GAP_AFTER, potentially pulling several
+    minutes of silence into the worked total. With the filter on, only
+    activations that survive at least min_sec earn credit.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.orig_min_sec = wp._SHORT_FOCUS_MIN_SEC
+
+    def tearDown(self):
+        wp._SHORT_FOCUS_MIN_SEC = self.orig_min_sec
+        super().tearDown()
+
+    def test_off_by_default_short_activation_earns_credit(self):
+        # The default (None) leaves behaviour unchanged: a 5-second
+        # activation between two longer gaps still generates an event.
+        wp._SHORT_FOCUS_MIN_SEC = None
+        # Slack at 09:00:00 for 5s, then Zed at 09:00:05.
+        self.write([
+            {"day": DAY, "t": "09:00:00", "bundle": SLACK, "app": "Slack", "idle": 0},
+            {"day": DAY, "t": "09:00:05", "bundle": ZED, "app": "Zed", "idle": 0},
+        ])
+        events = wp.focus_for(DAY)
+        self.assertEqual(len(events), 2)
+
+    def test_short_activation_is_dropped_when_filter_enabled(self):
+        # Slack held for only 5 seconds before Zed takes over. With min_sec=7
+        # the Slack activation is below threshold and should not produce an event.
+        wp._SHORT_FOCUS_MIN_SEC = 7
+        self.write([
+            {"day": DAY, "t": "09:00:00", "bundle": SLACK, "app": "Slack", "idle": 0},
+            {"day": DAY, "t": "09:00:05", "bundle": ZED, "app": "Zed", "idle": 0},
+        ])
+        events = wp.focus_for(DAY)
+        # Only Zed (the last activation, nxt=None, so not filtered) remains.
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].hour * 60 + events[0].minute, 540)  # 09:00
+
+    def test_long_enough_activation_is_kept(self):
+        # 8 seconds is >= 7, so it passes the filter.
+        wp._SHORT_FOCUS_MIN_SEC = 7
+        self.write([
+            {"day": DAY, "t": "09:00:00", "bundle": SLACK, "app": "Slack", "idle": 0},
+            {"day": DAY, "t": "09:00:08", "bundle": ZED, "app": "Zed", "idle": 0},
+        ])
+        events = wp.focus_for(DAY)
+        self.assertEqual(len(events), 2)
+
+    def test_last_activation_is_never_filtered(self):
+        # The last activation has no successor, so its duration is unknown.
+        # It is always kept regardless of how the log happens to end.
+        wp._SHORT_FOCUS_MIN_SEC = 7
+        self.write([
+            {"day": DAY, "t": "09:00:00", "bundle": SLACK, "app": "Slack", "idle": 0},
+        ])
+        events = wp.focus_for(DAY)
+        self.assertEqual(len(events), 1)
+
+    def test_threshold_is_exclusive(self):
+        # Exactly 7 seconds does NOT trigger the filter (< 7 is the condition).
+        wp._SHORT_FOCUS_MIN_SEC = 7
+        self.write([
+            {"day": DAY, "t": "09:00:00", "bundle": SLACK, "app": "Slack", "idle": 0},
+            {"day": DAY, "t": "09:00:07", "bundle": ZED, "app": "Zed", "idle": 0},
+        ])
+        events = wp.focus_for(DAY)
+        self.assertEqual(len(events), 2)
+
+
 if __name__ == "__main__":
     unittest.main()
