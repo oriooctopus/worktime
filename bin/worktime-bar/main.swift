@@ -1300,7 +1300,7 @@ final class SessionRowView: NSView {
         // Option A: dim the "/ Ym" portion to secondaryLabelColor when dead
         // time is present, leaving the credited time at full brightness.
         let spanSec = (s.end - s.start) * 60
-        if s.deadSec > 0 && s.counted && spanSec > s.lenSec,
+        if s.deadSec > 0 && s.counted && human(spanSec) != human(s.lenSec),
            let dimRange = top.range(of: " / \(human(spanSec))") {
             let attr = NSMutableAttributedString(string: top,
                 attributes: [.font: topFont, .foregroundColor: topColor])
