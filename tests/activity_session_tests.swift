@@ -15,10 +15,12 @@ func check(_ cond: Bool, _ what: String) {
 }
 
 func session(start: Int = 540, end: Int = 570, lenSec: Int = 1800,
+             deadSec: Int = 0,
              what: String = "", counted: Bool = true, current: Bool = false,
              n: Int = 4, kinds: [(String, Int)] = [("prompt", 4)],
              rows: [SessionRow] = []) -> ActSession {
-    ActSession(start: start, end: end, lenSec: lenSec, what: what, counted: counted,
+    ActSession(start: start, end: end, lenSec: lenSec, deadSec: deadSec,
+               what: what, counted: counted,
                current: current, n: n, kinds: kinds, rows: rows)
 }
 
@@ -62,6 +64,44 @@ check(long.top.contains("2h 0m"), "a two-hour session read as \"\(long.top)\"")
 // A glance is under a minute and says so, rather than reading "0m".
 let glance = sessionStrings(session(start: 540, end: 540, lenSec: 30))
 check(glance.top.contains("· 30s "), "a thirty-second session read as \"\(glance.top)\"")
+
+// Time lost to the other machine is reported as the LOSS itself, not as a
+// total the reader has to subtract from. "30m / 26m" was the first attempt
+// and it buried the one quantity the row exists to report.
+let cost = sessionStrings(session(deadSec: 300))
+check(cost.top == "09:00–09:30 · 30m / 5m   4 events",
+      "a session with dead time read as \"\(cost.top)\"")
+
+// A sub-minute loss survives. Reporting a total meant "30m / 30m" for a 30s
+// cost -- both sides rounded to the same label and the guard against that
+// then hid the fraction entirely, so the loss vanished twice over.
+let small = sessionStrings(session(deadSec: 30))
+check(small.top.contains("30m / 30s"),
+      "a thirty-second loss read as \"\(small.top)\"")
+
+// No tail at all when nothing was lost: a "/ 0s" on every ordinary row would
+// be noise standing in for the normal case.
+check(sessionDeadTail(session()) == nil,
+      "a session with no dead time still drew a tail")
+
+// The colored range main.swift applies has to be findable in the string
+// sessionStrings actually drew. The two were computed separately once, drifted,
+// and a range that matches nothing silently colors nothing.
+for d in [30, 60, 300, 3600] {
+    let s = session(deadSec: d)
+    guard let tail = sessionDeadTail(s) else {
+        check(false, "no tail for a \(d)s loss"); continue
+    }
+    check(sessionStrings(s).top.range(of: tail) != nil,
+          "the tail \"\(tail)\" is not present in the drawn top line")
+    check(tail == " / \(human(d))",
+          "the tail for a \(d)s loss was \"\(tail)\", not the loss itself")
+}
+
+// An uncounted run reports no loss either: its minutes were never credited,
+// so there is no fraction of them to explain.
+check(sessionDeadTail(session(deadSec: 300, counted: false)) == nil,
+      "an uncounted session drew a dead-time tail")
 
 // The tally arrives biggest-first from the probe and must stay in that order:
 // what falls off the end of a truncated line should be the smallest

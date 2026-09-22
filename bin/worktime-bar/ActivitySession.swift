@@ -62,6 +62,29 @@ func hhmm(_ m: Int) -> String {
 // label so the string a test reads is the string the menu draws.
 let SESSION_WHAT_CHARS = 52
 
+// The " / Ym" tail of the duration, or nil when the row shows a bare length.
+//
+// One function so the string the row DRAWS and the substring the row COLORS
+// can never disagree: they were computed independently in two files, drifted
+// apart on what the second number meant, and the colored range stopped
+// matching anything in the drawn text -- which is invisible, because a range
+// that doesn't match simply colors nothing.
+//
+// The second number is the dead time ITSELF, not a total: "25m / 30s" reads
+// as "25 minutes worked, 30 seconds lost to the other machine". A total was
+// the first attempt and it buried the quantity the row exists to report --
+// "25m / 26m" makes the reader subtract to find the 1m, and at 30s the two
+// rounded alike and the fraction vanished altogether.
+//
+// Reporting the cost directly is also why there is no rounding guard here:
+// any nonzero loss has something to say, and human() renders sub-minute
+// values as seconds, so a 30s cost prints as "30s" instead of disappearing
+// into a minute label identical to its neighbour.
+func sessionDeadTail(_ s: ActSession) -> String? {
+    guard s.counted, s.deadSec > 0 else { return nil }
+    return " / \(human(s.deadSec))"
+}
+
 // The two lines a session row shows, kept out of the view so a test can read
 // them and so the menu key can be built from exactly the strings on screen.
 //
@@ -69,26 +92,6 @@ let SESSION_WHAT_CHARS = 52
 // ends, and "28m ago" for something that ran for half an hour names only the
 // moment it started. The raw rows are point events and read better as ages;
 // these are spans and read better as spans.
-// The " / Ym" tail of the duration, or nil when the row shows a bare length.
-//
-// One function so the string the row DRAWS and the substring the row COLORS
-// can never disagree: they were computed independently in two files, drifted
-// apart on the denominator, and the colored range stopped matching anything in
-// the drawn text -- which is invisible, because a range that doesn't match
-// simply colors nothing.
-//
-// The denominator is credited + dead, NOT (end - start) * 60: start/end are
-// minute-floored, so their difference loses up to 59s at each edge and comes
-// out BELOW lenSec, making both sides round to the same label and suppressing
-// every fraction. lenSec and deadSec are both true seconds, so their sum is
-// the only denominator always >= the numerator.
-func sessionDeadTail(_ s: ActSession) -> String? {
-    guard s.counted, s.deadSec > 0 else { return nil }
-    let total = human(s.lenSec + s.deadSec)
-    guard total != human(s.lenSec) else { return nil }
-    return " / \(total)"
-}
-
 func sessionStrings(_ s: ActSession) -> (top: String, what: String) {
     let events = "\(s.n) event\(s.n == 1 ? "" : "s")"
     let duration = human(s.lenSec) + (sessionDeadTail(s) ?? "")
