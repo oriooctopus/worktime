@@ -4,3 +4,7 @@ __pycache__/
 # Real configs and credentials live in ~/.config and ~/.claude, never here.
 config/*.json
 !config/*.example.json
+
+# jsdom harness for tests/vault_dashboard_reveal.test.js
+node_modules/
+package-lock.json

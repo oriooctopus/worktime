@@ -1,0 +1,18 @@
+{
+  "name": "worktime",
+  "version": "1.0.0",
+  "description": "Reconstructs when you were actually working, by fusing signals that each miss something on their own: Claude Code prompts, calendar events, and classified browsing.",
+  "main": "index.js",
+  "directories": {
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "jsdom": "^29.1.1"
+  }
+}

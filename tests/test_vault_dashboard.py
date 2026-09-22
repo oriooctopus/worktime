@@ -468,6 +468,33 @@ class TestUsageSummaryShape(unittest.TestCase):
                     self.assertEqual(missing, set(),
                                       "%s.sessions[%d].children[%d] missing keys %r" % (period, i, j, missing))
 
+    def test_b3b_hidden_title_only_ever_on_a_redacted_group(self):
+        """"hidden_title" (the double-expand reveal gesture's data source --
+        see usage-by-session.py's label_and_aggregate and the Usage widget's
+        REVEAL_WINDOW_MS) must never appear on a child of a group whose own
+        title is NOT one of the two redacted/scratch cover labels. This is the
+        export-shape half of the guarantee; label_and_aggregate's own unit
+        tests (test_usage_labels.py) cover the generating logic directly."""
+        redacted_label, ask_haiku_label = _load_label_constants()
+        known_labels = {redacted_label, ask_haiku_label}
+        for period in ("today", "week"):
+            for i, session in enumerate(self.data[period]["sessions"]):
+                for j, child in enumerate(session.get("children", [])):
+                    if "hidden_title" in child:
+                        # The rendered session title carries a "×N" occurrence
+                        # suffix (added by render_table, not by
+                        # label_and_aggregate) for a group with more than one
+                        # session, so match the cover label as a prefix.
+                        base_title = re.sub(r"\s*×\d+$", "", session["title"])
+                        self.assertIn(
+                            base_title, known_labels,
+                            "%s.sessions[%d] (title=%r) has a hidden_title child "
+                            "but is not a redacted/scratch group" % (period, i, session["title"]))
+                        # Belt-and-braces, matching label_and_aggregate's own
+                        # mutually-exclusive title/hidden_title guarantee.
+                        self.assertNotIn("title", child)
+                        self.assertNotIn("cwd", child)
+
     def test_b4_redaction_labels_are_recognized_titles(self):
         """If any session title equals the redacted/ask-haiku cover labels,
         it must be a legitimate label from usage-by-session.py -- not a stray
