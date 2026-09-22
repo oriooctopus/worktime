@@ -1335,17 +1335,27 @@ class RecentActivities(unittest.TestCase):
     """
 
     def acts(self, prompts=(), slack=(), approvals=(), github=(), focus=(),
-             limit=10):
+             desktop=(), limit=10):
         def sess(ps):
             return {"sessions": [{"label": "s",
                                   "prompts": [{"ts": t, "text": x} for t, x in ps]}]}
 
         saved = {n: getattr(wp, n) for n in
                  ("full_day", "slack_for", "approval_rows_for", "github_rows_for",
-                  "focus_for", "focus_app_by_minute")}
+                  "focus_for", "focus_app_by_minute", "desktop_prompts_for")}
         wp.full_day = lambda _d: sess(prompts)
         wp.slack_for = lambda _d: list(slack)
         wp.approval_rows_for = lambda _d: list(approvals)
+        # Stubbed like every other source, and defaulting to none. Left
+        # unstubbed it reads the real ACTIVITY_DIR, so whatever the person
+        # running the suite genuinely typed on their other machine showed up
+        # as extra rows -- which is neither fixed nor known, and displaced the
+        # rows these assertions are about.
+        wp.desktop_prompts_for = lambda _d: [
+            {"t": wp.datetime.strptime(f"{DAY} {t}", "%Y-%m-%d %H:%M")
+                   .replace(tzinfo=wp.LOCAL),
+             "what": what}
+            for t, what in desktop]
         wp.github_rows_for = lambda _d: [
             (wp.datetime.strptime(f"{DAY} {t}", "%Y-%m-%d %H:%M")
                .replace(tzinfo=wp.LOCAL), detail)
@@ -1377,6 +1387,33 @@ class RecentActivities(unittest.TestCase):
                          ["browsing", "approval", "slack", "prompt"])
         self.assertEqual([a["t"] for a in got],
                          ["09:03", "09:02", "09:01", "09:00"])
+
+    def test_a_desktop_prompt_is_listed_and_sorts_by_its_own_minute(self):
+        # The one stream with the opposite polarity still belongs in the list:
+        # without a row for it, a period the tracker had shortened offered no
+        # visible reason on screen for why. It takes its place by time like any
+        # other row rather than being appended or grouped apart.
+        got = self.acts(
+            prompts=[("09:00", "on the mac"), ("09:04", "back again")],
+            desktop=[("09:02", "autojournal")])
+        self.assertEqual([(a["kind"], a["t"]) for a in got],
+                         [("prompt", "09:04"),
+                          ("desktop", "09:02"),
+                          ("prompt", "09:00")])
+
+    def test_a_desktop_prompt_is_named_by_its_project(self):
+        # The project column is what distinguishes "which conversation was
+        # that" from the bare fact a prompt happened elsewhere.
+        got = self.acts(desktop=[("09:02", "autojournal")])
+        desk = [a for a in got if a["kind"] == "desktop"]
+        self.assertEqual([a["what"] for a in desk], ["autojournal"])
+
+    def test_a_desktop_prompt_with_no_project_still_says_what_it_was(self):
+        # An export row whose project column is empty must not render a blank
+        # label -- the row would read as an event with no description at all.
+        got = self.acts(desktop=[("09:02", "")])
+        desk = [a for a in got if a["kind"] == "desktop"]
+        self.assertEqual([a["what"] for a in desk], ["desktop prompt"])
 
     def test_each_row_carries_the_absolute_instant_it_happened(self):
         # The widget renders these as ages ("4m", "2h"), which it can only do
@@ -1595,7 +1632,8 @@ class StatusCacheVersion(unittest.TestCase):
                        "at": time.time(), "last": None}, fh)
         saved = {n: getattr(wp, n) for n in
                  ("STATUS_CACHE", "events_for", "prompts_for", "slack_for",
-                  "full_day", "approval_rows_for", "github_rows_for")}
+                  "full_day", "approval_rows_for", "github_rows_for",
+                  "desktop_prompts_for")}
         try:
             wp.STATUS_CACHE = path
             wp.events_for = lambda _d: []
@@ -1604,6 +1642,9 @@ class StatusCacheVersion(unittest.TestCase):
             wp.full_day = lambda _d: {"sessions": []}
             wp.approval_rows_for = lambda _d: []
             wp.github_rows_for = lambda _d: []
+            # Stubbed alongside the rest: unstubbed it reads the real
+            # ACTIVITY_DIR, and this asserts the recomputed list is empty.
+            wp.desktop_prompts_for = lambda _d: []
             last, stamps, ev_stamps, acts = wp.live_activity(DAY)
         finally:
             for n, f in saved.items():

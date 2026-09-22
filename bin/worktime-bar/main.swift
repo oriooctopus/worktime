@@ -1242,17 +1242,25 @@ final class SessionRowView: NSView {
         let topColor: NSColor = s.counted ? .labelColor : .secondaryLabelColor
         let topField = NSTextField(labelWithString: "")
         topField.lineBreakMode = .byTruncatingTail
-        // Orange "/ Ym" when dead time is present — same hue as desktop-event
-        // rows in line 2, so the color reads as "desktop cost" consistently.
-        // The tail comes from sessionDeadTail so the colored range is the
-        // very substring sessionStrings put in `top`; computing it a second
-        // time here is what let the two drift and color nothing.
+        // Red and semibold for the "/ Ym" when dead time is present. Orange at
+        // regular weight was the first attempt and read as faint against the
+        // menu's vibrancy: it is the same hue the desktop rows in line 2 use,
+        // but those sit on a dimmer line where it carries, and here it had to
+        // hold its own beside full-strength label text. Red separates it from
+        // the desktop rows' orange and the weight is what actually makes it
+        // catch the eye.
+        //
+        // The tail comes from sessionDeadTail so the colored range is the very
+        // substring sessionStrings put in `top`; computing it a second time
+        // here is what let the two drift and color nothing.
         if let tail = sessionDeadTail(s),
            let slashRange = top.range(of: tail) {
             let attr = NSMutableAttributedString(string: top,
                 attributes: [.font: topFont, .foregroundColor: topColor])
-            attr.addAttribute(.foregroundColor, value: NSColor.systemOrange,
-                              range: NSRange(slashRange, in: top))
+            let r = NSRange(slashRange, in: top)
+            attr.addAttribute(.foregroundColor, value: NSColor.systemRed, range: r)
+            attr.addAttribute(.font, value: NSFont.systemFont(ofSize: 12, weight: .semibold),
+                              range: r)
             topField.attributedStringValue = attr
         } else {
             topField.stringValue = top

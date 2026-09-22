@@ -4674,8 +4674,24 @@ def status() -> dict:
         snap = json.load(open(path))
         worked_sec = snap["work_sec"]
         worked = snap.get("worked", [])
-        # Annotate each period with desktop-caused dead time in the gap that
-        # follows it (between this period's end and the next one's start).
+        # Annotate each period with the desktop-caused dead time it should
+        # answer for, charged to the period holding the DESKTOP STAMP rather
+        # than to whichever period the hole's seconds overlap.
+        #
+        # Both of the other rules produce a row whose fraction nothing on
+        # screen can explain. Charging the following gap gave 09:22-09:25 a
+        # "3m / 4m" whose desktop prompt happened after 09:25. Charging by
+        # overlap is barely better: a hole runs [last Mac prompt, desktop
+        # stamp], so it straddles the boundary whenever the switch ends a
+        # period -- the seconds land in the period before, while the desktop
+        # row the reader can see belongs to the period after.
+        #
+        # A fraction is only legible when the evidence sits in the same
+        # session the reader can expand. Every merged hole ends at a desktop
+        # stamp (see desktop_prompt_holes), so that stamp names the period
+        # that must carry it, and the whole hole goes there. A stamp landing
+        # in a gap belongs to no counted period and is dropped -- those
+        # minutes were never credited, so there is no fraction to explain.
         _d_stamps = [d["t"].hour * 3600 + d["t"].minute * 60
                      for d in desktop_prompts_for(day)]
         _mac_stamps = sorted([t.hour * 3600 + t.minute * 60
@@ -4683,12 +4699,14 @@ def status() -> dict:
                               + [t.hour * 3600 + t.minute * 60
                                  for t in focus_for(day)])
         _holes = desktop_prompt_holes(_d_stamps, _mac_stamps) if _d_stamps else []
-        for i, w in enumerate(worked):
-            gap_lo = w.get("end_sec", w["end"] * 60)
-            gap_hi = (worked[i + 1].get("start_sec", worked[i + 1]["start"] * 60)
-                      if i + 1 < len(worked) else gap_lo)
-            w["dead_sec"] = sum(
-                max(0, min(h[1], gap_hi) - max(h[0], gap_lo)) for h in _holes)
+        for w in worked:
+            w["dead_sec"] = 0
+        for h in _holes:
+            stamp_m = h[1] // 60
+            owner = next((w for w in worked
+                          if w["start"] <= stamp_m <= w["end"]), None)
+            if owner is not None:
+                owner["dead_sec"] += h[1] - h[0]
         ds, de = snap.get("day_start"), snap.get("day_end")
         if ds is not None and de is not None and de > ds:
             focus_pct = round(100 * worked_sec / ((de - ds) * 60))

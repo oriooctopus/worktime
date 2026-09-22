@@ -150,7 +150,11 @@ class DesktopPromptsForReadsChunks(unittest.TestCase):
         ])
         out = wp.desktop_prompts_for(self.day)
         self.assertEqual(len(out), 1)
-        self.assertEqual((out[0].hour, out[0].minute), (11, 22))
+        self.assertEqual((out[0]["t"].hour, out[0]["t"].minute), (11, 22))
+        # The project column rides along so the menu's activity list can name
+        # which conversation the prompt belonged to, not merely that one
+        # happened.
+        self.assertEqual(out[0]["what"], "Desktop")
 
     def test_no_chunks_means_no_prompts(self):
         self.assertEqual(wp.desktop_prompts_for(self.day), [])
