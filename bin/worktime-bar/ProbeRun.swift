@@ -16,8 +16,8 @@ import Foundation
 // a test: the strings are the whole feature, and every one of them describes a
 // state that is a nuisance to reproduce on demand.
 
-// The wall against a probe that never returns, for the same reason
-// CHROME_TAB_TIMEOUT_SEC exists: on a serial queue one wedged child is every
+// The wall against a probe that never returns, for the same reason the
+// scripting timeouts exist: on a serial queue one wedged child is every
 // later probe blocked behind it, including the one a click is waiting on.
 // Generous rather than tight -- a genuinely cold run that has to re-read every
 // transcript on disk takes several seconds and is not a fault.

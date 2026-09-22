@@ -6,49 +6,72 @@
 // Swift suites replace main.swift with their own entry point, so anything
 // there is, by construction, the part of the app nothing can check.
 import Foundation
+import ScriptingBridge
 
-// The osascript argv. Two halves, tab-separated: a tab is the one character a
-// page title reliably does not carry, so it survives a title made entirely of
-// punctuation.
+// The read is addressed at a PROCESS, not at the name "Google Chrome", and
+// that is the whole point of this file.
 //
-// The delimiter is built in its own statement, OUTSIDE the tell block, and
-// that is the whole reason tab capture ever worked. Inside
-// `tell application "Google Chrome"`, `tab` is not AppleScript's tab
-// character -- it is Chrome's own `tab` class, which the terminology of the
-// application being told shadows it with, and concatenating a class into a
-// string yields the word. Every reply used to come back as
-// "Inbox - Gmailtabhttps://mail.google.com/...", exit status 0, and the parse
-// below quietly refused all of them.
-let CHROME_TAB_SCRIPT = [
-    "-e", "set delim to ASCII character 9",
-    "-e", "tell application \"Google Chrome\" to set answer to "
-        + "(title of active tab of front window) & delim & "
-        + "(URL of active tab of front window)",
-    "-e", "return answer",
-]
+// It used to run `osascript -e 'tell application "Google Chrome" to ...'`.
+// An Apple Event addressed by name is delivered to whichever instance of the
+// bundle the system picks, and there is routinely more than one: a launchd
+// agent keeps a CDP browser on :9222 for Playwright to attach to, and
+// `playwright --browser=chrome` launches the SAME binary again for every
+// automated run. All of them are com.google.Chrome.
+//
+// So the reply came back from a browser nobody was looking at. Verified on
+// 2026-09-22: frontmost was the daily-driver Chrome on pools.events, the
+// script answered "Log In / http://localhost:3000/" from the automation
+// instance, and the focus log recorded the automation's page as the user's
+// for every Chrome sample since the agent started the evening before.
+//
+// Addressing the event at a pid removes the ambiguity rather than guessing
+// at it: NSWorkspace names the process that is frontmost, and that exact
+// process is the one asked. A second Chrome can do as it likes.
 
-/// The title and address in a reply from CHROME_TAB_SCRIPT, or nil if there
-/// is no page in it.
+// Ticks, at 60 per second -- SBApplication counts its timeout in them. The
+// wall this puts up is the same one the osascript version had, and it is not
+// tuned for the healthy case: it is the guard against a browser wedged behind
+// a modal, where the reply never comes and would otherwise hang the sample.
+let CHROME_TAB_TIMEOUT_TICKS = 120
+
+/// The page in front of one specific Chrome process, or nil if there is none.
+///
+/// Nil is the honest answer to every failure here -- no windows, a refused
+/// Apple Event, a wedged browser, a process that is not scriptable -- and a
+/// Chrome sample with no tab on it earns nothing, which is what every Chrome
+/// sample earned before any of this existed. The one thing it must never do
+/// is fall back to asking "Google Chrome" by name: that is the bug.
+func chromeActiveTab(pid: pid_t) -> (title: String, url: String)? {
+    guard let app = SBApplication(processIdentifier: pid) else {
+        reportChromeTabFailure("pid \(pid) is not scriptable")
+        return nil
+    }
+    app.timeout = CHROME_TAB_TIMEOUT_TICKS
+    guard let windows = app.value(forKey: "windows") as? [AnyObject] else {
+        reportChromeTabFailure("pid \(pid) would not list its windows")
+        return nil
+    }
+    // Chrome orders `windows` front to back, so the first is AppleScript's
+    // `front window`. No windows at all is ordinary -- a browser open with
+    // nothing on screen -- and not worth a line on stderr.
+    guard let front = windows.first else { return nil }
+    let tab = front.value(forKey: "activeTab") as AnyObject?
+    return chromeTabFields(title: tab?.value(forKey: "title") as? String,
+                           url: tab?.value(forKey: "URL") as? String)
+}
+
+/// A title and address as a page, or nil if there is no page in them.
 ///
 /// The address is what must be there. The title need not be: a page that has
 /// not finished loading has no title at all, and Workday's login page never
-/// has one, so the reply is "\thttps://wd5.myworkday.com/...". Trimming that
-/// before splitting -- which is what the first version did -- eats the
-/// leading tab along with the newline, leaves one component, and throws away
-/// a perfectly good address for the sake of a title nobody needed. An
-/// untitled page is still a page; the probe names it by its app instead.
-func parseChromeTabReply(_ text: String) -> (title: String, url: String)? {
-    // Trailing only. osascript ends its reply with a newline, and the leading
-    // whitespace here is data.
-    var reply = text
-    while let last = reply.last, last == "\n" || last == "\r" {
-        reply.removeLast()
-    }
-    let parts = reply.components(separatedBy: "\t")
-    guard parts.count == 2 else { return nil }
-    let url = parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !url.isEmpty else { return nil }
-    return (parts[0].trimmingCharacters(in: .whitespacesAndNewlines), url)
+/// has one. An untitled page is still a page; the probe names it by its app
+/// instead. Discarding it for the sake of a title nobody needed throws away a
+/// perfectly good address -- which is what an earlier version of this did.
+func chromeTabFields(title: String?, url: String?) -> (title: String, url: String)? {
+    guard let url = url?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !url.isEmpty
+    else { return nil }
+    return ((title ?? "").trimmingCharacters(in: .whitespacesAndNewlines), url)
 }
 
 // Whether a failed tab read has already been reported this launch.

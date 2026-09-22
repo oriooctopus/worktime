@@ -27,7 +27,8 @@ class ChromeTabSuite(unittest.TestCase):
             self.skipTest("no swiftc on this machine")
         out = tempfile.mkdtemp()
         binary = os.path.join(out, "chrome_tab_tests")
-        build = subprocess.run([swiftc, "-O", SOURCE, SUITE, "-o", binary],
+        build = subprocess.run([swiftc, "-O", SOURCE, SUITE,
+                                "-framework", "ScriptingBridge", "-o", binary],
                                capture_output=True, text=True)
         self.assertEqual(build.returncode, 0,
                          f"chrome tab tests did not compile:\n{build.stderr}")

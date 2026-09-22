@@ -444,76 +444,11 @@ let CHROME_BUNDLE = "com.google.Chrome"
 // the frontmost window, which is the active tab's title.
 let GHOSTTY_BUNDLE = "com.mitchellh.ghostty"
 
-// Chrome answers in single-digit milliseconds when it is healthy. This is not
-// tuned for the healthy case: it is the wall against a browser wedged behind a
-// modal, where the script never returns and would otherwise hang the poll
-// timer -- and with it the menu, the countdown and the dot -- indefinitely.
-let CHROME_TAB_TIMEOUT_SEC = 2.0
-
-func chromeActiveTab() -> (title: String, url: String)? {
-    let p = Process()
-    p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-    p.arguments = CHROME_TAB_SCRIPT
-    let out = Pipe()
-    p.standardOutput = out
-    // Both streams down one pipe. Two pipes would need two readers to avoid
-    // deadlocking on a full buffer, and there is nothing to tell apart:
-    // osascript writes nothing to stderr when it succeeds, so anything here
-    // on a non-zero exit is the error text -- which is the only evidence that
-    // separates a denied permission from a browser with no windows.
-    p.standardError = out
-    do { try p.run() } catch { return nil }
-
-    // Exit is awaited on a semaphore rather than with waitUntilExit(), which
-    // does not block the thread -- it POLLS the current run loop until the
-    // child is done. On the main thread that drains the main queue, so an
-    // activation notification arriving while this waits used to be delivered
-    // inside it: a second sample() ran to completion in the middle of the
-    // first, wrote its row first, and left the outer one to land afterwards
-    // carrying the earlier timestamp. The focus log went out of order, which
-    // is the one thing every reader of it assumes cannot happen.
-    //
-    // Only ever a problem once activations could arrive between ticks. The
-    // 5s timer could not re-enter itself, so the reentrancy was there all
-    // along with nothing able to trigger it.
-    let exited = DispatchSemaphore(value: 0)
-    p.terminationHandler = { _ in exited.signal() }
-
-    let killer = DispatchWorkItem { if p.isRunning { p.terminate() } }
-    DispatchQueue.global().asyncAfter(deadline: .now() + CHROME_TAB_TIMEOUT_SEC,
-                                      execute: killer)
-    // Read before waiting: readDataToEndOfFile returns at EOF, which is the
-    // child exiting, so this is the wait. Terminating the child closes the
-    // pipe, so the timeout unblocks it too.
-    let data = out.fileHandleForReading.readDataToEndOfFile()
-    exited.wait()
-    killer.cancel()
-
-    guard let text = String(data: data, encoding: .utf8) else { return nil }
-    // A non-zero exit is the ordinary answer to "what is the front window?"
-    // when Chrome has no windows open, and it is also what a refused Apple
-    // Event looks like. Whatever it is, say it once per launch rather than
-    // folding it into the no-windows case: a silent nil here is
-    // indistinguishable in the focus log from a machine whose owner never
-    // opened a browser, which is exactly how a delimiter bug survived every
-    // day it ran.
-    //
-    // Once, because none of it can be fixed from here -- a refusal is granted
-    // in System Settings, not by retrying -- and the poll would otherwise
-    // repeat the line every few seconds.
-    if p.terminationStatus != 0 {
-        reportChromeTabFailure(text)
-        return nil
-    }
-    // A reply with no page in it came back exit 0 -- so silence here is what
-    // let both of these bugs run unnoticed. The reply says what it was.
-    guard let tab = parseChromeTabReply(text) else {
-        reportChromeTabFailure(text)
-        return nil
-    }
-    return tab
-}
-
+// The wall against a wedged Ghostty, where the script never returns and would
+// otherwise hang the sample. Ghostty is addressed by name rather than by pid
+// because only one of it runs; Chrome is not, for the reason ChromeTab.swift
+// explains at length.
+let GHOSTTY_TAB_TIMEOUT_SEC = 2.0
 
 // Ghostty's frontmost window title, which is its active tab title. Nil when
 // Ghostty has no windows or the call times out.
@@ -530,7 +465,7 @@ func ghosttyActiveTab() -> String? {
     let exited = DispatchSemaphore(value: 0)
     p.terminationHandler = { _ in exited.signal() }
     let killer = DispatchWorkItem { if p.isRunning { p.terminate() } }
-    DispatchQueue.global().asyncAfter(deadline: .now() + CHROME_TAB_TIMEOUT_SEC,
+    DispatchQueue.global().asyncAfter(deadline: .now() + GHOSTTY_TAB_TIMEOUT_SEC,
                                       execute: killer)
     let data = out.fileHandleForReading.readDataToEndOfFile()
     exited.wait()
@@ -594,8 +529,8 @@ final class FocusLog {
     // an AppKit notification and a main-mode timer. Everything it then DOES
     // with those readings happens on `queue`.
     //
-    // The split is not tidiness. Asking Chrome for its tab is an osascript
-    // round trip, ~130ms on a healthy browser and up to CHROME_TAB_TIMEOUT_SEC
+    // The split is not tidiness. Asking Chrome for its tab is an Apple Event
+    // round trip, ~130ms on a healthy browser and up to the scripting timeout
     // on a wedged one, and it used to run right here: a sample on the main
     // thread every 5s while Chrome was in front, plus one per app switch. A
     // profile of the running app on 2026-09-04 found the main thread inside
@@ -616,15 +551,25 @@ final class FocusLog {
         // a different app.
         let bundle = app?.bundleIdentifier ?? ""
         let name = app?.localizedName ?? ""
+        // The pid is read here with the bundle, from the same NSRunningApplication,
+        // so the process the tab is later read from is the one that was frontmost
+        // at THIS instant. Looking it up on the queue instead would reintroduce by
+        // the back door the ambiguity this exists to remove: by then a second
+        // Chrome may be frontmost, or the same one may have gone away.
+        let pid = app?.processIdentifier ?? -1
         let idle = Int(Self.idleSeconds().rounded())
-        queue.async { self.record(now: now, bundle: bundle, name: name, idle: idle) }
+        queue.async {
+            self.record(now: now, bundle: bundle, name: name, pid: pid, idle: idle)
+        }
     }
 
     // The serial half. Every piece of this object's mutable state -- lastKey,
     // lastWrite, the open file handle -- is touched here and nowhere else, so
     // there is no lock and no interleaving, and rows land in the order they
     // were sampled.
-    private func record(now: Date, bundle: String, name: String, idle: Int) {
+    private func record(now: Date, bundle: String, name: String, pid: pid_t,
+                        idle: Int)
+    {
         let day = Self.dayfmt.string(from: now)
         var row: [String: Any] = [
             "day": day,
@@ -641,7 +586,7 @@ final class FocusLog {
         // "not worth counting" -- the same verdict it reaches for a tab that is
         // genuinely not work -- so old samples and machines that declined the
         // permission degrade gracefully to the pre-tab behaviour.
-        if bundle == CHROME_BUNDLE, let tab = chromeActiveTab() {
+        if bundle == CHROME_BUNDLE, let tab = chromeActiveTab(pid: pid) {
             row["tab"] = tab.title
             row["url"] = tab.url
         }

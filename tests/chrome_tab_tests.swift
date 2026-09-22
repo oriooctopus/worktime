@@ -1,11 +1,14 @@
-// What comes back from Chrome, and what the parse makes of it.
+// What Chrome hands back, and what the reader makes of it.
 //
-// Both bugs this suite exists for returned exit status 0 and looked like an
+// The bugs this suite exists for all returned success and looked like an
 // ordinary "no page in front", which is the same thing a closed browser looks
-// like. Neither could have been caught by reading the code -- the first was a
-// word that means something else inside a tell block, the second a trim that
-// ate the delimiter it was about to split on. What separates them from a real
-// empty answer is only the bytes, so the bytes are what this asserts on.
+// like. None could have been caught by reading the code: one was a word that
+// means something else inside a tell block, one a trim that ate the delimiter
+// it was about to split on, and one an Apple Event addressed at a name when
+// two processes answered to it. The first two are gone with the text protocol
+// they lived in -- there is no reply to mis-split any more. What is left is
+// the field contract, which is asserted here, and the addressing, which is a
+// pid parameter and so is checked by the compiler.
 import Foundation
 
 @main
@@ -20,51 +23,55 @@ enum ChromeTabTests {
     }
 
     static func main() {
-        // The ordinary reply.
-        let page = parseChromeTabReply("Home - Workday\thttps://wd5.myworkday.com/rubrik/d/home.htmld\n")
+        // The ordinary page.
+        let page = chromeTabFields(title: "Home - Workday",
+                                   url: "https://wd5.myworkday.com/rubrik/d/home.htmld")
         check("a page is read", page?.title == "Home - Workday")
         check("its address is read",
               page?.url == "https://wd5.myworkday.com/rubrik/d/home.htmld")
 
-        // The bug: Workday's login page has no title, so the reply begins
-        // with the delimiter. Trimming before splitting ate it, left one
-        // component, and threw the address away with it.
-        let untitled = parseChromeTabReply("\thttps://wd5.myworkday.com/wday/authgwy/rubrik/login.htmld\n")
+        // Workday's login page has no title. An untitled page is still a page,
+        // and discarding it throws away a perfectly good address.
+        let untitled = chromeTabFields(
+            title: "",
+            url: "https://wd5.myworkday.com/wday/authgwy/rubrik/login.htmld")
         check("an untitled page still has an address",
               untitled?.url == "https://wd5.myworkday.com/wday/authgwy/rubrik/login.htmld")
         check("an untitled page has an empty title", untitled?.title == "")
 
-        // The earlier bug, as its literal output: `tab` inside the tell block
-        // came back as the word, so there was nothing to split on.
-        check("a reply with no delimiter is refused",
-              parseChromeTabReply("Inbox - Gmailtabhttps://mail.google.com/\n") == nil)
+        // Chrome returns nothing at all for a window with no tab in it, and
+        // nil is not a page.
+        check("a missing title is still a page",
+              chromeTabFields(title: nil, url: "https://example.com/")?.url
+                  == "https://example.com/")
 
         // An address is the one half that has to be there. A page cannot be
-        // classified without it, so a reply carrying only a title is no page.
-        check("a reply with no address is refused",
-              parseChromeTabReply("Some Title\t\n") == nil)
-        check("an empty reply is refused", parseChromeTabReply("\n") == nil)
+        // classified without it, so anything missing one is no page.
+        check("no address is refused",
+              chromeTabFields(title: "Some Title", url: nil) == nil)
         check("a blank address is refused",
-              parseChromeTabReply("Some Title\t   \n") == nil)
+              chromeTabFields(title: "Some Title", url: "   ") == nil)
+        check("an empty address is refused",
+              chromeTabFields(title: "Some Title", url: "") == nil)
+        check("nothing at all is refused",
+              chromeTabFields(title: nil, url: nil) == nil)
 
-        // A title made of punctuation is why the delimiter is a tab and not
-        // any of the characters a page might put in its own name.
-        let punctuation = parseChromeTabReply("| - | ? & # |\thttps://example.com/\n")
+        // Titles are data. A title made of punctuation, or one carrying the
+        // tab character the old text protocol used as its delimiter, is a
+        // title -- there is nothing left for it to break.
+        let punctuation = chromeTabFields(title: "| - | ? & # |",
+                                          url: "https://example.com/")
         check("punctuation in a title survives", punctuation?.title == "| - | ? & # |")
-        check("punctuation does not eat the address",
-              punctuation?.url == "https://example.com/")
+        let tabbed = chromeTabFields(title: "a\tb", url: "https://example.com/")
+        check("a tab character in a title survives", tabbed?.title == "a\tb")
+        check("a tab character does not eat the address",
+              tabbed?.url == "https://example.com/")
 
-        // Three fields means something put a tab in a title. Guessing which
-        // one is the address would be a coin flip, so it is not a page.
-        check("more than two fields is refused",
-              parseChromeTabReply("a\tb\thttps://example.com/\n") == nil)
-
-        // The script itself: the delimiter must not be named inside the tell
-        // block, whoever edits it next.
-        for arg in CHROME_TAB_SCRIPT where arg.contains("tell application") {
-            check("the delimiter is not `tab` inside the tell block",
-                  !arg.contains("& tab &"))
-        }
+        // Surrounding whitespace is Chrome's, not the page's.
+        let padded = chromeTabFields(title: "  Spaced  ",
+                                     url: "  https://example.com/  ")
+        check("the title is trimmed", padded?.title == "Spaced")
+        check("the address is trimmed", padded?.url == "https://example.com/")
 
         if failures == 0 { print("chrome tab tests passed") }
         exit(failures == 0 ? 0 : 1)
