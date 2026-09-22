@@ -235,17 +235,35 @@ def short_focus_state() -> int | None:
         return None
 
 
+def short_focus_enabled_at() -> datetime | None:
+    """When the short-focus filter was last enabled, or None if off or unknown."""
+    if not os.path.exists(SHORT_FOCUS_FILE):
+        return None
+    try:
+        with open(SHORT_FOCUS_FILE) as fh:
+            data = json.load(fh)
+        ts = data.get("enabled_at")
+        if ts is None:
+            return None
+        return datetime.fromisoformat(ts)
+    except (OSError, ValueError, TypeError):
+        return None
+
+
 def set_short_focus(on: bool) -> int | None:
     """Enable or disable the short-focus filter via the state file.
 
     When enabling, uses the profile.json threshold or falls back to 7.
+    Stamps enabled_at so focus_for() can apply the filter only to activations
+    after the toggle — glances before enabling are not retroactively dropped.
     Returns the active min_sec (or None when disabling).
     """
     os.makedirs(STATE, exist_ok=True)
     if on:
         min_sec = wc.short_focus_min_sec() or 7
         with open(SHORT_FOCUS_FILE, "w") as fh:
-            json.dump({"min_sec": min_sec}, fh)
+            json.dump({"min_sec": min_sec,
+                       "enabled_at": datetime.now(tz=LOCAL).isoformat()}, fh)
         return min_sec
     else:
         try:
@@ -1760,7 +1778,10 @@ _FOCUS_INCLUDE_RESOLVED = FOCUS_INCLUDE | wc.focus_extra_apps()
 _GHOSTTY_EXCLUDE_TABS = wc.ghostty_exclude_tabs()
 _LONG_READ = wc.long_read()
 # State file takes precedence over profile.json; either may set the threshold.
+# enabled_at is None when the feature was enabled before we started stamping, or
+# when it comes from profile.json — in that case apply to the whole day.
 _SHORT_FOCUS_MIN_SEC = short_focus_state() or wc.short_focus_min_sec()
+_SHORT_FOCUS_ENABLED_AT = short_focus_enabled_at()
 
 
 def focus_idle_limit() -> int:
@@ -1998,7 +2019,10 @@ def focus_for(day: str) -> list[datetime]:
         if not focus_counts(a) or self_raised(nxt, a):
             continue
         if (_SHORT_FOCUS_MIN_SEC is not None and nxt is not None
-                and sec_of(nxt["t"]) - sec_of(a["t"]) < _SHORT_FOCUS_MIN_SEC):
+                and sec_of(nxt["t"]) - sec_of(a["t"]) < _SHORT_FOCUS_MIN_SEC
+                and (_SHORT_FOCUS_ENABLED_AT is None
+                     or base + timedelta(seconds=sec_of(a["t"]))
+                     >= _SHORT_FOCUS_ENABLED_AT)):
             continue
         out.append(base + timedelta(seconds=sec_of(a["t"])))
     return sorted(set(out) | set(focus_dwell_for(day)))
