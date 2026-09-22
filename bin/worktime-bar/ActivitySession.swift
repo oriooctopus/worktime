@@ -71,8 +71,9 @@ let SESSION_WHAT_CHARS = 52
 // these are spans and read better as spans.
 func sessionStrings(_ s: ActSession) -> (top: String, what: String) {
     let events = "\(s.n) event\(s.n == 1 ? "" : "s")"
-    let duration: String = s.counted && s.deadSec > 0
-        ? "\(human(s.lenSec)) / \(human((s.end - s.start) * 60))"
+    let spanSec = (s.end - s.start) * 60
+    let duration: String = s.counted && s.deadSec > 0 && spanSec > s.lenSec
+        ? "\(human(s.lenSec)) / \(human(spanSec))"
         : human(s.lenSec)
     var top = s.counted
         ? "\(hhmm(s.start))–\(hhmm(s.end)) · \(duration)   \(events)"

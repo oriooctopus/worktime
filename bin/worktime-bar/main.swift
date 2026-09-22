@@ -1297,13 +1297,14 @@ final class SessionRowView: NSView {
         let topColor: NSColor = s.counted ? .labelColor : .secondaryLabelColor
         let topField = NSTextField(labelWithString: "")
         topField.lineBreakMode = .byTruncatingTail
-        // Option A: dim the "/ Ym" portion to tertiaryLabelColor when dead
+        // Option A: dim the "/ Ym" portion to secondaryLabelColor when dead
         // time is present, leaving the credited time at full brightness.
-        if s.deadSec > 0 && s.counted,
-           let dimRange = top.range(of: " / \(human((s.end - s.start) * 60))") {
+        let spanSec = (s.end - s.start) * 60
+        if s.deadSec > 0 && s.counted && spanSec > s.lenSec,
+           let dimRange = top.range(of: " / \(human(spanSec))") {
             let attr = NSMutableAttributedString(string: top,
                 attributes: [.font: topFont, .foregroundColor: topColor])
-            attr.addAttribute(.foregroundColor, value: NSColor.tertiaryLabelColor,
+            attr.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor,
                               range: NSRange(dimRange, in: top))
             topField.attributedStringValue = attr
         } else {
