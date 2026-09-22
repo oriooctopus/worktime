@@ -603,8 +603,16 @@ def live_cutoff(day: str, stamps_sec: list[int]) -> int:
     Uses mode_now() rather than the mode at the last stamp: switching to
     focused is a statement about what is happening at this moment, and the dot
     should answer to it immediately.
+
+    Stamps before the most recent session end are excluded: after ⌘E the new
+    run starts fresh, so its elapsed should not inherit the long bout that
+    preceded it -- which would otherwise inflate an unfocused cutoff to 5m
+    immediately.
     """
-    bouts, _ = chain_bouts(sorted(stamps_sec), mode_timeline(day))
+    ends = read_session_ends(day)
+    cutoff_start = max(ends) * 60 if ends else 0
+    relevant = [s for s in stamps_sec if s > cutoff_start]
+    bouts, _ = chain_bouts(sorted(relevant), mode_timeline(day))
     return gap_sec_for(mode_now(), bouts[-1][1] - bouts[-1][0] if bouts else 0)
 
 
