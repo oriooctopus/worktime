@@ -72,9 +72,11 @@ let SESSION_WHAT_CHARS = 52
 func sessionStrings(_ s: ActSession) -> (top: String, what: String) {
     let events = "\(s.n) event\(s.n == 1 ? "" : "s")"
     let spanSec = (s.end - s.start) * 60
-    let duration: String = s.counted && s.deadSec > 0 && spanSec > s.lenSec
-        ? "\(human(s.lenSec)) / \(human(spanSec))"
-        : human(s.lenSec)
+    let humanLen = human(s.lenSec)
+    let humanSpan = human(spanSec)
+    let duration: String = s.counted && s.deadSec > 0 && humanSpan != humanLen
+        ? "\(humanLen) / \(humanSpan)"
+        : humanLen
     var top = s.counted
         ? "\(hhmm(s.start))–\(hhmm(s.end)) · \(duration)   \(events)"
         // No length, because these minutes were not credited and printing a
