@@ -3236,6 +3236,11 @@ def refresh_calendar_if_stale(now: datetime | None = None) -> bool:
 # and again 2026-09-17, the second time undiscovered for six days). Pulling
 # the tree directly over Tailscale sidesteps Sync's versioning entirely.
 #
+# Dashboard/usage/ (written by ~/.claude/bin/usage-export.py, a single
+# summary.md) is excluded from Obsidian Sync for the same version-churn
+# reason, so it's pulled here too, in its own rsync call right alongside
+# activity/.
+#
 # Floor between attempts, for the same reason as CAL_RETRY_AFTER: a broken
 # connection or a dead WSL box would otherwise spawn an rsync every minute,
 # all day.
@@ -3274,11 +3279,12 @@ def pull_mac_activity_if_stale(now: datetime | None = None) -> bool:
     Nothing here reads the result -- the next run's files are whatever the
     last rsync (however long ago it finished) left on disk.
 
-    --delete only on activity/, not on the single calendar file, and only
-    because activity/ is exclusively WSL-authored: nothing on the Mac writes
-    into Dashboard/activity/, so mirroring it destructively can only prune
-    files the source itself no longer has. Dashboard/worktime/ (the Mac's own
-    local JSON snapshots) is deliberately never touched by this function.
+    --delete only on activity/ and usage/, not on the single calendar file,
+    and only because activity/ and usage/ are exclusively WSL-authored:
+    nothing on the Mac writes into either, so mirroring them destructively
+    can only prune files the source itself no longer has. Dashboard/worktime/
+    (the Mac's own local JSON snapshots) is deliberately never touched by
+    this function.
 
     Returns whether an attempt was launched, for the tests and for the
     caller. False is the ordinary answer between the retry floor's attempts.
@@ -3312,9 +3318,9 @@ def pull_mac_activity_if_stale(now: datetime | None = None) -> bool:
         log = open(ACTIVITY_PULL_LOG, "w")
         log.write(f"{now.isoformat()} pull launched\n")
         log.flush()
-        # Two separate rsyncs, not one covering both paths: calendar-today.md
-        # sits next to activity/ in the same remote directory but is a single
-        # file, not a tree, and --delete has no meaning for it.
+        # Three separate rsyncs, not one covering all paths: calendar-today.md
+        # sits next to activity/ and usage/ in the same remote directory but
+        # is a single file, not a tree, and --delete has no meaning for it.
         subprocess.Popen(
             ["rsync", "-a", "--delete", "-e", ssh_cmd,
              f"{WSL_ACTIVITY_HOST}:{WSL_VAULT_DASHBOARD}/activity/",
@@ -3322,6 +3328,12 @@ def pull_mac_activity_if_stale(now: datetime | None = None) -> bool:
             stdout=log, stderr=subprocess.STDOUT,
             # Detached, so the pull outlives the probe run that started it --
             # same reasoning as the calendar refresh's Popen below it.
+            start_new_session=True)
+        subprocess.Popen(
+            ["rsync", "-a", "--delete", "-e", ssh_cmd,
+             f"{WSL_ACTIVITY_HOST}:{WSL_VAULT_DASHBOARD}/usage/",
+             os.path.join(dash, "usage") + os.sep],
+            stdout=log, stderr=subprocess.STDOUT,
             start_new_session=True)
         subprocess.Popen(
             ["rsync", "-a", "-e", ssh_cmd,

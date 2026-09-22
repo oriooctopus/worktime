@@ -56,9 +56,9 @@ def age_stamp(rig, when):
     os.utime(rig.stamp, (when.timestamp(), when.timestamp()))
 
 
-def test_a_first_pull_launches_both_rsyncs(rig):
+def test_a_first_pull_launches_all_three_rsyncs(rig):
     assert wp.pull_mac_activity_if_stale(NOW) is True
-    assert len(rig.launches) == 2
+    assert len(rig.launches) == 3
 
 
 def test_a_recent_attempt_stops_a_second_one(rig):
@@ -67,14 +67,14 @@ def test_a_recent_attempt_stops_a_second_one(rig):
     assert wp.pull_mac_activity_if_stale(NOW) is True
     age_stamp(rig, NOW)
     assert wp.pull_mac_activity_if_stale(NOW + timedelta(minutes=5)) is False
-    assert len(rig.launches) == 2
+    assert len(rig.launches) == 3
 
 
 def test_the_floor_lifts_once_it_has_passed(rig):
     wp.pull_mac_activity_if_stale(NOW)
     age_stamp(rig, NOW)
     assert wp.pull_mac_activity_if_stale(NOW + timedelta(minutes=11)) is True
-    assert len(rig.launches) == 4
+    assert len(rig.launches) == 6
 
 
 def test_the_attempt_is_stamped_before_it_is_launched(rig):
@@ -112,17 +112,22 @@ def test_the_pull_outlives_the_probe_run_that_started_it(rig):
     wp.pull_mac_activity_if_stale(NOW)
     assert rig.launches[0][1]["start_new_session"] is True
     assert rig.launches[1][1]["start_new_session"] is True
+    assert rig.launches[2][1]["start_new_session"] is True
 
 
-def test_activity_is_mirrored_destructively_calendar_is_not(rig):
-    """--delete belongs on activity/ (exclusively WSL-authored, safe to
-    prune) and must never reach the single calendar file, which is a plain
-    copy sitting next to files the Mac's own calendar-refresh.sh can write."""
+def test_activity_and_usage_are_mirrored_destructively_calendar_is_not(rig):
+    """--delete belongs on activity/ and usage/ (exclusively WSL-authored,
+    safe to prune) and must never reach the single calendar file, which is a
+    plain copy sitting next to files the Mac's own calendar-refresh.sh can
+    write."""
     wp.pull_mac_activity_if_stale(NOW)
-    activity_argv, calendar_argv = rig.launches[0][0][0], rig.launches[1][0][0]
+    activity_argv, usage_argv, calendar_argv = (
+        rig.launches[0][0][0], rig.launches[1][0][0], rig.launches[2][0][0])
     assert "--delete" in activity_argv
+    assert "--delete" in usage_argv
     assert "--delete" not in calendar_argv
     assert any(a.rstrip("/").endswith("activity") for a in activity_argv)
+    assert any(a.rstrip("/").endswith("usage") for a in usage_argv)
     assert any(a.endswith("calendar-today.md") for a in calendar_argv)
 
 
@@ -147,6 +152,20 @@ def test_the_remote_path_carries_the_real_spaces(rig):
     assert remote_arg == (
         "esme@100.103.237.24:/mnt/c/Users/Esme Louise Robinson/Documents/"
         "obsidian-vault/Dashboard/activity/")
+
+
+def test_the_usage_rsync_carries_the_real_remote_path(rig):
+    """Pins that Dashboard/usage/ is actually pulled, with --delete, to its
+    own rsync call -- not folded into the activity/ mirror or silently
+    dropped."""
+    wp.pull_mac_activity_if_stale(NOW)
+    usage_argv = rig.launches[1][0][0]
+    remote_arg = next(a for a in usage_argv if a.startswith("esme@"))
+    assert remote_arg == (
+        "esme@100.103.237.24:/mnt/c/Users/Esme Louise Robinson/Documents/"
+        "obsidian-vault/Dashboard/usage/")
+    local_arg = usage_argv[-1]
+    assert local_arg.rstrip("/").endswith(os.path.join("vault", "usage"))
 
 
 def test_a_call_does_not_block_the_probe_run(tmp_path, monkeypatch):
