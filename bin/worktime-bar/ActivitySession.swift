@@ -69,14 +69,29 @@ let SESSION_WHAT_CHARS = 52
 // ends, and "28m ago" for something that ran for half an hour names only the
 // moment it started. The raw rows are point events and read better as ages;
 // these are spans and read better as spans.
+// The " / Ym" tail of the duration, or nil when the row shows a bare length.
+//
+// One function so the string the row DRAWS and the substring the row COLORS
+// can never disagree: they were computed independently in two files, drifted
+// apart on the denominator, and the colored range stopped matching anything in
+// the drawn text -- which is invisible, because a range that doesn't match
+// simply colors nothing.
+//
+// The denominator is credited + dead, NOT (end - start) * 60: start/end are
+// minute-floored, so their difference loses up to 59s at each edge and comes
+// out BELOW lenSec, making both sides round to the same label and suppressing
+// every fraction. lenSec and deadSec are both true seconds, so their sum is
+// the only denominator always >= the numerator.
+func sessionDeadTail(_ s: ActSession) -> String? {
+    guard s.counted, s.deadSec > 0 else { return nil }
+    let total = human(s.lenSec + s.deadSec)
+    guard total != human(s.lenSec) else { return nil }
+    return " / \(total)"
+}
+
 func sessionStrings(_ s: ActSession) -> (top: String, what: String) {
     let events = "\(s.n) event\(s.n == 1 ? "" : "s")"
-    let spanSec = (s.end - s.start) * 60
-    let humanLen = human(s.lenSec)
-    let humanSpan = human(spanSec)
-    let duration: String = s.counted && s.deadSec > 0 && humanSpan != humanLen
-        ? "\(humanLen) / \(humanSpan)"
-        : humanLen
+    let duration = human(s.lenSec) + (sessionDeadTail(s) ?? "")
     var top = s.counted
         ? "\(hhmm(s.start))–\(hhmm(s.end)) · \(duration)   \(events)"
         // No length, because these minutes were not credited and printing a

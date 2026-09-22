@@ -1244,9 +1244,11 @@ final class SessionRowView: NSView {
         topField.lineBreakMode = .byTruncatingTail
         // Orange "/ Ym" when dead time is present — same hue as desktop-event
         // rows in line 2, so the color reads as "desktop cost" consistently.
-        let spanSec = (s.end - s.start) * 60
-        if s.deadSec > 0 && s.counted && human(spanSec) != human(s.lenSec),
-           let slashRange = top.range(of: " / \(human(spanSec))") {
+        // The tail comes from sessionDeadTail so the colored range is the
+        // very substring sessionStrings put in `top`; computing it a second
+        // time here is what let the two drift and color nothing.
+        if let tail = sessionDeadTail(s),
+           let slashRange = top.range(of: tail) {
             let attr = NSMutableAttributedString(string: top,
                 attributes: [.font: topFont, .foregroundColor: topColor])
             attr.addAttribute(.foregroundColor, value: NSColor.systemOrange,
