@@ -1297,15 +1297,15 @@ final class SessionRowView: NSView {
         let topColor: NSColor = s.counted ? .labelColor : .secondaryLabelColor
         let topField = NSTextField(labelWithString: "")
         topField.lineBreakMode = .byTruncatingTail
-        // Option A: dim the "/ Ym" portion to secondaryLabelColor when dead
-        // time is present, leaving the credited time at full brightness.
+        // Orange "/ Ym" when dead time is present — same hue as desktop-event
+        // rows in line 2, so the color reads as "desktop cost" consistently.
         let spanSec = (s.end - s.start) * 60
         if s.deadSec > 0 && s.counted && human(spanSec) != human(s.lenSec),
-           let dimRange = top.range(of: " / \(human(spanSec))") {
+           let slashRange = top.range(of: " / \(human(spanSec))") {
             let attr = NSMutableAttributedString(string: top,
                 attributes: [.font: topFont, .foregroundColor: topColor])
-            attr.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor,
-                              range: NSRange(dimRange, in: top))
+            attr.addAttribute(.foregroundColor, value: NSColor.systemOrange,
+                              range: NSRange(slashRange, in: top))
             topField.attributedStringValue = attr
         } else {
             topField.stringValue = top
