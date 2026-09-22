@@ -92,6 +92,127 @@ function makeSummary() {
   };
 }
 
+// Fixture for the dollars-to-percentages checks (Sept 2026 rework: the
+// widget no longer shows cost_usd anywhere, only derived percentages). One
+// session sits on the real pct_of_weekly_budget path with a clean
+// proportional split (group 20% of week, cost 10 -> child A1 cost 6 gets
+// 20*6/10=12%, child A2 cost 4 gets 20*4/10=8%) so the expected percentage
+// strings are exact, not approximated. A second session sits on the
+// share_of_range_pct fallback path (no pct_of_weekly_budget at all) to prove
+// child percentages are omitted rather than invented there. A third session
+// has cost_usd 0 with pct_of_weekly_budget present, to prove the zero-cost
+// guard renders blank rather than NaN/Infinity.
+function makePctSummary() {
+  return {
+    generated: new Date().toISOString(),
+    today: {
+      total_usd: 50,
+      sessions: [
+        {
+          title: "weekly-budget group",
+          cwd: null,
+          cost_usd: 10,
+          pct_of_weekly_budget: 20,
+          count: 2,
+          children: [
+            // subagent split chosen to sum to exactly 100% after rounding:
+            // main 3/10=30%, sub 7/10=70%.
+            { id: "wb111111", cost_usd: 6, main_usd: 1.8, subagent_usd: 4.2, subagent_count: 5, hidden_title: "WB Child 1" },
+            { id: "wb222222", cost_usd: 4, main_usd: 4, subagent_usd: 0, subagent_count: 0, hidden_title: "WB Child 2" },
+          ],
+        },
+        {
+          title: "fallback group",
+          cwd: null,
+          cost_usd: 10,
+          share_of_range_pct: 33.3,
+          count: 2,
+          children: [
+            { id: "fb111111", cost_usd: 5, main_usd: 2, subagent_usd: 3, subagent_count: 2, hidden_title: "FB Child 1" },
+            { id: "fb222222", cost_usd: 5, main_usd: 5, subagent_usd: 0, subagent_count: 0, hidden_title: "FB Child 2" },
+          ],
+        },
+        {
+          title: "zero-cost group",
+          cwd: null,
+          cost_usd: 0,
+          pct_of_weekly_budget: 5,
+          count: 2,
+          children: [
+            { id: "zc111111", cost_usd: 0, main_usd: 0, subagent_usd: 0, subagent_count: 0, hidden_title: "ZC Child 1" },
+            { id: "zc222222", cost_usd: 0, main_usd: 0, subagent_usd: 0, subagent_count: 3, hidden_title: "ZC Child 2" },
+          ],
+        },
+      ],
+    },
+    week: { total_usd: 50, sessions: [] },
+  };
+}
+
+// Fixture for the header-derivation fix (Sept 2026: summing only the
+// DISPLAYED (slice(0,6)) sessions' pct_of_weekly_budget silently undercounts
+// whenever the range has a tail past the display cutoff -- the header must
+// instead derive the range's TRUE share of the week from a single session's
+// pct_of_weekly_budget / share_of_range_pct ratio, which is exact regardless
+// of how many sessions are shown).
+//
+// Both `today` and `week` here use the SAME 9-session range, built so the
+// numbers are exact and the "displayed vs true" gap is unmistakable:
+//   - total range cost = 100 (60 + 5*6 + 3*(10/3))
+//   - week budget = 300 (so pct_of_weekly_budget = cost/3)
+//   - costliest session: cost 60, share_of_range_pct 60, pct_of_weekly_budget 20
+//     -> derived range pct = 20 * 100 / 60 = 33.333...% -> "33%"
+//   - the top 6 by cost (costliest + the five cost-6 sessions) sum to
+//     pct_of_weekly_budget 20 + 5*2 = 30% -- the OLD (buggy) summed header
+//     would show "30%", visibly different from the true "33%".
+//   - the remaining 3 sessions (cost 10/3 each, i.e. the tail past the
+//     display cutoff) are what the sum silently drops.
+function makeHeaderSummary() {
+  const tailCost = 10 / 3;
+  const sessions = [
+    { title: "costliest", cwd: null, cost_usd: 60, share_of_range_pct: 60, pct_of_weekly_budget: 20, count: 1, children: [] },
+    ...Array.from({ length: 5 }, (_, i) => ({
+      title: `mid-${i}`, cwd: null, cost_usd: 6, share_of_range_pct: 6, pct_of_weekly_budget: 2, count: 1, children: [],
+    })),
+    ...Array.from({ length: 3 }, (_, i) => ({
+      title: `tail-${i}`, cwd: null, cost_usd: tailCost, share_of_range_pct: tailCost, pct_of_weekly_budget: tailCost / 3, count: 1, children: [],
+    })),
+  ];
+  return {
+    generated: new Date().toISOString(),
+    today: { total_usd: 100, sessions },
+    week: { total_usd: 100, sessions },
+  };
+}
+
+// Fixture for the share_of_range_pct-zero/absent guard: the only session in
+// the range has pct_of_weekly_budget but share_of_range_pct is 0 (would
+// divide by zero in the derivation), so the header must fall back to the
+// plain title with no percentage figure at all, not NaN/Infinity.
+function makeZeroShareSummary() {
+  return {
+    generated: new Date().toISOString(),
+    today: { total_usd: 0, sessions: [] },
+    week: {
+      total_usd: 40,
+      sessions: [
+        { title: "zero-share", cwd: null, cost_usd: 40, share_of_range_pct: 0, pct_of_weekly_budget: 25, count: 1, children: [] },
+      ],
+    },
+  };
+}
+
+// Pulls the two section header <div> texts (rendered via dv.el, so they're
+// plain <div>s in document.body, same as the footnote) out by their
+// distinguishing prefix.
+function sectionHeaders(window) {
+  const divs = Array.from(window.document.querySelectorAll("div")).map((d) => d.textContent);
+  return {
+    today: divs.find((t) => t.startsWith("Today")),
+    week: divs.find((t) => t.startsWith("This week")),
+  };
+}
+
 /* Runs the real widget source in a fresh jsdom window, stubbing just enough
  * of Obsidian's `app`/`dv` API for this block to execute end to end, and
  * returns the window plus a helper to read back the two group `<tr>` rows
@@ -185,7 +306,7 @@ function check(name, cond, detail) {
       JSON.stringify(cells)
     );
     check(
-      "single expand: id+cost only (3 cells: id, cost, detail -- no title column)",
+      "single expand: id+pct only (3 cells: id, pct, detail -- no title column)",
       cells.every((row) => row.length === 3),
       JSON.stringify(cells)
     );
@@ -266,6 +387,184 @@ function check(name, cond, detail) {
       "group B's first expand right after A's reveal stays redacted (no cross-group leak)",
       cellsB !== null && !cellsB.some((row) => row.some((t) => t.includes("Real Title"))),
       JSON.stringify(cellsB)
+    );
+  }
+
+  // --- Scenario 6: no dollar figures anywhere in the widget's rendered
+  // output (Sept 2026 rework -- Oliver only wants percentages). Covers both
+  // the section headers/footnote (rendered via dv.el into document.body)
+  // and every group/child table cell. ---
+  {
+    const { window } = await loadWidget(makePctSummary());
+    // Excludes the injected <script> element itself -- its textContent is
+    // the widget's SOURCE code (which legitimately mentions "$" in a
+    // comment and in template-literal syntax), not rendered output. Every
+    // dv.el()/table cell the widget actually renders lands elsewhere in
+    // document.body, so summing sibling text minus the script's own is the
+    // real check.
+    const scriptEl = window.document.querySelector("script");
+    const bodyText = Array.from(window.document.body.childNodes)
+      .filter((n) => n !== scriptEl)
+      .map((n) => n.textContent)
+      .join(" ");
+    check(
+      "no dollar figures anywhere in rendered output",
+      !bodyText.includes("$"),
+      bodyText
+    );
+  }
+
+  // --- Scenario 7: a group row is exactly two columns (Session, %) now
+  // that the $ column is gone. ---
+  {
+    const { groupRows } = await loadWidget(makePctSummary());
+    const rows = Array.from(groupRows);
+    check(
+      "group row renders exactly two columns",
+      rows.every((tr) => tr.children.length === 2),
+      rows.map((tr) => tr.children.length).join(",")
+    );
+  }
+
+  // --- Scenario 8: a child's derived percentage matches the expected
+  // proportional value (group.pct_of_weekly_budget * child.cost_usd /
+  // group.cost_usd) for a known fixture, using the same fmtPct rounding
+  // rule as the session rows (toFixed(1) under 10, toFixed(0) at/above). ---
+  {
+    const { groupRows } = await loadWidget(makePctSummary());
+    const wbRow = groupRows[0]; // "weekly-budget group", cost 10, pct_of_weekly_budget 20
+    withClock(wbRow.ownerDocument.defaultView, 1000, () => wbRow.click());
+    const cells = childCellTexts(wbRow);
+    // Row shape here is [title, id, pct, detail] since these children carry
+    // hidden_title but this is an ordinary (non-reveal) single expand, so
+    // title is omitted -- shape is [id, pct, detail].
+    const pctById = Object.fromEntries(cells.map((row) => [row[0], row[1]]));
+    check(
+      "child pct: 20 * 6/10 = 12% (>=10 -> toFixed(0))",
+      pctById["wb111111"] === "12%",
+      JSON.stringify(cells)
+    );
+    check(
+      "child pct: 20 * 4/10 = 8% (<10 -> toFixed(1))",
+      pctById["wb222222"] === "8.0%",
+      JSON.stringify(cells)
+    );
+  }
+
+  // --- Scenario 9: the main/sub split renders as percentages summing to
+  // 100 (allowing for rounding), and is omitted entirely when
+  // subagent_count is 0. Also covers the fallback (share_of_range_pct)
+  // group, where the child pct column is omitted but main/sub still
+  // renders since it needs no weekly-budget basis. ---
+  {
+    const { groupRows } = await loadWidget(makePctSummary());
+    const win = groupRows[0].ownerDocument.defaultView;
+
+    withClock(win, 1000, () => groupRows[0].click()); // weekly-budget group
+    const wbCells = childCellTexts(groupRows[0]);
+    const wbChild1Detail = wbCells.find((row) => row.includes("wb111111"))[2];
+    const wbMatch = wbChild1Detail.match(/^main (\d+)% \/ sub (\d+)% \(5 agents\)$/);
+    check(
+      "main/sub split: percentages present and sum to 100 (allowing rounding)",
+      wbMatch !== null && Math.abs((+wbMatch[1] + +wbMatch[2]) - 100) <= 1,
+      wbChild1Detail
+    );
+    const wbChild2Detail = wbCells.find((row) => row.includes("wb222222"))[2];
+    check(
+      "main/sub split omitted when subagent_count is 0",
+      wbChild2Detail === "",
+      JSON.stringify(wbChild2Detail)
+    );
+
+    withClock(win, 1000, () => groupRows[1].click()); // fallback group
+    const fbCells = childCellTexts(groupRows[1]);
+    const fbChild1 = fbCells.find((row) => row.includes("fb111111"));
+    check(
+      "fallback path: child pct column omitted (no weekly-budget basis)",
+      fbChild1[1] === "",
+      JSON.stringify(fbChild1)
+    );
+    const fbMatch = fbChild1[2].match(/^main (\d+)% \/ sub (\d+)% \(2 agents\)$/);
+    check(
+      "fallback path: main/sub split still renders (needs no budget basis)",
+      fbMatch !== null && Math.abs((+fbMatch[1] + +fbMatch[2]) - 100) <= 1,
+      JSON.stringify(fbChild1)
+    );
+  }
+
+  // --- Scenario 10: a group with cost 0 (and thus an undefined proportional
+  // basis) or a missing pct never renders NaN/Infinity/"undefined", for
+  // either the child pct column or the main/sub split. ---
+  {
+    const { groupRows } = await loadWidget(makePctSummary());
+    const win = groupRows[0].ownerDocument.defaultView;
+    const zcRow = groupRows[2]; // "zero-cost group", cost_usd 0
+    withClock(win, 1000, () => zcRow.click());
+    const zcCells = childCellTexts(zcRow);
+    const zcText = JSON.stringify(zcCells);
+    check(
+      "zero-cost group renders no NaN/Infinity/undefined",
+      !/NaN|Infinity|undefined/.test(zcText),
+      zcText
+    );
+  }
+
+  // --- Scenario 11: header derivation must use the costliest session's
+  // pct_of_weekly_budget/share_of_range_pct ratio, not a sum over the
+  // displayed (top-6) sessions -- see makeHeaderSummary's comment for the
+  // exact numbers (true 33%, buggy-sum 30%). ---
+  {
+    const { window } = await loadWidget(makeHeaderSummary());
+    const headers = sectionHeaders(window);
+    check(
+      "header renders the DERIVED range pct (33%), not the displayed-sessions sum (30%)",
+      headers.today === "Today — 33% of week",
+      JSON.stringify(headers)
+    );
+  }
+
+  // --- Scenario 12: "of week" suffix appears on the Today header but not
+  // on the This week header (the suffix is circular there). Same fixture as
+  // scenario 11 -- both ranges carry identical data, so this isolates the
+  // suffix logic from the derivation logic. ---
+  {
+    const { window } = await loadWidget(makeHeaderSummary());
+    const headers = sectionHeaders(window);
+    check(
+      "This week header has no 'of week' suffix",
+      headers.week === "This week — 33%",
+      JSON.stringify(headers)
+    );
+    check(
+      "Today header keeps the 'of week' suffix",
+      headers.today.endsWith(" of week"),
+      JSON.stringify(headers)
+    );
+  }
+
+  // --- Scenario 13: share_of_range_pct zero (or absent) guards the
+  // derivation -- falls back to the plain title, no percentage, and never
+  // NaN/Infinity/undefined anywhere in the rendered output. ---
+  {
+    const { window } = await loadWidget(makeZeroShareSummary());
+    const headers = sectionHeaders(window);
+    check(
+      "share_of_range_pct=0 falls back to plain title, no percentage",
+      headers.week === "This week",
+      JSON.stringify(headers)
+    );
+    // Excludes the injected <script> element's own textContent (the
+    // widget's source, which legitimately mentions these words in
+    // comments/code) -- same rationale as the no-dollars check above.
+    const scriptEl = window.document.querySelector("script");
+    const bodyText = Array.from(window.document.body.childNodes)
+      .filter((n) => n !== scriptEl)
+      .map((n) => n.textContent)
+      .join(" ");
+    check(
+      "zero-share guard renders no NaN/Infinity/undefined",
+      !/NaN|Infinity|undefined/.test(bodyText),
+      bodyText
     );
   }
 
