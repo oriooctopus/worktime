@@ -507,6 +507,51 @@ class DesktopPromptHoles(unittest.TestCase):
                                         f"sliver at k={k}")
 
 
+class MeetingDeadProtection(unittest.TestCase):
+    """Meetings shield their span from dead_sec, just like from work_sec.
+
+    In status(), dead_sec annotates each period with the desktop time that
+    caused the hole. The annotation uses the same protected list as
+    write_vault_snapshot (marks + meetings), so a desktop stamp during a
+    meeting does not inflate the displayed dead cost even though work_sec
+    is already correct.
+    """
+
+    def test_meeting_span_removed_from_hole_before_dead_sec(self):
+        # Mac at 10:00, desktop at 10:10, Mac at 10:20. Hole = [10:00, 10:10].
+        # Meeting 10:05–10:15 covers the second half of the hole.
+        # After meeting protection the surviving hole is [10:00, 10:05].
+        mac = [HH(10, 0), HH(10, 20)]
+        desktop = [HH(10, 10)]
+        holes = wp.desktop_prompt_holes(desktop, mac)
+        self.assertEqual(holes, [[HH(10, 0), HH(10, 10)]])
+        # Protect the meeting span.
+        meeting_protected = [[HH(10, 5), HH(10, 15)]]
+        protected_holes = wp.subtract_spans(holes, meeting_protected)
+        self.assertEqual(protected_holes, [[HH(10, 0), HH(10, 5)]])
+        # Full hole is 10 minutes; after protection only 5 minutes remain.
+        self.assertEqual(protected_holes[0][1] - protected_holes[0][0],
+                         HH(10, 5) - HH(10, 0))
+
+    def test_hole_entirely_in_meeting_yields_no_dead_sec(self):
+        # Desktop stamp within a meeting that fully covers the hole.
+        mac = [HH(10, 0), HH(10, 20)]
+        desktop = [HH(10, 10)]
+        holes = wp.desktop_prompt_holes(desktop, mac)
+        meeting_protected = [[HH(9, 50), HH(10, 15)]]
+        protected_holes = wp.subtract_spans(holes, meeting_protected)
+        self.assertEqual(protected_holes, [])
+
+    def test_hole_outside_meeting_unaffected(self):
+        # Desktop stamp is outside the meeting window — full hole stands.
+        mac = [HH(10, 0), HH(10, 10)]
+        desktop = [HH(10, 5)]
+        holes = wp.desktop_prompt_holes(desktop, mac)
+        meeting_protected = [[HH(11, 0), HH(11, 30)]]
+        protected_holes = wp.subtract_spans(holes, meeting_protected)
+        self.assertEqual(protected_holes, holes)
+
+
 class IdleExclusion(unittest.TestCase):
     """Silence inside a working period, taken back out of it.
 

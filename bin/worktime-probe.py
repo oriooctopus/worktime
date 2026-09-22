@@ -4699,6 +4699,18 @@ def status() -> dict:
                               + [t.hour * 3600 + t.minute * 60
                                  for t in focus_for(day)])
         _holes = desktop_prompt_holes(_d_stamps, _mac_stamps) if _d_stamps else []
+        # Same protection as write_vault_snapshot: marks and meetings are exempt
+        # from desktop-dead accounting, because a desktop prompt during a meeting
+        # does not actually cost the credited time -- those minutes were already
+        # held by the meeting. Without this, dead_sec overstates the loss and the
+        # "25m / 3m" fraction misleads even when work_sec is correct.
+        _now_s = now.hour * 3600 + now.minute * 60 + now.second
+        _dead_protected = [[m["start"] * 60, min(m["end"] * 60, _now_s)]
+                           for m in marks_for(day) if m["start"] * 60 < _now_s]
+        _dead_protected += [[m["start"] * 60, min(m["end"] * 60, _now_s)]
+                            for m in meetings_for(day)
+                            if m.get("counts", True) and m["start"] * 60 < _now_s]
+        _holes = subtract_spans(_holes, _dead_protected)
         for w in worked:
             w["dead_sec"] = 0
         for h in _holes:
