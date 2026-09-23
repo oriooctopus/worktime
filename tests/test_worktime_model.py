@@ -445,6 +445,16 @@ class DesktopPromptHoles(unittest.TestCase):
         holes = wp.desktop_prompt_holes(desktop, mac)
         self.assertEqual(holes, [[HH(10, 0), HH(10, 0) + 20]])
 
+    def test_hole_starts_at_last_mac_event_not_last_prompt(self):
+        # Mac prompt 10:00, Chrome work visit 10:03, desktop prompt 10:05,
+        # Mac prompt 10:10: only 10:03-10:05 went to the desktop.
+        prompt, chrome, desk, back = HH(10, 0), HH(10, 3), HH(10, 5), HH(10, 10)
+        events = [prompt, chrome, back]
+        self.assertEqual(wp.desktop_prompt_holes([desk], events), [[chrome, desk]])
+        _, spans = build_desk_prompt(events, [desk])
+        # 10:00-10:03 stays credited; only the Chrome-to-desktop stretch is cut.
+        self.assertTrue(any(s <= prompt and e == chrome for s, e in spans))
+
     def test_hole_end_is_the_desktop_stamp_not_a_minute_wide(self):
         # Unlike desktop_holes, no one-minute rounding.
         mac = [HH(10, 0), HH(10, 5)]

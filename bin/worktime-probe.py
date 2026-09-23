@@ -529,13 +529,13 @@ def desktop_prompt_holes(desktop_stamps_sec: list[int],
                          mac_stamps_sec: list[int]) -> list[list[int]]:
     """Holes to cut from Mac work periods when the desktop is used between prompts.
 
-    Each desktop stamp creates a hole [last Mac prompt before it, desktop stamp],
-    but only when a Mac prompt also follows. Without a following Mac prompt the
-    session ends at the last Mac prompt naturally -- no subtraction needed.
+    Each desktop prompt creates a hole [last Mac work event before it, desktop
+    prompt], but only when a Mac work event also follows. Without one the
+    session ends at the last Mac event naturally -- no subtraction needed.
 
-    The interval [last_mac_before, desktop] captures the "thinking time" model:
-    the moment you switched machines, everything since your last Mac prompt was
-    already not Mac work.
+    Mac stamps are every work event (prompts, focus, work-site visits, ...),
+    not just prompts: reading a work page on the Mac after the last prompt is
+    still work, so the hole starts where the Mac evidence stops.
 
     Unlike desktop_holes this works at second resolution and needs no mode
     timeline: the boundaries are defined by neighbouring Mac prompts, not by
@@ -2553,10 +2553,6 @@ DESKTOP_ROW = re.compile(
     r"\s*([^|]*?)\s*\|"
     r"(?:\s*([^|]*?)\s*\|)?")
 
-# Any table row from the activity export -- extracts just the HH:MM timestamp.
-# Used for dead-time detection where any desktop activity (browsing, prompts,
-# messages) signals the user was on the other machine, not just Claude prompts.
-DESKTOP_ACTIVITY_ROW = re.compile(r"^\|\s*(\d{1,2}:\d{2})\s*\|")
 
 
 def desktop_prompts_for(day: str) -> list[dict]:
@@ -2589,24 +2585,6 @@ def desktop_prompts_for(day: str) -> list[dict]:
         out.append({"t": t, "what": what})
     return sorted(out, key=lambda d: d["t"])
 
-
-def desktop_all_activity_sec_for(day: str) -> list[int]:
-    """All desktop activity timestamps as seconds-since-midnight, for dead-time detection.
-
-    Unlike desktop_prompts_for, which only looks at Claude prompts, this reads
-    every event in the desktop activity export (Chrome visits, Claude prompts,
-    WhatsApp messages, etc.) so that any desktop activity counts as evidence the
-    user was on the other machine -- not just the subset that happened to open
-    a Claude session.
-    """
-    out = []
-    for line in activity_day_lines(day):
-        m = DESKTOP_ACTIVITY_ROW.match(line)
-        if not m:
-            continue
-        h, mnt = m.group(1).split(":")
-        out.append(int(h) * 3600 + int(mnt) * 60)
-    return sorted(out)
 
 
 # The exporter runs every five minutes while the desktop is up, so an hour
@@ -3701,8 +3679,9 @@ def write_vault_snapshot(day: str, events: list[datetime],
         merged,
         subtract_spans(
             desktop_prompt_holes(
-                desktop_all_activity_sec_for(day),
-                prompt_stamps),
+                [d["t"].hour * 3600 + d["t"].minute * 60
+                 for d in desktop_prompts_for(day)],
+                stamps),
             protected))
 
     # Cut out the stretches nobody touched the machine, on the same terms and
@@ -4727,11 +4706,10 @@ def status() -> dict:
         # that must carry it, and the whole hole goes there. A stamp landing
         # in a gap belongs to no counted period and is dropped -- those
         # minutes were never credited, so there is no fraction to explain.
-        _d_stamps = desktop_all_activity_sec_for(day)
-        _mac_stamps = sorted([t.hour * 3600 + t.minute * 60
-                               for t in prompts_for(day)]
-                              + [t.hour * 3600 + t.minute * 60
-                                 for t in focus_for(day)])
+        _d_stamps = [d["t"].hour * 3600 + d["t"].minute * 60
+                     for d in desktop_prompts_for(day)]
+        _mac_stamps = sorted(t.hour * 3600 + t.minute * 60 + t.second
+                             for t in events_for(day))
         _holes = desktop_prompt_holes(_d_stamps, _mac_stamps) if _d_stamps else []
         # Same protection as write_vault_snapshot: marks and meetings are exempt
         # from desktop-dead accounting, because a desktop prompt during a meeting
