@@ -658,6 +658,14 @@ def extract_claude_prompt_text(record):
         return None
     if record.get("isMeta"):
         return None
+    if record.get("isCompactSummary"):
+        # A /compact summary is a machine-written restatement of prior context
+        # (it can quote a CLAUDE.md rule verbatim, private keyword included), not
+        # something Oliver typed -- excluded before the private-keyword check ever
+        # sees it. Mirrors usage-by-session.py's walk_sessions exclusion; keep the
+        # two in sync (see the module comment there about staying semantically
+        # identical).
+        return None
     message = record.get("message")
     if not isinstance(message, dict):
         return None

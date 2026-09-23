@@ -1596,14 +1596,17 @@ def test_period_summary_truncation_never_splits_a_word(paths):
 # --------------------------------------------------------------------------
 
 
-def make_claude_record(timestamp, cwd, session_id, content, rec_type="user"):
-    return {
+def make_claude_record(timestamp, cwd, session_id, content, rec_type="user", is_compact_summary=False):
+    rec = {
         "type": rec_type,
         "timestamp": timestamp,
         "cwd": cwd,
         "sessionId": session_id,
         "message": {"role": "user", "content": content},
     }
+    if is_compact_summary:
+        rec["isCompactSummary"] = True
+    return rec
 
 
 def write_claude_project_file(claude_dir, project_name, filename, records, mtime_epoch):
@@ -1689,6 +1692,33 @@ def test_claude_keyword_match_is_case_insensitive(paths, tmp_path):
     content = read_day(paths, date(2026, 8, 25))
     row = [l for l in events_only(content).splitlines() if "| claude |" in l][0]
     assert row == "| 09:00 | claude | prompt | gen | gen work |"
+
+
+def test_claude_compact_summary_keyword_hit_is_not_redacted(paths, tmp_path):
+    """A /compact summary is a machine-written restatement, not something Oliver
+    typed -- the sole in-transcript regression this covers is f6164657
+    (2026-09-22), where a compact summary quoted a CLAUDE.md rule containing a
+    private keyword and the session got redacted even though its real content
+    (a Picnic photo session) had nothing private in it."""
+    redact, root = fake_redact(tmp_path)
+    paths["redact"] = redact
+    other_cwd = str(tmp_path / "totally-unrelated-repo")
+    write_claude_project_file(
+        paths["claude_dir"], "proj", "s1.jsonl",
+        [make_claude_record(
+            "2026-08-25T13:00:00.000Z", other_cwd, "sess-1",
+            "quoting a rule that mentions zzzprivate here", is_compact_summary=True,
+        )],
+        local_epoch(2026, 8, 25, 12, 0, 0, -4),
+    )
+    days = [date(2026, 8, 25)]
+    assert ae.run(paths, days, local_epoch(2026, 8, 25, 12, 0, 0, -4)) == 0
+    content = read_day(paths, date(2026, 8, 25))
+    claude_rows = [l for l in events_only(content).splitlines() if "| claude |" in l]
+    # The compact-summary line produces no visible prompt text at all (it's
+    # excluded before extract_claude_prompt_text returns anything), so there is
+    # no row to redact -- not a "gen work" row, no row.
+    assert claude_rows == []
 
 
 def test_claude_session_redacted_once_stays_redacted_in_that_file(paths, tmp_path):
