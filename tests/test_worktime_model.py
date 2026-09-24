@@ -130,9 +130,6 @@ class PeriodModel(unittest.TestCase):
         for a, b in zip(mins, mins[1:]):
             self.assertLessEqual(a[1], b[0])
 
-    def test_day_anchor_is_five_am(self):
-        self.assertEqual(wp.DAY_ANCHOR, 5 * 60)
-
 
 class FocusModes(unittest.TestCase):
     """The unfocused ramp: a bout earns its cutoff instead of being handed it."""

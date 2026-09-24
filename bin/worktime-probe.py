@@ -185,10 +185,6 @@ QUIET_ASK_AFTER = 20      # min of silence before a quiet window is worth asking
 MARK_MAX_OPEN_MIN = 30    # an open manual mark expires after this, un-clicked
 CONFIRM_WINDOW = 10       # min of post-ping activity that turns silence into a real label
 
-# The day's window opens at the first work at or after this hour. Anything
-# earlier belongs to the previous night, not to this morning.
-DAY_ANCHOR = 5 * 60
-
 
 def read_mode_log() -> list[tuple[datetime, str]]:
     if not os.path.exists(MODEFILE):
@@ -419,10 +415,9 @@ def build_bouts(stamps: list[int],
         # gap below its own cutoff.
         short = MIN_PERIOD_SEC - (p[1] - p[0])
         if short > 0:
-            # The first bout has no predecessor, only the day anchor -- and a
-            # period stretched back across it is dropped outright, which is the
-            # very disappearance this is here to prevent.
-            room = (max(0, p[0] - DAY_ANCHOR * 60) if i == 0
+            # The first bout has no predecessor, only midnight, and a period
+            # stretched back across it would start on the previous day.
+            room = (p[0] if i == 0
                     else budgets[i] - tail_used[i - 1] - lead_used[i])
             p[0] -= min(short, room)
     return present
@@ -3631,12 +3626,7 @@ def write_vault_snapshot(day: str, events: list[datetime],
                 for m in meetings
                 if m.get("counts", True) and m["start"] * 60 < now_s]
 
-    # The day starts at the first work after DAY_ANCHOR, not at the first work
-    # of the calendar day. Work before it is the previous night spilling over --
-    # a 01:48 session would otherwise anchor the day there and manufacture a
-    # six-hour "gap" out of a night's sleep.
-    present = sorted((p for p in present if p[0] >= DAY_ANCHOR * 60),
-                     key=lambda p: p[0])
+    present.sort(key=lambda p: p[0])
 
     # A meeting can overlap or abut a prompt run, and a tail can now reach into
     # the next run, so the two lists still have to be unioned.
