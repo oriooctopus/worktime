@@ -1481,6 +1481,11 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
     let focusLog = FocusLog()
     var audioTimer: Timer?
     var detector = CallDetector(minCallSec: MIN_CALL_SEC, settleSec: SETTLE_SEC)
+    // True after the first successful status probe. Used to detect a stale open
+    // meeting on bar restart: if the probe reports "in meeting" but the mic is
+    // already quiet when the bar starts, CallDetector can never fire ended=true
+    // (it reset on init), so the meeting would stay open indefinitely.
+    var seenFirstStatus = false
     // Non-nil only while a countdown is on screen.
     var countdown: CountdownPanel?
     // Tracks the previous filtered-capture state so we only log on the rising
@@ -2341,6 +2346,21 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
     }
 
     func apply(_ s: Status) {
+        if !seenFirstStatus {
+            seenFirstStatus = true
+            // On startup, CallDetector resets to unarmed. If a meeting was left
+            // open before the bar quit (ended=true never fired), it stays open
+            // forever because the detector can never see "quiet after armed".
+            // Detect that case here: open meeting + mic already quiet = close it.
+            if s.why.hasPrefix("in ") && !meetingAppIsCapturing() {
+                FileHandle.standardError.write(
+                    "startup: stale open meeting and mic quiet; closing\n".data(using: .utf8)!)
+                probeQueue.async {
+                    _ = runProbe(["meeting_end"])
+                    DispatchQueue.main.async { self.refresh() }
+                }
+            }
+        }
         status = s
         lastActivityAt = s.quietSec.map { Date().addingTimeInterval(-Double($0)) }
         blinkOn = true
