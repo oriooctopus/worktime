@@ -202,11 +202,36 @@ function makeZeroShareSummary() {
   };
 }
 
-// Pulls the two section header <div> texts (rendered via dv.el, so they're
-// plain <div>s in document.body, same as the footnote) out by their
-// distinguishing prefix.
+// Minimal fixture for the periodic-refresh scenarios: one session, no
+// weekly-budget basis (so its rendered share is the plain share_of_range_pct
+// fallback, not derived), so a single `label` swap is all that distinguishes
+// "before" from "after" a simulated tick.
+function makeRefreshSummary(generated, label) {
+  return {
+    generated,
+    today: {
+      total_usd: 5,
+      sessions: [
+        { title: label, cwd: null, cost_usd: 5, share_of_range_pct: 100, count: 1, children: [] },
+      ],
+    },
+    week: { total_usd: 5, sessions: [] },
+  };
+}
+
+// Pulls the two section header <div> texts out by their distinguishing
+// prefix. The widget now paints everything into one wrapping `root` div (see
+// the periodic-refresh comment in the widget source) so that its own
+// subtree, not the whole note, is what a repaint clears -- that wrapper is
+// itself a <div> whose concatenated textContent also happens to start with
+// "Today", so plain querySelectorAll("div") would match the wrapper instead
+// of the leaf label div. Leaf divs (no element children) are exactly the
+// header/footnote/warning divs; the wrapper and any div-in-div never
+// qualify.
 function sectionHeaders(window) {
-  const divs = Array.from(window.document.querySelectorAll("div")).map((d) => d.textContent);
+  const divs = Array.from(window.document.querySelectorAll("div"))
+    .filter((d) => d.children.length === 0)
+    .map((d) => d.textContent);
   return {
     today: divs.find((t) => t.startsWith("Today")),
     week: divs.find((t) => t.startsWith("This week")),
@@ -237,6 +262,21 @@ async function loadWidget(summary) {
     },
     container: window.document.body,
   };
+
+  // Captures the widget's periodic-refresh callback instead of letting it
+  // actually schedule on a real 5-minute wall-clock timer -- same idea as
+  // withClock() below for REVEAL_WINDOW_MS: drive the exact code path a
+  // real tick would run, but on demand, via window.__capturedTick(). Real
+  // setInterval/clearInterval are otherwise untouched by this stub (no test
+  // here needs an actual repeating timer, and the widget's own guard against
+  // orphaned timers -- clearInterval before re-arming -- is unaffected since
+  // the stub still records whatever id it "returns").
+  window.setInterval = (fn, ms) => {
+    window.__capturedTick = fn;
+    window.__capturedIntervalMs = ms;
+    return 1;
+  };
+  window.clearInterval = () => {};
 
   // The dataviewjs block's top level is `await`-ing directly (Obsidian runs
   // it inside an async wrapper) -- reproduce that here, and surface a thrown
@@ -565,6 +605,87 @@ function check(name, cond, detail) {
       "zero-share guard renders no NaN/Infinity/undefined",
       !/NaN|Infinity|undefined/.test(bodyText),
       bodyText
+    );
+  }
+
+  // --- Scenario 14: periodic refresh repaints when `generated` changes. ---
+  // Regression test for the "Usage widget renders once and freezes until the
+  // note is reopened" bug (see the widget's own REFRESH_MS comment) -- the
+  // pre-fix block never called setInterval at all, so window.__capturedTick
+  // stayed undefined and this scenario throws/fails against it.
+  {
+    const gen1 = new Date(1700000000000).toISOString();
+    const { window, groupRows } = await loadWidget(makeRefreshSummary(gen1, "solo v1"));
+    check(
+      "refresh: captured a setInterval tick at REFRESH_MS = 5 minutes",
+      window.__capturedIntervalMs === 5 * 60 * 1000,
+      String(window.__capturedIntervalMs)
+    );
+    const rowBefore = groupRows[0];
+    check("refresh: before tick, old row is attached", rowBefore.isConnected, "");
+
+    // Simulate the file changing between polls (usage-export.py's next
+    // 15-minute write) by swapping the stubbed read, then fire the captured
+    // tick directly -- this drives the exact same load->compare->render path
+    // the real 5-minute timer would, without an actual wait.
+    const gen2 = new Date(1700000000000 + 60000).toISOString();
+    const fenced2 = "```json\n" + JSON.stringify(makeRefreshSummary(gen2, "solo v2")) + "\n```\n";
+    window.app.vault.adapter.read = async () => fenced2;
+    await window.__capturedTick();
+
+    check(
+      "refresh: old row was torn down by the repaint",
+      rowBefore.isConnected === false,
+      ""
+    );
+    const bodyText = window.document.body.textContent;
+    check(
+      "refresh: new total (solo v2) renders after the tick",
+      bodyText.includes("solo v2") && !bodyText.includes("solo v1"),
+      bodyText
+    );
+  }
+
+  // --- Scenario 15: unchanged `generated` skips the repaint entirely. ---
+  {
+    const gen1 = new Date(1700000000000).toISOString();
+    const summary = makeRefreshSummary(gen1, "solo v1");
+    const { window, groupRows } = await loadWidget(summary);
+    const rowBefore = groupRows[0];
+
+    // Same generated timestamp, same content -- usage-export.py's file
+    // hasn't actually changed since the last poll, which is the common case
+    // (it writes every 15 min; this timer polls every 5).
+    const fencedSame = "```json\n" + JSON.stringify(makeRefreshSummary(gen1, "solo v1")) + "\n```\n";
+    window.app.vault.adapter.read = async () => fencedSame;
+    await window.__capturedTick();
+
+    check(
+      "refresh: unchanged generated -- no repaint (same row node still attached)",
+      rowBefore.isConnected === true && groupRows[0] === rowBefore,
+      ""
+    );
+  }
+
+  // --- Scenario 16: a repaint is deferred while a group is expanded, so it
+  // never collapses a row Oliver is mid-reading. ---
+  {
+    const gen1 = new Date(1700000000000).toISOString();
+    const { window, groupRows } = await loadWidget(makeSummary()); // has an expandable group
+    const rowA = groupRows[0];
+    withClock(window, 1000, () => rowA.click()); // expand -- expandedCount > 0 now
+    const childRowBefore = rowA.nextElementSibling;
+    check("refresh-defer: group is expanded before the tick", childRowBefore !== null, "");
+
+    const gen2 = new Date(1700000000000 + 60000).toISOString();
+    const fenced2 = "```json\n" + JSON.stringify(makeRefreshSummary(gen2, "solo v2")) + "\n```\n";
+    window.app.vault.adapter.read = async () => fenced2;
+    await window.__capturedTick();
+
+    check(
+      "refresh-defer: expanded row untouched by a tick that arrives mid-read",
+      rowA.isConnected === true && rowA.nextElementSibling === childRowBefore,
+      ""
     );
   }
 
