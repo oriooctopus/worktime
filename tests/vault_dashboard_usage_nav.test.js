@@ -77,6 +77,14 @@ function makeHistorySummary() {
     week: weeks[1],
     days,
     weeks,
+    // Dollars-per-1%-of-weekly-budget, from usage-export.py's current
+    // window (see its own docstring). None of the fixture's day/week
+    // sessions above carry pct_of_weekly_budget (only today/current-week
+    // rows do in the real export), so this is what lets a PAST day/week
+    // still show a "% week" figure -- rate=20 makes the arithmetic easy to
+    // eyeball: a $10 day -> 50%, a $11 day -> 55% ($ per 1% of budget, so
+    // pct = cost_usd / rate -- NOT rate / cost_usd).
+    usd_per_week_pct: 0.2,
   };
 }
 
@@ -193,6 +201,25 @@ function check(name, cond, detail) {
       navLabel(window).prev.disabled === true, "");
   }
 
+  // --- A past (closed) day derives its "% week" from usd_per_week_pct
+  // rather than the misleading "% of range" (share_of_range_pct) -- this is
+  // the follow-up fix: yesterday's fixture session costs $11 against a
+  // rate of 20 (usd_per_week_pct), so its row should read 55%, and the
+  // header should carry the same "— 55% of week" suffix a current-window
+  // day would get, not the old plain title (canDeriveRangePct is false
+  // here since none of the fixture's rows set pct_of_weekly_budget). ---
+  {
+    const { window } = await loadWidget(summary);
+    navLabel(window).prev.click(); // now on yesterday
+    const header = sectionHeader(window);
+    check("past day header derives '% week' suffix from usd_per_week_pct",
+      header.textContent.includes("55%") && header.textContent.includes("of week"),
+      header.textContent);
+    const tds = Array.from(window.document.querySelectorAll("td")).map((td) => td.textContent);
+    check("past day's row % is cost_usd / usd_per_week_pct (11/0.2 = 55%)",
+      tds.some((t) => t.trim() === "55%"), tds.join(" | "));
+  }
+
   // --- Toggling to Week mode shows the current week by default, with its
   // own label and a disabled ›. ---
   {
@@ -231,6 +258,19 @@ function check(name, cond, detail) {
     const tds = Array.from(window.document.querySelectorAll("td")).map((td) => td.textContent);
     check("selection (yesterday) survives a render(data) re-run",
       tds.some((t) => t.includes(`day-${yesterdayKey}`)), tds.join(" | "));
+  }
+
+  // --- A days/weeks payload that lacks usd_per_week_pct (older synced
+  // export, before this fix) must keep the pre-fix "% of range" fallback on
+  // a past day, not silently show a blank or NaN%. ---
+  {
+    const noRate = JSON.parse(JSON.stringify(summary));
+    delete noRate.usd_per_week_pct;
+    const { window } = await loadWidget(noRate);
+    navLabel(window).prev.click(); // yesterday
+    const tds = Array.from(window.document.querySelectorAll("td")).map((td) => td.textContent);
+    check("no usd_per_week_pct -> past day falls back to share_of_range_pct (100.0%)",
+      tds.some((t) => t.trim() === "100.0%"), tds.join(" | "));
   }
 
   // --- Older payload without days/weeks falls back to the static view. ---
