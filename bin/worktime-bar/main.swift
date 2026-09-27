@@ -1483,8 +1483,11 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
     // and where it ended if it ended before an answer came.
     var callBegan: Date?
     var callEndedAt: Date?
-    // No was pressed for the run still in progress; cleared when it ends.
-    var declinedThisRun = false
+    // A Yes opened a meeting that is still running. The close path trusts
+    // this before status text: an open mark outranks a meeting in status, and
+    // a meeting past the 3h cap stops covering now, and either would hide the
+    // meeting from a status-only check and leave it never closed.
+    var meetingOpenedHere = false
     // Previous tick's detector.inCall, so a meeting is opened on the rising
     // edge alone. Reading inCall flat would fire a start on every 2s tick for
     // the whole of a call.
@@ -1665,7 +1668,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
                callEndedAt.map({ now.timeIntervalSince($0) < SAME_CALL_GAP_SEC }) ?? true {
                 callEndedAt = nil
                 panel.update(began: began, ended: nil)
-            } else if !declinedThisRun && !status.why.hasPrefix("in ") {
+            } else if !meetingOpenedHere && !status.why.hasPrefix("in ") {
                 meetingPrompt?.close()
                 callBegan = now.addingTimeInterval(-MIN_CALL_SEC)
                 callEndedAt = nil
@@ -1679,7 +1682,6 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         wasInCall = detector.inCall
 
         guard ended else { return }
-        declinedThisRun = false
 
         // Unanswered: the question stays up, now naming the finished stretch,
         // so a late Yes still records the call it was about.
@@ -1690,17 +1692,17 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
             return
         }
 
-        // Nothing to close unless the probe says a meeting is running. It is
-        // the source of truth for that, not a flag here: the bar restarts, and
-        // a meeting opened before the restart must still be closable after it.
-        guard status.why.hasPrefix("in ") else {
+        // Nothing to close unless a meeting is running: one this bar opened, or
+        // -- for a meeting opened before a restart -- one the probe reports.
+        guard meetingOpenedHere || status.why.hasPrefix("in ") else {
             FileHandle.standardError.write(
                 "call ended, no meeting to close (\(status.why))\n".data(using: .utf8)!)
             return
         }
         guard countdown == nil else { return }
 
-        let meeting = String(status.why.dropFirst("in ".count))
+        let meeting = status.why.hasPrefix("in ")
+            ? String(status.why.dropFirst("in ".count)) : "Meeting"
         FileHandle.standardError.write("call ended during \(meeting); counting down\n".data(using: .utf8)!)
         countdown = CountdownPanel(
             meeting: meeting, seconds: COUNTDOWN_SEC,
@@ -2623,12 +2625,19 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         guard let began = callBegan else { return }
         let f = DateFormatter()
         f.dateFormat = "HH:mm"
-        // A call that crossed midnight is recorded from the start of today;
-        // meeting_start writes minutes of the current day.
-        let start = f.string(from: max(began, Calendar.current.startOfDay(for: Date())))
-        let end = callEndedAt.map { f.string(from: $0) }
+        let today = Calendar.current.startOfDay(for: Date())
+        let endedAt = callEndedAt
         callBegan = nil
         callEndedAt = nil
+        // meeting_start and meeting_end write minutes of the current day, so a
+        // call that finished before midnight cannot be recorded from here.
+        if let e = endedAt, e < today {
+            notify("That call was yesterday (\(f.string(from: began))–\(f.string(from: e))) — not recorded.")
+            return
+        }
+        let start = f.string(from: max(began, today))
+        let end = endedAt.map { f.string(from: $0) }
+        meetingOpenedHere = end == nil
         FileHandle.standardError.write(
             "meeting confirmed from \(start)\(end.map { " to \($0)" } ?? "")\n".data(using: .utf8)!)
         probeQueue.async {
@@ -2640,15 +2649,13 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
 
     func meetingDeclined() {
         meetingPrompt = nil
-        // Declining a call that is still going holds the question off until
-        // it ends; declining one already over just discards it.
-        declinedThisRun = callEndedAt == nil
         callBegan = nil
         callEndedAt = nil
         FileHandle.standardError.write("not a meeting\n".data(using: .utf8)!)
     }
 
     @objc func endMeeting() {
+        meetingOpenedHere = false
         probeQueue.async {
             _ = runProbe(["meeting_end"])
             DispatchQueue.main.async { self.refresh() }
