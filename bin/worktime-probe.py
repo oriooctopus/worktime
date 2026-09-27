@@ -3441,7 +3441,9 @@ def covered_by_meeting(when: datetime, meetings: list[dict]) -> dict | None:
     """
     mins = when.hour * 60 + when.minute
     for m in meetings:
-        if m["start"] <= mins < m["end"]:
+        # An open meeting's end is the current minute, so the half-open test
+        # alone never covers it -- the call still running would read as over.
+        if m["start"] <= mins < m["end"] or (m.get("open") and mins == m["end"]):
             return m
     return None
 

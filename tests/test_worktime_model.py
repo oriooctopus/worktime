@@ -1146,6 +1146,34 @@ class ObservedMeetings(unittest.TestCase):
         self.assertEqual([m["end"] for m in wp.meetings_for(self.DAY)],
                          [14 * 60 + 9])
 
+    def test_an_open_meeting_covers_the_current_minute(self):
+        # An open meeting's end IS now, so a half-open [start, end) test never
+        # covered it: status never said "in meeting", the dot lapsed mid-call,
+        # and the bar -- which closes only when status says "in " -- never
+        # wrote an end, leaving every meeting to run to the cap.
+        from datetime import datetime
+        wp.start_meeting("standup", 13 * 60 + 45)
+        self.at(14, 9)
+        now = datetime(2026, 9, 18, 14, 9, 30, tzinfo=wp.LOCAL)
+        hit = wp.covered_by_meeting(now, wp.meetings_for(self.DAY))
+        self.assertIsNotNone(hit)
+        self.assertEqual(hit["title"], "standup")
+
+    def test_an_open_meeting_past_the_cap_no_longer_covers_now(self):
+        from datetime import datetime
+        wp.start_meeting("standup", 9 * 60)
+        self.at(23, 0)
+        now = datetime(2026, 9, 18, 23, 0, tzinfo=wp.LOCAL)
+        self.assertIsNone(wp.covered_by_meeting(now, wp.meetings_for(self.DAY)))
+
+    def test_a_closed_meeting_does_not_cover_its_end_minute(self):
+        from datetime import datetime
+        wp.start_meeting("standup", 13 * 60 + 45)
+        self.at(14, 9)
+        wp.close_open_meetings()
+        now = datetime(2026, 9, 18, 14, 9, 30, tzinfo=wp.LOCAL)
+        self.assertIsNone(wp.covered_by_meeting(now, wp.meetings_for(self.DAY)))
+
     def test_a_second_start_does_not_split_one_call_in_two(self):
         # The cancelled-countdown path: cancelling leaves the detector
         # disarmed, so resuming audio raises the rising edge again against a
