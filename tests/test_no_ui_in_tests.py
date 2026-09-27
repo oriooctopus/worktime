@@ -44,7 +44,8 @@ PRESENTING = [
 # Constructors that show themselves unless told not to. The value is the
 # argument that suppresses it, which the call must pass.
 SELF_PRESENTING = {"CountdownPanel(": "present: false",
-                   "TrackPanel(": "present: false"}
+                   "TrackPanel(": "present: false",
+                   "MeetingPromptPanel(": "present: false"}
 
 # Each of those, and the guard it must keep on the app side. The string search
 # above would go on passing if the parameter were renamed or dropped -- the
@@ -56,6 +57,7 @@ SELF_PRESENTING = {"CountdownPanel(": "present: false",
 PANEL_GUARDS = {
     "CountdownPanel.swift": "orderFrontRegardless",
     "TrackPanel.swift": "makeKeyAndOrderFront",
+    "MeetingPromptPanel.swift": "orderFrontRegardless",
 }
 
 

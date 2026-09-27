@@ -130,12 +130,11 @@ let AUDIO_POLL_SEC = 2.0
 let MIN_CALL_SEC = 60.0
 let SETTLE_SEC = 5.0
 
-// Only these apps' audio capture counts as a meeting. WhisperFlow, Siri, and
-// other mic users are excluded so dictation does not trigger the call detector.
-let MEETING_APP_BUNDLES: Set<String> = [
-    "us.zoom.xos",               // Zoom
-    "com.tinyspeck.slackmacgap", // Slack (huddles)
-]
+// A new run of capture within this long of the last one, while its question
+// is still unanswered, is the same call coming back (a long device handoff),
+// not a new one. Past it, the stale question is replaced rather than letting a
+// Yes stretch the recorded meeting back to a mic use from hours earlier.
+let SAME_CALL_GAP_SEC = 600.0
 
 // Long enough to read the panel, notice it, and stop it; short enough that
 // waiting it out is not itself an interruption.
@@ -1407,17 +1406,6 @@ func anythingIsCapturing() -> Bool {
     audioDeviceIDs().contains { deviceHasInput($0) && deviceIsRunning($0) }
 }
 
-/// True while a known meeting app (Zoom, Slack) is running AND audio input is
-/// being captured. This excludes dictation tools like WhisperFlow that hold the
-/// mic open without being a meeting.
-func meetingAppIsCapturing() -> Bool {
-    guard anythingIsCapturing() else { return false }
-    let running = NSWorkspace.shared.runningApplications
-    return running.contains { app in
-        MEETING_APP_BUNDLES.contains(app.bundleIdentifier ?? "")
-    }
-}
-
 // MARK: - The menu bar item
 
 final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemValidation {
@@ -1488,9 +1476,15 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
     var seenFirstStatus = false
     // Non-nil only while a countdown is on screen.
     var countdown: CountdownPanel?
-    // Tracks the previous filtered-capture state so we only log on the rising
-    // edge (first tick where mic is active but no meeting app is running).
-    var wasFilteredCapturing = false
+    // The "Are you in a meeting?" question for the current run of capture,
+    // while it is unanswered. Nothing is recorded until Yes.
+    var meetingPrompt: MeetingPromptPanel?
+    // Where the run the question is about began (backdated by MIN_CALL_SEC),
+    // and where it ended if it ended before an answer came.
+    var callBegan: Date?
+    var callEndedAt: Date?
+    // No was pressed for the run still in progress; cleared when it ends.
+    var declinedThisRun = false
     // Previous tick's detector.inCall, so a meeting is opened on the rising
     // edge alone. Reading inCall flat would fire a start on every 2s tick for
     // the whole of a call.
@@ -1641,7 +1635,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
     // half-hour slot the full half hour when the call ran twelve minutes and
     // had nothing at all to say about a call that was never invited.
     func tickAudio() {
-        let capturing = meetingAppIsCapturing()
+        let capturing = anythingIsCapturing()
         item.button?.title = anythingIsCapturing() ? "🎙" : ""
         item.button?.imagePosition = anythingIsCapturing() ? .imageLeft : .imageOnly
 
@@ -1655,51 +1649,46 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
             FileHandle.standardError.write("call resumed; countdown withdrawn\n".data(using: .utf8)!)
         }
 
-        // Log once when the mic becomes active but no meeting app is running.
-        // Helps identify which non-meeting tools (e.g. WhisperFlow) are
-        // triggering audio capture that the filter is now blocking.
-        let rawCapturing = anythingIsCapturing()
-        if rawCapturing && !capturing {
-            if !wasFilteredCapturing {
-                let running = NSWorkspace.shared.runningApplications
-                    .compactMap(\.bundleIdentifier)
-                    .filter { !$0.hasPrefix("com.apple") && !$0.hasPrefix("com.google.Chrome") }
-                    .sorted()
-                    .joined(separator: ", ")
-                FileHandle.standardError.write(
-                    "mic active, filtered (no meeting app): \(running)\n".data(using: .utf8)!)
-            }
-            wasFilteredCapturing = true
-        } else {
-            wasFilteredCapturing = false
-        }
-
         let ended = detector.update(capturing: capturing, now: Date())
 
-        // A call has been running long enough to count: open a meeting. The
-        // detector cannot say so until MIN_CALL_SEC has elapsed, so the run
-        // began that long ago and the start is backdated to there -- otherwise
-        // every meeting would lose its first minute.
+        // A call has been running long enough to count: ask, don't record. The
+        // microphone cannot tell a work call from a personal one or from
+        // dictation, so a meeting is written only on Yes. The detector cannot
+        // say so until MIN_CALL_SEC has elapsed, so the run began that long
+        // ago and that is the start a Yes records.
         //
-        // The probe ignores a start while one is already open, which is what
-        // makes a cancelled end-countdown safe: cancelling leaves the detector
-        // disarmed, so resuming audio re-arms it and raises this edge again
-        // against a meeting that never closed.
+        // A meeting already open (a cancelled end-countdown, then audio
+        // resuming) is the same call carrying on and needs no question.
         if detector.inCall && !wasInCall {
-            let began = Date().addingTimeInterval(-MIN_CALL_SEC)
-            let hhmm = DateFormatter()
-            hhmm.dateFormat = "HH:mm"
-            let at = hhmm.string(from: began)
-            FileHandle.standardError.write(
-                "call detected; opening meeting at \(at)\n".data(using: .utf8)!)
-            probeQueue.async {
-                _ = runProbe(["meeting_start", "meeting", at])
-                DispatchQueue.main.async { self.refresh() }
+            let now = Date()
+            if let panel = meetingPrompt, let began = callBegan,
+               callEndedAt.map({ now.timeIntervalSince($0) < SAME_CALL_GAP_SEC }) ?? true {
+                callEndedAt = nil
+                panel.update(began: began, ended: nil)
+            } else if !declinedThisRun && !status.why.hasPrefix("in ") {
+                meetingPrompt?.close()
+                callBegan = now.addingTimeInterval(-MIN_CALL_SEC)
+                callEndedAt = nil
+                FileHandle.standardError.write("call detected; asking\n".data(using: .utf8)!)
+                meetingPrompt = MeetingPromptPanel(
+                    began: callBegan!,
+                    onYes: { [weak self] in self?.meetingConfirmed() },
+                    onNo: { [weak self] in self?.meetingDeclined() })
             }
         }
         wasInCall = detector.inCall
 
         guard ended else { return }
+        declinedThisRun = false
+
+        // Unanswered: the question stays up, now naming the finished stretch,
+        // so a late Yes still records the call it was about.
+        if let panel = meetingPrompt, let began = callBegan {
+            callEndedAt = Date().addingTimeInterval(-SETTLE_SEC)
+            panel.update(began: began, ended: callEndedAt)
+            FileHandle.standardError.write("call ended before an answer\n".data(using: .utf8)!)
+            return
+        }
 
         // Nothing to close unless the probe says a meeting is running. It is
         // the source of truth for that, not a flag here: the bar restarts, and
@@ -2337,7 +2326,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
             // open before the bar quit (ended=true never fired), it stays open
             // forever because the detector can never see "quiet after armed".
             // Detect that case here: open meeting + mic already quiet = close it.
-            if s.why.hasPrefix("in ") && !meetingAppIsCapturing() {
+            if s.why.hasPrefix("in ") && !anythingIsCapturing() {
                 FileHandle.standardError.write(
                     "startup: stale open meeting and mic quiet; closing\n".data(using: .utf8)!)
                 probeQueue.async {
@@ -2627,6 +2616,36 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
     // action row applies whenever the menu is open.
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         item.action == #selector(linkLastSession) ? status.linkFrom != nil : true
+    }
+
+    func meetingConfirmed() {
+        meetingPrompt = nil
+        guard let began = callBegan else { return }
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm"
+        // A call that crossed midnight is recorded from the start of today;
+        // meeting_start writes minutes of the current day.
+        let start = f.string(from: max(began, Calendar.current.startOfDay(for: Date())))
+        let end = callEndedAt.map { f.string(from: $0) }
+        callBegan = nil
+        callEndedAt = nil
+        FileHandle.standardError.write(
+            "meeting confirmed from \(start)\(end.map { " to \($0)" } ?? "")\n".data(using: .utf8)!)
+        probeQueue.async {
+            _ = runProbe(["meeting_start", "meeting", start])
+            if let end { _ = runProbe(["meeting_end", end]) }
+            DispatchQueue.main.async { self.refresh() }
+        }
+    }
+
+    func meetingDeclined() {
+        meetingPrompt = nil
+        // Declining a call that is still going holds the question off until
+        // it ends; declining one already over just discards it.
+        declinedThisRun = callEndedAt == nil
+        callBegan = nil
+        callEndedAt = nil
+        FileHandle.standardError.write("not a meeting\n".data(using: .utf8)!)
     }
 
     @objc func endMeeting() {
