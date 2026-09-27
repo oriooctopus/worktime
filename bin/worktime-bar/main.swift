@@ -1662,13 +1662,22 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         //
         // A meeting already open (a cancelled end-countdown, then audio
         // resuming) is the same call carrying on and needs no question.
+        let meetingOpen = meetingOpenedHere || status.why.hasPrefix("in ")
+        // A question left over from an earlier call is moot once a meeting is
+        // running, and left up it would take the end of this call for itself.
+        if meetingOpen, let panel = meetingPrompt {
+            panel.close()
+            meetingPrompt = nil
+            callBegan = nil
+            callEndedAt = nil
+        }
         if detector.inCall && !wasInCall {
             let now = Date()
             if let panel = meetingPrompt, let began = callBegan,
                callEndedAt.map({ now.timeIntervalSince($0) < SAME_CALL_GAP_SEC }) ?? true {
                 callEndedAt = nil
                 panel.update(began: began, ended: nil)
-            } else if !meetingOpenedHere && !status.why.hasPrefix("in ") {
+            } else if !meetingOpen {
                 meetingPrompt?.close()
                 callBegan = now.addingTimeInterval(-MIN_CALL_SEC)
                 callEndedAt = nil
@@ -1694,7 +1703,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
 
         // Nothing to close unless a meeting is running: one this bar opened, or
         // -- for a meeting opened before a restart -- one the probe reports.
-        guard meetingOpenedHere || status.why.hasPrefix("in ") else {
+        guard meetingOpen else {
             FileHandle.standardError.write(
                 "call ended, no meeting to close (\(status.why))\n".data(using: .utf8)!)
             return
