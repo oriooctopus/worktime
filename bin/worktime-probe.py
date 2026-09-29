@@ -3354,6 +3354,11 @@ WSL_ACTIVITY_SSH_PORT = "2022"
 # path.
 WSL_VAULT_DASHBOARD = ("/mnt/c/Users/Esme Louise Robinson/Documents/"
                         "obsidian-vault/Dashboard")
+# Shell-escaped form of the path above, for use in rsync remote-path arguments.
+# rsync passes the remote path through the remote shell, which splits on spaces;
+# backslash-escaping each space prevents the split without needing --protect-args
+# (which the old rsync on WSL does not support).
+WSL_VAULT_DASHBOARD_ESC = WSL_VAULT_DASHBOARD.replace(" ", r"\ ")
 
 
 def pull_mac_activity_if_stale(now: datetime | None = None) -> bool:
@@ -3420,22 +3425,22 @@ def pull_mac_activity_if_stale(now: datetime | None = None) -> bool:
         # sits next to activity/ and usage/ in the same remote directory but
         # is a single file, not a tree, and --delete has no meaning for it.
         subprocess.Popen(
-            ["rsync", "-a", "--delete", "--protect-args", "-e", ssh_cmd,
-             f"{WSL_ACTIVITY_HOST}:{WSL_VAULT_DASHBOARD}/activity/",
+            ["rsync", "-a", "--delete", "-e", ssh_cmd,
+             f"{WSL_ACTIVITY_HOST}:{WSL_VAULT_DASHBOARD_ESC}/activity/",
              os.path.join(dash, "activity") + os.sep],
             stdout=log, stderr=subprocess.STDOUT,
             # Detached, so the pull outlives the probe run that started it --
             # same reasoning as the calendar refresh's Popen below it.
             start_new_session=True)
         subprocess.Popen(
-            ["rsync", "-a", "--delete", "--protect-args", "-e", ssh_cmd,
-             f"{WSL_ACTIVITY_HOST}:{WSL_VAULT_DASHBOARD}/usage/",
+            ["rsync", "-a", "--delete", "-e", ssh_cmd,
+             f"{WSL_ACTIVITY_HOST}:{WSL_VAULT_DASHBOARD_ESC}/usage/",
              os.path.join(dash, "usage") + os.sep],
             stdout=log, stderr=subprocess.STDOUT,
             start_new_session=True)
         subprocess.Popen(
-            ["rsync", "-a", "--protect-args", "-e", ssh_cmd,
-             f"{WSL_ACTIVITY_HOST}:{WSL_VAULT_DASHBOARD}/calendar-today.md",
+            ["rsync", "-a", "-e", ssh_cmd,
+             f"{WSL_ACTIVITY_HOST}:{WSL_VAULT_DASHBOARD_ESC}/calendar-today.md",
              os.path.join(dash, "calendar-today.md")],
             stdout=log, stderr=subprocess.STDOUT,
             start_new_session=True)
