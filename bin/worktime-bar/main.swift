@@ -199,6 +199,11 @@ struct Status {
     // the menu must not work out for itself which period counts as the last
     // one, or it can name a different minute than the action then claims.
     var linkFrom: String?
+    // HH:MM the meeting running now began, nil when none is.
+    var meetingStart: String?
+    // A finished busy block with a meeting app in front and no meeting
+    // recorded -- a call the microphone never saw. Nil when there is none.
+    var missedCall: MissedCall?
     var periods: [Period] = []
     var activities: [Activity] = []
     var sessions: [ActSession] = []
@@ -1479,6 +1484,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
     // The "Are you in a meeting?" question for the current run of capture,
     // while it is unanswered. Nothing is recorded until Yes.
     var meetingPrompt: MeetingPromptPanel?
+    var missedCallPanel: MissedCallPanel?
     // Where the run the question is about began (backdated by MIN_CALL_SEC),
     // and where it ended if it ended before an answer came.
     var callBegan: Date?
@@ -1713,8 +1719,15 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         let meeting = status.why.hasPrefix("in ")
             ? String(status.why.dropFirst("in ".count)) : "Meeting"
         FileHandle.standardError.write("call ended during \(meeting); counting down\n".data(using: .utf8)!)
+        // The stretch this is about to record, so the times can be checked
+        // while the Keep-tracking button is still there to correct them.
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm"
+        let endedAt = f.string(from: Date().addingTimeInterval(-SETTLE_SEC))
+        let heading = status.meetingStart.map { "\(meeting) \($0)–\(endedAt)" }
+            ?? "\(meeting) ended \(endedAt)"
         countdown = CountdownPanel(
-            meeting: meeting, seconds: COUNTDOWN_SEC,
+            meeting: heading, seconds: COUNTDOWN_SEC,
             onExpire: { [weak self] in
                 self?.countdown = nil
                 self?.endMeeting()
@@ -2273,6 +2286,12 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
             s.shortFocusMinSec = j["short_focus_min_sec"] as? Int
             s.focusPct = j["focus_pct"] as? Int
             s.linkFrom = j["link_from"] as? String
+            s.meetingStart = j["meeting_start"] as? String
+            if let m = j["missed_call"] as? [String: String] {
+                s.missedCall = MissedCall(blockStart: m["block_start"]!,
+                                          blockEnd: m["block_end"]!,
+                                          start: m["start"]!, end: m["end"]!)
+            }
             s.feedNotice = j["feed_notice"] as? String
             s.periods = (j["periods"] as? [[String: Any]] ?? []).map { p in
                 Period(start: p["start"] as? Int ?? 0,
@@ -2347,6 +2366,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
             }
         }
         status = s
+        askAboutMissedCall(s.missedCall)
         lastActivityAt = s.quietSec.map { Date().addingTimeInterval(-Double($0)) }
         blinkOn = true
         switch s.state {
@@ -2653,6 +2673,42 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
             _ = runProbe(["meeting_start", "meeting", start])
             if let end { _ = runProbe(["meeting_end", end]) }
             DispatchQueue.main.async { self.refresh() }
+        }
+    }
+
+    // One question per block: a poll that reports the same call again while
+    // its panel is up leaves it alone, and a poll that stops reporting it (the
+    // meeting was recorded some other way) withdraws it.
+    func askAboutMissedCall(_ call: MissedCall?) {
+        if missedCallPanel?.call == call { return }
+        missedCallPanel?.close()
+        missedCallPanel = nil
+        guard let call else { return }
+        FileHandle.standardError.write(
+            "missed call \(call.blockStart)-\(call.blockEnd); asking\n".data(using: .utf8)!)
+        missedCallPanel = MissedCallPanel(
+            call: call,
+            onYes: { [weak self] start, end in
+                self?.answerMissedCall(call, ["yes", call.blockStart, call.blockEnd, start, end])
+            },
+            onNo: { [weak self] in
+                self?.answerMissedCall(call, ["no", call.blockStart, call.blockEnd])
+            })
+    }
+
+    func answerMissedCall(_ call: MissedCall, _ args: [String]) {
+        FileHandle.standardError.write("missed call answered: \(args)\n".data(using: .utf8)!)
+        probeQueue.async {
+            let out = runProbe(["missed_call"] + args)
+            DispatchQueue.main.async {
+                // Cleared only now, so the next poll's report of the same
+                // call (still there until the answer lands) cannot re-raise it.
+                self.missedCallPanel = nil
+                if case .failed = out {
+                    notify("Couldn't record that call — it will ask again.")
+                }
+                self.refresh()
+            }
         }
     }
 
