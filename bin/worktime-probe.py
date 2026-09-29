@@ -3420,7 +3420,7 @@ def pull_mac_activity_if_stale(now: datetime | None = None) -> bool:
         # sits next to activity/ and usage/ in the same remote directory but
         # is a single file, not a tree, and --delete has no meaning for it.
         subprocess.Popen(
-            ["rsync", "-a", "--delete", "-e", ssh_cmd,
+            ["rsync", "-a", "--delete", "--protect-args", "-e", ssh_cmd,
              f"{WSL_ACTIVITY_HOST}:{WSL_VAULT_DASHBOARD}/activity/",
              os.path.join(dash, "activity") + os.sep],
             stdout=log, stderr=subprocess.STDOUT,
@@ -3428,13 +3428,13 @@ def pull_mac_activity_if_stale(now: datetime | None = None) -> bool:
             # same reasoning as the calendar refresh's Popen below it.
             start_new_session=True)
         subprocess.Popen(
-            ["rsync", "-a", "--delete", "-e", ssh_cmd,
+            ["rsync", "-a", "--delete", "--protect-args", "-e", ssh_cmd,
              f"{WSL_ACTIVITY_HOST}:{WSL_VAULT_DASHBOARD}/usage/",
              os.path.join(dash, "usage") + os.sep],
             stdout=log, stderr=subprocess.STDOUT,
             start_new_session=True)
         subprocess.Popen(
-            ["rsync", "-a", "-e", ssh_cmd,
+            ["rsync", "-a", "--protect-args", "-e", ssh_cmd,
              f"{WSL_ACTIVITY_HOST}:{WSL_VAULT_DASHBOARD}/calendar-today.md",
              os.path.join(dash, "calendar-today.md")],
             stdout=log, stderr=subprocess.STDOUT,
