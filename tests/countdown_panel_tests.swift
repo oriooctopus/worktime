@@ -81,6 +81,23 @@ enum CountdownPanelTests {
               "a withdrawn countdown does nothing (expired=\(expired) cancelled=\(cancelled))")
         panel = nil
 
+        // Held while the mic is back: no expiry however long it waits, and
+        // the count carries on from where it stopped once released.
+        expired = 0; cancelled = 0
+        panel = CountdownPanel(meeting: "Sync", seconds: 2, present: false,
+                               onExpire: { expired += 1 }, onCancel: { cancelled += 1 })
+        panel!.paused = true
+        check(panel!.messageText == "Mic is back — holding",
+              "a held countdown says so, got \(panel!.messageText)")
+        spin(3.2)
+        check(expired == 0, "a held countdown does not expire (expired=\(expired))")
+        panel!.paused = false
+        check(panel!.messageText == "Ended — stopping tracking in 2s",
+              "released, it resumes at the same number, got \(panel!.messageText)")
+        spin(2.4)
+        check(expired == 1, "released, it still ends the meeting (expired=\(expired))")
+        panel = nil
+
         // A meeting with no name still names something.
         let unnamed = CountdownPanel(meeting: "", seconds: 3, present: false,
                                      onExpire: {}, onCancel: {})

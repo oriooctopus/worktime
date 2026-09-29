@@ -140,11 +140,18 @@ final class CountdownPanel {
                                      y: visible.maxY - panel.frame.height - 16))
     }
 
+    /// Frozen while the caller decides whether what interrupted it is real --
+    /// the mic coming back mid-countdown might be the call or a dictation.
+    var paused = false {
+        didSet { redraw() }
+    }
+
     private func redraw() {
-        message.stringValue = messageFor(remaining)
+        message.stringValue = paused ? "Mic is back — holding" : messageFor(remaining)
     }
 
     private func tick() {
+        if paused { return }
         remaining -= 1
         if remaining > 0 { redraw(); return }
         let expire = onExpire

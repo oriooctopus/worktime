@@ -128,7 +128,13 @@ let AUDIO_POLL_SEC = 2.0
 
 // A run of capture shorter than this was not a meeting; see CallDetector.
 let MIN_CALL_SEC = 60.0
-let SETTLE_SEC = 5.0
+// Quiet this long before a call counts as over. Long enough to ride out a
+// headset switch, where nothing holds the mic for several seconds.
+let SETTLE_SEC = 30.0
+// Once the end countdown is up, the mic must be back this long to count as
+// the call resuming. Shorter than a real rejoin, longer than a dictation
+// burst (Wispr Flow holds the mic for ~10s).
+let RESUME_SEC = 20.0
 
 // A new run of capture within this long of the last one, while its question
 // is still unanswered, is the same call coming back (a long device handoff),
@@ -1481,6 +1487,8 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
     var seenFirstStatus = false
     // Non-nil only while a countdown is on screen.
     var countdown: CountdownPanel?
+    // When the mic came back during the countdown, nil unless it has.
+    var resumedAt: Date?
     // The "Are you in a meeting?" question for the current run of capture,
     // while it is unanswered. Nothing is recorded until Yes.
     var meetingPrompt: MeetingPromptPanel?
@@ -1652,10 +1660,29 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         // rejoined, or a device handoff outlasted the settle. Either way this
         // is not a meeting that ended, so the countdown is withdrawn and
         // nothing is written.
-        if capturing, let panel = countdown {
-            panel.close()
-            countdown = nil
-            FileHandle.standardError.write("call resumed; countdown withdrawn\n".data(using: .utf8)!)
+        // The mic came back while the countdown was up. Held rather than
+        // withdrawn at once: a reconnect keeps the mic, a dictation lets go
+        // within seconds, and only the first means the call carried on.
+        if let panel = countdown {
+            let now = Date()
+            if capturing {
+                if resumedAt == nil {
+                    resumedAt = now
+                    panel.paused = true
+                    FileHandle.standardError.write("mic back; countdown held\n".data(using: .utf8)!)
+                } else if now.timeIntervalSince(resumedAt!) >= RESUME_SEC {
+                    panel.close()
+                    countdown = nil
+                    detector.resume(since: resumedAt!)
+                    wasInCall = true
+                    resumedAt = nil
+                    FileHandle.standardError.write("call resumed; countdown withdrawn\n".data(using: .utf8)!)
+                }
+            } else if resumedAt != nil {
+                resumedAt = nil
+                panel.paused = false
+                FileHandle.standardError.write("mic gone again; countdown continues\n".data(using: .utf8)!)
+            }
         }
 
         let ended = detector.update(capturing: capturing, now: Date())
@@ -1730,10 +1757,12 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
             meeting: heading, seconds: COUNTDOWN_SEC,
             onExpire: { [weak self] in
                 self?.countdown = nil
-                self?.endMeeting()
+                self?.resumedAt = nil
+                self?.closeMeeting(at: endedAt)
             },
             onCancel: { [weak self] in
                 self?.countdown = nil
+                self?.resumedAt = nil
                 FileHandle.standardError.write("countdown cancelled by hand\n".data(using: .utf8)!)
             })
     }
@@ -2724,10 +2753,14 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         FileHandle.standardError.write("not a meeting\n".data(using: .utf8)!)
     }
 
-    @objc func endMeeting() {
+    @objc func endMeeting() { closeMeeting(at: nil) }
+
+    // `at` is HH:MM the call actually went quiet; nil means now. The countdown
+    // passes it because the call ended SETTLE_SEC plus the countdown ago.
+    func closeMeeting(at: String?) {
         meetingOpenedHere = false
         probeQueue.async {
-            _ = runProbe(["meeting_end"])
+            _ = runProbe(["meeting_end"] + (at.map { [$0] } ?? []))
             DispatchQueue.main.async { self.refresh() }
         }
     }

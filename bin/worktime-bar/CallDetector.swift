@@ -68,6 +68,17 @@ struct CallDetector {
         return true
     }
 
+    /// Treat the run of capture that began at `since` as the call carrying on
+    /// after it was judged over -- the mic came back and stayed long enough to
+    /// be a reconnect. Re-armed so the call's real end fires `update` again;
+    /// without it the detector would wait out a fresh minCallSec, and a call
+    /// that ended inside that minute would never close.
+    mutating func resume(since: Date) {
+        armed = true
+        runStart = since
+        quietStart = nil
+    }
+
     /// True while a run has lasted long enough to be treated as a call. The
     /// menu bar uses it to tell "the meeting resumed" from "the microphone
     /// twitched" when deciding whether to withdraw a countdown already on

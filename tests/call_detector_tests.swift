@@ -102,6 +102,26 @@ check(d.inCall, "a one-second dropout ended the call immediately")
 _ = d.update(capturing: false, now: origin.addingTimeInterval(MIN_CALL + 1 + SETTLE))
 check(!d.inCall, "the call stayed open after it was reported as ended")
 
+// A call judged over, then resumed (the countdown was withdrawn because the
+// mic came back): the resumed call's own end must fire, even when it comes
+// sooner than a fresh minute of capture would have re-armed.
+var r = CallDetector(minCallSec: MIN_CALL, settleSec: SETTLE)
+var at = 0.0
+func step(_ capturing: Bool) -> Bool {
+    defer { at += 1 }
+    return r.update(capturing: capturing, now: origin.addingTimeInterval(at))
+}
+for _ in 0..<Int(MIN_CALL) + 5 { _ = step(true) }
+var endings = 0
+for _ in 0..<Int(SETTLE) + 2 { if step(false) { endings += 1 } }
+check(endings == 1, "the first call's end fired \(endings) times, want 1")
+r.resume(since: origin.addingTimeInterval(at))
+check(r.inCall, "a resumed call is not counted as in progress")
+for _ in 0..<20 { _ = step(true) }
+endings = 0
+for _ in 0..<Int(SETTLE) + 2 { if step(false) { endings += 1 } }
+check(endings == 1, "a resumed call shorter than a minute never ended (\(endings))")
+
 if failures.isEmpty {
     print("call detector: all checks passed")
 } else {
