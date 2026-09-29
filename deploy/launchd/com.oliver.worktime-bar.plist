@@ -10,6 +10,11 @@
 	<array>
 		<string>/Users/oliver/.claude/bin/worktime-bar/WorktimeBar.app/Contents/MacOS/WorktimeBar</string>
 	</array>
+	<!-- Unset, launchd throttles an agent's I/O, and the probe it spawns
+	     inherits that: prompt-count's transcript walk went from 0.3s to 25s+,
+	     past the bar's 30s kill, so nearly every status poll died. -->
+	<key>ProcessType</key>
+	<string>Interactive</string>
 	<key>RunAtLoad</key>
 	<true/>
 	<key>StandardErrorPath</key>
