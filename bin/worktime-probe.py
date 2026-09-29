@@ -4917,6 +4917,12 @@ def backfill(days: int) -> None:
 
 
 if __name__ == "__main__":
+    # The bar SIGTERMs a probe that outlives PROBE_TIMEOUT_SEC, and a killed
+    # probe otherwise leaves only "exit 15" in its log -- no hint of what it
+    # was stuck on. The stack goes to stderr, which the bar already logs.
+    import faulthandler
+    import signal
+    faulthandler.register(signal.SIGTERM, file=sys.stderr, chain=True)
     cmd = sys.argv[1] if len(sys.argv) > 1 else "check"
     if cmd == "check":
         check()
