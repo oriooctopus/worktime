@@ -27,6 +27,10 @@ Usage:
                                           capture actually began
   worktime-probe.py meeting_end [HH:MM]  -- the call running now stopped, at
                                           this minute or at the one given
+  worktime-probe.py missed_call yes|no <block_start> <block_end> [HH:MM HH:MM]
+                                       -- answer the bar's "were you on this
+                                          call?" for a busy block; yes records
+                                          the meeting at the two times given
   worktime-probe.py end_session [last]  -- end the day: break the period, close
                                           the mark, close the meeting, at this
                                           minute or at the last entry
@@ -1244,6 +1248,93 @@ def close_open_meetings(when: int | None = None) -> list[dict]:
             fh.write(json.dumps(r) + "\n")
     os.replace(tmp, MEETINGS)
     return closed
+
+
+# A call the microphone never saw: a listen-only webinar, or one sat through
+# muted with the app not holding the device. The only trace is a busy block on
+# the work calendar with a meeting app in front during it, so once such a block
+# is over and nothing recorded a meeting inside it, the bar asks.
+MISSED_CALLS = os.path.join(STATE, "missed-calls.jsonl")
+MEETING_APP_BUNDLES = {"us.zoom.xos", "com.microsoft.teams2", "com.microsoft.teams"}
+# Joining a few minutes early is ordinary; the app coming up then is the call.
+MISSED_CALL_LEAD_MIN = 10
+CAL_ROW = re.compile(
+    r"^\|\s*(\d{2}):(\d{2})\s*\|\s*(\d{2}):(\d{2})\s*\|\s*(.*?)\s*\|\s*(\w+)\s*\|\s*$",
+    re.M)
+
+
+def busy_blocks(day: str) -> list[tuple[int, int]]:
+    """Opaque work-calendar blocks for `day`, as (start, end) minutes.
+
+    Only the free/busy share's "(busy)" rows: the tracker's own "Working (...)"
+    blocks are not meetings, and personal appointments are not work calls.
+    """
+    if not os.path.exists(CAL_FILE):
+        return []
+    text = open(CAL_FILE).read()
+    head = CAL_DATE.search(text)
+    if not head or head.group(1) != day:
+        return []
+    return [(int(h1) * 60 + int(m1), int(h2) * 60 + int(m2))
+            for h1, m1, h2, m2, title, cal in CAL_ROW.findall(text)
+            if cal == "work" and title == "(busy)"]
+
+
+def missed_call(day: str, now_m: int) -> dict | None:
+    """The oldest finished busy block that looks like an unrecorded call."""
+    asked = set()
+    if os.path.exists(MISSED_CALLS):
+        for line in open(MISSED_CALLS):
+            if line.strip():
+                r = json.loads(line)
+                if r["day"] == day:
+                    asked.add((r["block_start"], r["block_end"]))
+    blocks = [(s, e) for s, e in busy_blocks(day)
+              if e <= now_m and (s, e) not in asked]
+    if not blocks:
+        return None
+    meetings = meetings_for(day)
+    app_minutes = sorted(
+        to_min(r["t"][:5]) for r in focus_rows(day)
+        if r.get("bundle") in MEETING_APP_BUNDLES)
+    for s, e in sorted(blocks):
+        if any(m["start"] < e and m["end"] > s for m in meetings):
+            continue
+        inside = [m for m in app_minutes if s - MISSED_CALL_LEAD_MIN <= m < e]
+        if not inside:
+            continue
+        return {"block_start": hhmm_of(s), "block_end": hhmm_of(e),
+                "start": hhmm_of(inside[0]), "end": hhmm_of(e)}
+    return None
+
+
+def answer_missed_call(block_start: str, block_end: str, yes: bool,
+                       start: str | None = None, end: str | None = None) -> dict:
+    """Record the answer, and on a yes the meeting at the times confirmed.
+
+    Written closed in one line rather than through start_meeting and
+    close_open_meetings: those act on whatever meeting is open NOW, and a call
+    that ended an hour ago must not close, or be refused by, one running today.
+    """
+    now = now_local()
+    day, now_m = now.strftime("%Y-%m-%d"), now.hour * 60 + now.minute
+    rec = None
+    if yes:
+        s, e = to_min(start), to_min(end)
+        if not (0 <= s < e <= now_m):
+            raise ValueError(f"meeting {start}-{end} is not a finished span of today")
+        rec = {"day": day, "start": s, "end": e, "title": "meeting",
+               "created": now.isoformat(), "closed": now.isoformat()}
+        os.makedirs(STATE, exist_ok=True)
+        with open(MEETINGS, "a") as fh:
+            fh.write(json.dumps(rec) + "\n")
+    os.makedirs(STATE, exist_ok=True)
+    with open(MISSED_CALLS, "a") as fh:
+        fh.write(json.dumps({"day": day, "block_start": to_min(block_start),
+                             "block_end": to_min(block_end),
+                             "answer": "yes" if yes else "no",
+                             "at": now.isoformat()}) + "\n")
+    return {"meeting": rec}
 
 
 def last_entry_end(events: list[datetime]) -> int:
@@ -4789,6 +4880,9 @@ def status() -> dict:
             # names the minute in the title so the claim is legible before it
             # is made rather than only afterwards in the period list.
             "link_from": hhmm_of(link_from) if link_from is not None else None,
+            # So the end-of-call countdown can name the stretch it is closing.
+            "meeting_start": hhmm_of(in_meeting["start"]) if in_meeting else None,
+            "missed_call": missed_call(day, now_m),
             "periods": periods,
             # Newest first, same as `periods`. The periods say how the day was
             # divided up; this says what the divisions were made out of.
@@ -4929,6 +5023,17 @@ if __name__ == "__main__":
                         "title": r.get("title")} for r in closed],
             "at": now_local().strftime("%H:%M"),
         }))
+    elif cmd == "missed_call":
+        # missed_call yes <block_start> <block_end> <start> <end>
+        # missed_call no <block_start> <block_end>
+        answer = sys.argv[2]
+        if answer not in ("yes", "no"):
+            sys.exit(f"missed_call: answer must be yes or no, got {answer!r}")
+        out = answer_missed_call(sys.argv[3], sys.argv[4], answer == "yes",
+                                 *sys.argv[5:7])
+        day = now_local().strftime("%Y-%m-%d")
+        write_vault_snapshot(day, events_for(day))
+        print(json.dumps(out))
     elif cmd == "note":
         # Rebuilds the snapshot the way `mark` and `mode` do. The entry is a
         # claim about the minute it was typed in, so waiting for the next
