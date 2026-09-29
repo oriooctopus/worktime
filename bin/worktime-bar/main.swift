@@ -2290,7 +2290,8 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
             if let m = j["missed_call"] as? [String: String] {
                 s.missedCall = MissedCall(blockStart: m["block_start"]!,
                                           blockEnd: m["block_end"]!,
-                                          start: m["start"]!, end: m["end"]!)
+                                          start: m["start"]!, end: m["end"]!,
+                                          app: m["app"]!)
             }
             s.feedNotice = j["feed_notice"] as? String
             s.periods = (j["periods"] as? [[String: Any]] ?? []).map { p in
@@ -2681,6 +2682,10 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
     // meeting was recorded some other way) withdraws it.
     func askAboutMissedCall(_ call: MissedCall?) {
         if missedCallPanel?.call == call { return }
+        // Held back while the mic is in use, the same reason the probe holds
+        // it back during an open meeting: not over a call. The next poll
+        // after the call ends raises it.
+        if call != nil && missedCallPanel == nil && detector.inCall { return }
         missedCallPanel?.close()
         missedCallPanel = nil
         guard let call else { return }

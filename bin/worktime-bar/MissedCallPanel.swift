@@ -7,6 +7,7 @@ struct MissedCall: Equatable {
     let blockEnd: String
     let start: String
     let end: String
+    let app: String
 }
 
 // Raised after a busy block ends with a meeting app in front during it and no
@@ -48,7 +49,7 @@ final class MissedCallPanel {
         let title = NSTextField(labelWithString: "Were you on this call?")
         title.font = NSFont.systemFont(ofSize: 13, weight: .semibold)
         let message = NSTextField(
-            labelWithString: "Zoom was open during your \(call.blockStart)–\(call.blockEnd) block")
+            labelWithString: "\(call.app) was open during your \(call.blockStart)–\(call.blockEnd) block")
         message.font = NSFont.systemFont(ofSize: 12)
         message.textColor = .secondaryLabelColor
         message.lineBreakMode = .byTruncatingTail

@@ -15,7 +15,7 @@ enum MissedCallPanelTests {
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
         let call = MissedCall(blockStart: "12:00", blockEnd: "13:15",
-                              start: "12:03", end: "13:15")
+                              start: "12:03", end: "13:15", app: "Zoom")
 
         var got: [(String, String)] = []
         var no = 0

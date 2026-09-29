@@ -69,7 +69,8 @@ class MissedCallCase(unittest.TestCase):
         self.focus(("12:03:58", "us.zoom.xos"), ("12:40:18", "us.zoom.xos"))
         self.assertEqual(wp.missed_call(DAY, 13 * 60 + 20),
                          {"block_start": "12:00", "block_end": "13:15",
-                          "start": "12:03", "end": "13:15"})
+                          "start": "12:03", "end": "13:15",
+                          "app": "Zoom"})
 
     def test_block_still_running_is_not_asked_yet(self):
         self.focus(("12:03:58", "us.zoom.xos"))
@@ -97,6 +98,28 @@ class MissedCallCase(unittest.TestCase):
             fh.write(CALENDAR.replace("2026-09-29", "2026-09-28"))
         self.focus(("12:03:58", "us.zoom.xos"))
         self.assertIsNone(wp.missed_call(DAY, 13 * 60 + 20))
+
+    def test_not_asked_while_a_meeting_is_running(self):
+        self.focus(("12:03:58", "us.zoom.xos"))
+        with open(wp.MEETINGS, "a") as fh:
+            fh.write(json.dumps({"day": DAY, "start": 13 * 60 + 18, "end": None,
+                                 "title": "meeting",
+                                 "created": "2026-09-29T13:18:00"}) + "\n")
+        self.assertIsNone(wp.missed_call(DAY, 13 * 60 + 20))
+
+    def test_previous_call_tail_is_not_this_blocks_start(self):
+        # Zoom still up at 11:52 from the 11:00-11:30 call's overrun would sit
+        # inside the early-join allowance of 12:00 -- but a block ended at 11:30
+        # and that is before this one began, so only 11:30 onward can count.
+        # Here the recorded meeting of the earlier block ends 11:55, so 11:52
+        # belongs to it and the call starts at 12:10.
+        self.meeting(11 * 60, 11 * 60 + 55)
+        self.focus(("11:52:00", "us.zoom.xos"), ("12:10:00", "us.zoom.xos"))
+        self.assertEqual(wp.missed_call(DAY, 13 * 60 + 20)["start"], "12:10")
+
+    def test_teams_is_named_as_teams(self):
+        self.focus(("12:05:00", "com.microsoft.teams2"))
+        self.assertEqual(wp.missed_call(DAY, 13 * 60 + 20)["app"], "Teams")
 
     def test_yes_records_the_confirmed_times_and_stops_asking(self):
         self.focus(("12:03:58", "us.zoom.xos"))

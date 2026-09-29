@@ -1255,7 +1255,8 @@ def close_open_meetings(when: int | None = None) -> list[dict]:
 # the work calendar with a meeting app in front during it, so once such a block
 # is over and nothing recorded a meeting inside it, the bar asks.
 MISSED_CALLS = os.path.join(STATE, "missed-calls.jsonl")
-MEETING_APP_BUNDLES = {"us.zoom.xos", "com.microsoft.teams2", "com.microsoft.teams"}
+MEETING_APP_BUNDLES = {"us.zoom.xos": "Zoom", "com.microsoft.teams2": "Teams",
+                       "com.microsoft.teams": "Teams"}
 # Joining a few minutes early is ordinary; the app coming up then is the call.
 MISSED_CALL_LEAD_MIN = 10
 CAL_ROW = re.compile(
@@ -1294,17 +1295,26 @@ def missed_call(day: str, now_m: int) -> dict | None:
     if not blocks:
         return None
     meetings = meetings_for(day)
+    # Not while a call is running: the answer would be about the one before,
+    # and the panel floats over whatever is being shared.
+    if any(m["open"] for m in meetings):
+        return None
     app_minutes = sorted(
-        to_min(r["t"][:5]) for r in focus_rows(day)
+        (to_min(r["t"][:5]), MEETING_APP_BUNDLES[r["bundle"]]) for r in focus_rows(day)
         if r.get("bundle") in MEETING_APP_BUNDLES)
+    ends = [e2 for _, e2 in busy_blocks(day)] + [m["end"] for m in meetings]
     for s, e in sorted(blocks):
         if any(m["start"] < e and m["end"] > s for m in meetings):
             continue
-        inside = [m for m in app_minutes if s - MISSED_CALL_LEAD_MIN <= m < e]
+        # The early-join allowance stops at whatever ended before this block,
+        # so the tail of the previous call is not read as joining this one.
+        floor = max([s - MISSED_CALL_LEAD_MIN] + [x for x in ends if x <= s])
+        inside = [(m, app) for m, app in app_minutes if floor <= m < e]
         if not inside:
             continue
         return {"block_start": hhmm_of(s), "block_end": hhmm_of(e),
-                "start": hhmm_of(inside[0]), "end": hhmm_of(e)}
+                "start": hhmm_of(inside[0][0]), "end": hhmm_of(e),
+                "app": inside[0][1]}
     return None
 
 
