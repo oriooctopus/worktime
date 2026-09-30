@@ -31,7 +31,7 @@ Usage:
                                           that never counts toward main
   worktime-probe.py special_target <hours> <days>  -- special target, a total
                                           across <days> days from today
-  worktime-probe.py meeting_route main|special  -- answer the bar's "Main or
+  worktime-probe.py meeting_route main|special [HH:MM]  -- answer the bar's "Main or
                                           Special?" for the call open now
   worktime-probe.py missed_call yes|no <block_start> <block_end> [HH:MM HH:MM]
                                        -- answer the bar's "were you on this
@@ -1380,7 +1380,7 @@ def set_special(on: bool, at_ts: float | None = None) -> dict:
     return {"changed": True, "on": on}
 
 
-def route_meeting(to: str) -> dict:
+def route_meeting(to: str, start_hhmm: str | None = None) -> dict:
     """Answer "Main or Special?" for the meeting open right now.
 
     Keyed by the meeting's own start minute so the answer belongs to that call
@@ -1392,10 +1392,17 @@ def route_meeting(to: str) -> dict:
         raise ValueError(f"meeting_route: {to!r} is not main or special")
     now = now_local()
     day = now.strftime("%Y-%m-%d")
-    opened = [m for m in meetings_for(day) if m["open"]]
-    if not opened:
-        raise ValueError("meeting_route: no meeting is open to route")
-    start = opened[-1]["start"]
+    if start_hhmm is None:
+        opened = [m for m in meetings_for(day) if m["open"]]
+        if not opened:
+            raise ValueError("meeting_route: no meeting is open to route")
+        start = opened[-1]["start"]
+    else:
+        # A call confirmed after it ended is already closed by the time the
+        # bar can ask, so it is named by its start minute instead.
+        start = to_min(start_hhmm)
+        if not any(m["start"] == start for m in meetings_for(day)):
+            raise ValueError(f"meeting_route: no meeting started at {start_hhmm}")
     os.makedirs(STATE, exist_ok=True)
     with open(SPECIAL_LOG, "a") as fh:
         fh.write(json.dumps({"event": "route", "day": day, "start": start,
@@ -5328,6 +5335,11 @@ def status() -> dict:
             "link_from": hhmm_of(link_from) if link_from is not None else None,
             # So the end-of-call countdown can name the stretch it is closing.
             "meeting_start": hhmm_of(in_meeting["start"]) if in_meeting else None,
+            # Its own key because `why` no longer says it: a special-time dot
+            # outranks the meeting, and the bar's end-of-call logic used to read
+            # "in <title>" back out of the status text.
+            "meeting_title": ((in_meeting.get("title") or "meeting")
+                              if in_meeting else None),
             "missed_call": missed_call(day, now_m),
             "periods": periods,
             # Newest first, same as `periods`. The periods say how the day was
@@ -5474,7 +5486,8 @@ if __name__ == "__main__":
         write_vault_snapshot(day, events_for(day))
         print(json.dumps(res))
     elif cmd == "meeting_route":
-        print(json.dumps(route_meeting(sys.argv[2])))
+        print(json.dumps(route_meeting(
+            sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else None)))
         day = now_local().strftime("%Y-%m-%d")
         write_vault_snapshot(day, events_for(day))
     elif cmd == "meeting_end":

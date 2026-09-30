@@ -105,11 +105,28 @@ let END_DOUBLE_PRESS_SEC = 0.5
 // that happened later.
 let DOUBLE_PRESS_SEC = 0.33
 
+// ⌘⌥P starts or stops special time, from anywhere. The same chord family as the
+// shift toggle because it is the same kind of decision -- a statement about how
+// the day is being spent, not a cheap mid-thought press like ⌥W -- and P for
+// the purple it turns the dot. Free of the other three chords in this file.
+let SPECIAL_HOTKEY_CODE = UInt32(kVK_ANSI_P)
+let SPECIAL_HOTKEY_MODS = UInt32(cmdKey | optionKey)
+
+// How often the "you are in special time" panel comes back while it is on.
+let SPECIAL_REMIND_SEC = 300.0
+
+// The meeting apps the bar can name as the host of a call, in the order they
+// win when more than one is running. CoreAudio says a device is capturing but
+// never which process holds it, so when Zoom and Slack are both open the call
+// is assumed to be Zoom -- it is the one that is open for a reason.
+let MEETING_APP_BUNDLES = ["us.zoom.xos", "com.tinyspeck.slackmacgap"]
+
 // Which hot key fired. The Carbon handler is installed once and shared, so it
 // has to tell them apart by id rather than by which registration it came from.
 let HOTKEY_ID_SHIFT = UInt32(1)
 let HOTKEY_ID_ENTRY = UInt32(2)
 let HOTKEY_ID_END = UInt32(3)
+let HOTKEY_ID_SPECIAL = UInt32(4)
 
 // Absolute, not `/usr/bin/env python3`. launchd hands this process a PATH of
 // /usr/bin:/bin:/usr/sbin:/sbin, so `env` resolves to Apple's /usr/bin/python3
@@ -152,6 +169,7 @@ let WORKING = NSColor(srgbRed: 0.098, green: 0.620, blue: 0.439, alpha: 1)  // #
 let AWAY    = NSColor(srgbRed: 0.788, green: 0.522, blue: 0.000, alpha: 1)  // #c98500
 let MARKED  = NSColor(srgbRed: 0.380, green: 0.647, blue: 0.980, alpha: 1)
 let BROKEN  = NSColor(srgbRed: 0.850, green: 0.200, blue: 0.200, alpha: 1)
+// SPECIAL is in Buckets.swift beside the rows and panels that use it.
 
 struct Period {
     var start = 0
@@ -193,6 +211,17 @@ struct Status {
     var state = "unknown"
     var why = "not yet polled"
     var workedSec = 0
+    // Main after the meeting discount, and the per-bucket figures the menu
+    // draws. `workedSec` stays the raw sum.
+    var creditedSec = 0
+    var buckets = BucketInfo()
+    // HH:MM special time started, nil when it is off.
+    var specialSince: String?
+    // Title of the meeting covering now, nil when none. A key of its own
+    // because `why` says "special time" while special is on, and the end-of-call
+    // logic used to read the meeting back out of the status text.
+    var meetingTitle: String?
+    var inMeeting: Bool { meetingTitle != nil }
     var at = ""
     var quietSince: String?
     var quietSec: Int?
@@ -703,13 +732,19 @@ final class FocusLog {
 // Drawn as a bitmap, not a text glyph -- SF's circle glyphs sit off-center
 // within a button's text baseline, and no attributedTitle tweak fixes that
 // reliably. A custom-drawn image centers exactly in its frame every time.
-func dotImage(_ color: NSColor, hollow: Bool) -> NSImage {
+func dotImage(_ color: NSColor, hollow: Bool, halo: Bool = false) -> NSImage {
     let size = NSSize(width: 18, height: 18)
     let image = NSImage(size: size)
     image.lockFocus()
     let diameter: CGFloat = 8
     let rect = NSRect(x: (size.width - diameter) / 2, y: (size.height - diameter) / 2,
                        width: diameter, height: diameter)
+    // Special time's soft ring. It is what tells purple from blue without
+    // relying on colour alone, and costs no width beside the dot.
+    if halo {
+        color.withAlphaComponent(0.28).setFill()
+        NSBezierPath(ovalIn: rect.insetBy(dx: -2.5, dy: -2.5)).fill()
+    }
     let path = NSBezierPath(ovalIn: rect)
     if hollow {
         color.setStroke()
@@ -1455,6 +1490,15 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
     var hotKeyRef: EventHotKeyRef?
     var entryHotKeyRef: EventHotKeyRef?
     var endHotKeyRef: EventHotKeyRef?
+    var specialHotKeyRef: EventHotKeyRef?
+    // The repeating "you are in special time" reminder, and the panel it
+    // raised. Held so turning special off can stop one and withdraw the other.
+    var specialReminderTimer: Timer?
+    var specialReminder: SpecialReminderPanel?
+    // The open questions raised by special time, held so they are not released
+    // the moment the closure that created them returns.
+    var routePanel: MeetingRoutePanel?
+    var targetPanel: SpecialTargetPanel?
     // Which of the two activity views is showing, remembered across launches.
     // The choice is about how the reader wants to read the day rather than
     // about anything happening in it, so having it reset every time the app is
@@ -1564,6 +1608,8 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
                 // End Now row carries ⌘E as its key equivalent, so with the
                 // menu open both that row and this would fire.
                 case HOTKEY_ID_END:   if !bar.menuIsOpen { bar.endHotKey() }
+                // Guarded for the same reason: the menu row carries ⌘⌥P.
+                case HOTKEY_ID_SPECIAL: if !bar.menuIsOpen { bar.toggleSpecial() }
                 default:              if !bar.menuIsOpen { bar.toggleShift() }
                 }
             }
@@ -1587,6 +1633,11 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
                                                        id: HOTKEY_ID_END),
                                          GetApplicationEventTarget(), 0, &endHotKeyRef)
         FileHandle.standardError.write("hotkey cmd+E register -> \(endErr)\n".data(using: .utf8)!)
+        let specialErr = RegisterEventHotKey(SPECIAL_HOTKEY_CODE, SPECIAL_HOTKEY_MODS,
+                                             EventHotKeyID(signature: OSType(0x574B_5453),
+                                                           id: HOTKEY_ID_SPECIAL),
+                                             GetApplicationEventTarget(), 0, &specialHotKeyRef)
+        FileHandle.standardError.write("hotkey cmd+opt+P register -> \(specialErr)\n".data(using: .utf8)!)
     }
 
     func applicationDidFinishLaunching(_: Notification) {
@@ -1695,7 +1746,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         //
         // A meeting already open (a cancelled end-countdown, then audio
         // resuming) is the same call carrying on and needs no question.
-        let meetingOpen = meetingOpenedHere || status.why.hasPrefix("in ")
+        let meetingOpen = meetingOpenedHere || status.inMeeting
         // A question left over from an earlier call is moot once a meeting is
         // running, and left up it would take the end of this call for itself.
         if meetingOpen, let panel = meetingPrompt {
@@ -1743,8 +1794,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         }
         guard countdown == nil else { return }
 
-        let meeting = status.why.hasPrefix("in ")
-            ? String(status.why.dropFirst("in ".count)) : "Meeting"
+        let meeting = status.meetingTitle ?? "Meeting"
         FileHandle.standardError.write("call ended during \(meeting); counting down\n".data(using: .utf8)!)
         // The stretch this is about to record, so the times can be checked
         // while the Keep-tracking button is still there to correct them.
@@ -1797,8 +1847,21 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
     func build() {
         // "worked today" stands alone -- it's the day total, a different
         // metric from anything a period row shows, so it keeps its own row.
-        var worked = "worked today: \(human(status.workedSec))"
-        if let f = status.focusPct { worked += "   \(f)% focus" }
+        // Main after the meeting discount; the row below it says how much of
+        // that is calls and what they were before the discount. Focus % is the
+        // one figure from the old line that still has a place to live, and it
+        // rides on the Main bar's caption.
+        let bk = status.buckets
+        let spk = bk.special
+        let overBy = bk.mainCreditedSec - bk.mainTargetSec
+        var worked = "main \(hm(bk.mainCreditedSec))/\(hm(bk.mainTargetSec))"
+            + " meet \(hm(bk.meetingRawSec))>\(hm(bk.meetingCreditedSec))"
+        if let f = status.focusPct { worked += " \(f)% focus" }
+        // Only what the Special row renders, so a poll that changes nothing
+        // visible costs nothing. A running clock is deliberately not here: the
+        // row shows minutes.
+        worked += " special \(spk.visible) \(hm(spk.sec))"
+        if let t = spk.target { worked += " \(t.targetSec) \(t.days) \(t.endDay)" }
 
         // "Nm since last activity" / "quiet Nm" used to be its own head row
         // above this list, describing the exact same current period a second
@@ -1809,6 +1872,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         // which state the app is in is worse than either colour alone.
         let symbol = status.state == "idle" || status.state == "unknown" ? "○" : "●"
         let color: NSColor = status.state == "marked" ? MARKED
+            : status.state == "special" ? SPECIAL
             : status.state == "working" ? WORKING
             : status.state == "broken" ? BROKEN : AWAY
 
@@ -1913,9 +1977,67 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         sessionItems = []
         activityHeader = nil
         activityToggle = nil
-        let w = NSMenuItem(title: worked, action: nil, keyEquivalent: "")
-        w.isEnabled = false
-        m.addItem(w)
+        // The two buckets as bars. Main always; Special only on a day that has
+        // a target or some special time, so an ordinary day does not carry a
+        // row about a bucket it never touched.
+        let mainRow = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        let filledSec = max(min(bk.mainCreditedSec, bk.mainTargetSec), 1)
+        // The hatched tail is the meeting credit, clipped to what fits under
+        // the target tick: past it the bar is simply full.
+        let hatched = CGFloat(min(bk.meetingCreditedSec, filledSec)) / CGFloat(filledSec)
+        mainRow.view = BucketRowView(
+            width: 300, title: "Main", titleColor: .labelColor,
+            value: hm(bk.mainCreditedSec), dim: "/ \(hm(bk.mainTargetSec))",
+            fraction: CGFloat(bk.mainCreditedSec) / CGFloat(bk.mainTargetSec),
+            hatchedShare: hatched, color: MAIN_GREEN,
+            captionLeft: bk.meetingRawSec > 0
+                ? "meetings \(hm(bk.meetingRawSec)) → \(hm(bk.meetingCreditedSec))"
+                : "no meetings",
+            captionRight: [overBy > 0 ? "+\(hm(overBy)) over"
+                                      : "\(bk.mainCreditedSec * 100 / bk.mainTargetSec)%",
+                           status.focusPct.map { "\($0)% focus" }]
+                .compactMap { $0 }.joined(separator: " · "))
+        m.addItem(mainRow)
+        if spk.visible {
+            let spRow = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+            if let t = spk.target {
+                spRow.view = BucketRowView(
+                    width: 300, title: "Special", titleColor: SPECIAL,
+                    value: hm(t.doneSec),
+                    dim: "/ \(hm(t.targetSec)) · \(t.days) day\(t.days == 1 ? "" : "s")",
+                    fraction: CGFloat(t.doneSec) / CGFloat(t.targetSec),
+                    hatchedShare: 0, color: SPECIAL,
+                    captionLeft: nil, captionRight: nil)
+            } else {
+                spRow.view = BucketRowView(
+                    width: 300, title: "Special", titleColor: SPECIAL,
+                    value: hm(spk.sec), dim: "· no target", fraction: nil,
+                    hatchedShare: 0, color: SPECIAL,
+                    captionLeft: nil, captionRight: nil)
+            }
+            m.addItem(spRow)
+        }
+        m.addItem(.separator())
+        let spToggle = NSMenuItem(title: spk.on ? "Stop special time" : "Start special time",
+                                  action: #selector(toggleSpecial), keyEquivalent: "p")
+        spToggle.keyEquivalentModifierMask = [.command, .option]
+        m.addItem(spToggle)
+        let targetHost = NSMenuItem(
+            title: spk.target.map { "Special target…  \(hm($0.targetSec)) · \($0.days)d" }
+                ?? "Special target…  none",
+            action: nil, keyEquivalent: "")
+        let targetSub = NSMenu()
+        for (i, span) in SpecialTargetPanel.spans.enumerated() {
+            let mi = NSMenuItem(title: span.days == 0 ? "Custom…" : span.title,
+                                action: #selector(pickSpecialTarget(_:)), keyEquivalent: "")
+            mi.tag = i
+            // Same reason as the End Session rows: the sweep at the bottom of
+            // build() only walks the top level.
+            mi.target = self
+            targetSub.addItem(mi)
+        }
+        targetHost.submenu = targetSub
+        m.addItem(targetHost)
         m.addItem(.separator())
 
         let st = NSMenuItem(title: "", action: nil, keyEquivalent: "")
@@ -2139,7 +2261,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         // "early" no longer means anything -- there is no schedule to be early
         // against. The row is the manual way to close a call the microphone is
         // still hearing, e.g. a Zoom window left open in an empty room.
-        if status.why.hasPrefix("in ") {
+        if status.inMeeting {
             m.addItem(NSMenuItem(title: "Meeting ended",
                                  action: #selector(endMeeting), keyEquivalent: ""))
         }
@@ -2307,6 +2429,10 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
             s.state = j["state"] as? String ?? "unknown"
             s.why = j["why"] as? String ?? ""
             s.workedSec = j["worked_sec"] as? Int ?? 0
+            s.creditedSec = j["credited_sec"] as! Int
+            s.buckets = parseBuckets(j["buckets"] as! [String: Any])
+            s.specialSince = j["special_since"] as? String
+            s.meetingTitle = j["meeting_title"] as? String
             s.at = j["at"] as? String ?? ""
             s.quietSince = j["quiet_since"] as? String
             s.quietSec = j["quiet_sec"] as? Int
@@ -2386,7 +2512,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
             // open before the bar quit (ended=true never fired), it stays open
             // forever because the detector can never see "quiet after armed".
             // Detect that case here: open meeting + mic already quiet = close it.
-            if s.why.hasPrefix("in ") && !anythingIsCapturing() {
+            if s.inMeeting && !anythingIsCapturing() {
                 FileHandle.standardError.write(
                     "startup: stale open meeting and mic quiet; closing\n".data(using: .utf8)!)
                 probeQueue.async {
@@ -2396,12 +2522,14 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
             }
         }
         status = s
+        syncSpecialReminder(on: s.state == "special")
         askAboutMissedCall(s.missedCall)
         lastActivityAt = s.quietSec.map { Date().addingTimeInterval(-Double($0)) }
         blinkOn = true
         switch s.state {
         case "working": item.button?.image = dotImage(WORKING, hollow: false)
         case "marked":  item.button?.image = dotImage(MARKED, hollow: false)
+        case "special": item.button?.image = dotImage(SPECIAL, hollow: false, halo: true)
         case "broken":  item.button?.image = dotImage(BROKEN, hollow: false)
         default:        item.button?.image = dotImage(AWAY, hollow: true)
         }
@@ -2410,6 +2538,61 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         item.button?.toolTip = s.state == "broken" ? probeFail?.report ?? s.why
             : "\(s.state) — \(s.why) (as of \(s.at))"
         build()
+    }
+
+    // ⌘⌥P and the row that names it. The probe decides what on and off mean;
+    // this only flips it, reading the state on main first so the decision and
+    // the menu's rendering of it cannot disagree.
+    @objc func toggleSpecial() {
+        let turnOn = !status.buckets.special.on
+        probeQueue.async {
+            _ = runProbe(["special", turnOn ? "on" : "off"])
+            DispatchQueue.main.async { self.refresh() }
+        }
+    }
+
+    // A menu pick of a span opens the panel with that span chosen; the panel
+    // is where hours are entered and what sets the target.
+    @objc func pickSpecialTarget(_ sender: NSMenuItem) {
+        targetPanel = SpecialTargetPanel(preselect: sender.tag) { [weak self] totalHours, days in
+            self?.targetPanel = nil
+            probeQueue.async {
+                _ = runProbe(["special_target", String(totalHours), String(days)])
+                DispatchQueue.main.async { self?.refresh() }
+            }
+        }
+    }
+
+    // Started and stopped from the poll, not from the toggle, so the reminder
+    // follows what the probe says -- including special left on across an app
+    // restart, and special ended by End Session -- rather than what this app
+    // last asked for. First reminder a full interval after it begins: the
+    // person has just pressed the key and knows.
+    func syncSpecialReminder(on: Bool) {
+        if on && specialReminderTimer == nil {
+            let t = Timer.scheduledTimer(withTimeInterval: SPECIAL_REMIND_SEC,
+                                         repeats: true) { [weak self] _ in
+                self?.remindSpecial()
+            }
+            RunLoop.main.add(t, forMode: .common)
+            specialReminderTimer = t
+        } else if !on, specialReminderTimer != nil {
+            specialReminderTimer?.invalidate()
+            specialReminderTimer = nil
+            specialReminder?.close()
+            specialReminder = nil
+        }
+    }
+
+    func remindSpecial() {
+        specialReminder?.close()
+        specialReminder = SpecialReminderPanel(special: status.buckets.special) { [weak self] in
+            self?.specialReminder = nil
+            probeQueue.async {
+                _ = runProbe(["special", "off"])
+                DispatchQueue.main.async { self?.refresh() }
+            }
+        }
     }
 
     // ⌘⌥S, and the toggle row that names it. Starts a shift, or ends the
@@ -2699,10 +2882,41 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         meetingOpenedHere = end == nil
         FileHandle.standardError.write(
             "meeting confirmed from \(start)\(end.map { " to \($0)" } ?? "")\n".data(using: .utf8)!)
+        // The host app, so the probe knows which foreground app IS the call
+        // when it weights the meeting (see bucket_credit). Left off when none
+        // of the known meeting apps is running -- a call in a browser -- and
+        // the probe then reads it as Zoom, the same default it gives every
+        // call recorded before this was kept.
+        let running = Set(NSWorkspace.shared.runningApplications.compactMap { $0.bundleIdentifier })
+        let host = MEETING_APP_BUNDLES.first { running.contains($0) }
+        let special = status.buckets.special.on
+        let name = status.meetingTitle ?? "Meeting"
         probeQueue.async {
-            _ = runProbe(["meeting_start", "meeting", start])
+            _ = runProbe(["meeting_start", "meeting", start] + (host.map { [$0] } ?? []))
             if let end { _ = runProbe(["meeting_end", end]) }
-            DispatchQueue.main.async { self.refresh() }
+            DispatchQueue.main.async {
+                self.refresh()
+                if special { self.askMainOrSpecial(meeting: name, start: start) }
+            }
+        }
+    }
+
+    // A call began while special time was on. Each one is asked about, because
+    // what a call is worth depends on why special was on.
+    func askMainOrSpecial(meeting: String, start: String) {
+        let bk = status.buckets
+        let toTarget = max(bk.mainTargetSec - bk.mainCreditedSec, 0)
+        let note = toTarget > 0
+            ? "2/3 credit, full credit while working. \(hm(toTarget)) to reach \(hm(bk.mainTargetSec))."
+            : "2/3 credit, full credit while working. Main target already met."
+        routePanel?.close()
+        routePanel = MeetingRoutePanel(meeting: meeting, mainNote: note) { [weak self] to in
+            self?.routePanel = nil
+            FileHandle.standardError.write("meeting \(start) routed to \(to)\n".data(using: .utf8)!)
+            probeQueue.async {
+                _ = runProbe(["meeting_route", to, start])
+                DispatchQueue.main.async { self?.refresh() }
+            }
         }
     }
 
