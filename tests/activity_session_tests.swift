@@ -18,10 +18,12 @@ func session(start: Int = 540, end: Int = 570, lenSec: Int = 1800,
              deadSec: Int = 0,
              what: String = "", counted: Bool = true, current: Bool = false,
              n: Int = 4, kinds: [(String, Int)] = [("prompt", 4)],
-             rows: [SessionRow] = []) -> ActSession {
+             rows: [SessionRow] = [], special: Bool = false,
+             convert: SessionConvert? = nil) -> ActSession {
     ActSession(start: start, end: end, lenSec: lenSec, deadSec: deadSec,
                what: what, counted: counted,
-               current: current, n: n, kinds: kinds, rows: rows)
+               current: current, special: special, convert: convert,
+               n: n, kinds: kinds, rows: rows)
 }
 
 // Swift allows loose statements only in a file called main.swift, and this one
@@ -148,51 +150,35 @@ let whole = session(n: 1, rows: [
 check(sessionMoreLine(whole) == nil,
       "a complete submenu claimed there was more: \"\(sessionMoreLine(whole) ?? "")\"")
 
-// -- where the events panel goes -------------------------------------------
+// -- special sessions and conversion ---------------------------------------
 
-// A screen 1600 wide, a menu 300 wide sitting a third of the way across it,
-// and a row near the top of that menu.
-let screen = NSRect(x: 0, y: 0, width: 1600, height: 1000)
-let menuRect = NSRect(x: 500, y: 500, width: 300, height: 400)
-let rowRect = NSRect(x: 500, y: 860, width: 300, height: 34)
-let panel = NSSize(width: 460, height: 200)
+// A special session says so on its row, after the count and before "now".
+let sp = sessionStrings(session(start: 600, end: 625, lenSec: 1500, current: true,
+                                n: 2, special: true))
+check(sp.top == "10:00–10:25 · 25m   2 events   ·  special   ·  now",
+      "a special row read \"\(sp.top)\"")
+check(!sessionStrings(session()).top.contains("special"),
+      "a main session claimed to be special")
 
-// The gap is the entire reason this is a panel rather than a submenu, which
-// AppKit places flush and offers no way to offset.
-let left = popoverFrame(row: rowRect, menu: menuRect, size: panel, screen: screen)
-check(left.maxX == menuRect.minX - POPOVER_GAP,
-      "the panel sat \\(menuRect.minX - left.maxX)pt from the menu, not \\(POPOVER_GAP)")
+// The row words name the bucket the session is going to.
+check(SessionConvert(to: "special", from: 540, until: 570).title == "Convert to Special Time",
+      "the to-special row was titled wrong")
+check(SessionConvert(to: "main", from: 540, until: 570).title == "Convert to Main Time",
+      "the to-main row was titled wrong")
 
-// Top-aligned with the row that opened it: the panel is taller than the row,
-// and centring left its first line -- the newest event, the one being asked
-// about -- pointing at nothing.
-check(left.maxY == rowRect.maxY,
-      "the panel's top was \\(left.maxY), the row's \\(rowRect.maxY)")
+// What goes back to the probe: minutes as clock times, "now" for a running one.
+check(SessionConvert(to: "special", from: 510, until: nil).probeArgs == ["special", "08:30", "now"],
+      "a running session's args were \(SessionConvert(to: "special", from: 510, until: nil).probeArgs)")
+check(SessionConvert(to: "main", from: 600, until: 625).probeArgs == ["main", "10:00", "10:25"],
+      "a finished session's args were wrong")
 
-// A menu near the left edge has no room on that side, so the panel goes to the
-// other one rather than half off the display.
-let cornered = popoverFrame(row: NSRect(x: 20, y: 860, width: 300, height: 34),
-                            menu: NSRect(x: 20, y: 500, width: 300, height: 400),
-                            size: panel, screen: screen)
-check(cornered.minX == 320 + POPOVER_GAP,
-      "a cornered panel opened at \\(cornered.minX) instead of beside the menu")
-
-// Whatever side it lands on, it stays on the display.
-for m in [menuRect, NSRect(x: 20, y: 500, width: 300, height: 400),
-          NSRect(x: 1200, y: 500, width: 300, height: 400)] {
-    let f = popoverFrame(row: NSRect(x: m.minX, y: 860, width: 300, height: 34),
-                         menu: m, size: panel, screen: screen)
-    check(f.minX >= screen.minX && f.maxX <= screen.maxX,
-          "a panel ran off the side: \\(f)")
-}
-
-// A session long enough to be taller than the screen is pushed down to fit
-// rather than starting level with its row and running off the top.
-let tall = popoverFrame(row: NSRect(x: 500, y: 980, width: 300, height: 34),
-                        menu: menuRect, size: NSSize(width: 460, height: 900),
-                        screen: screen)
-check(tall.minY >= screen.minY && tall.maxY <= screen.maxY,
-      "a tall panel ran off the screen: \\(tall)")
+// The key covers the conversion: two sessions identical on screen whose
+// conversions differ would otherwise leave the wrong range behind the row.
+check(sessionKey(session(convert: SessionConvert(to: "special", from: 510, until: nil)))
+        != sessionKey(session(convert: SessionConvert(to: "special", from: 540, until: nil))),
+      "the menu key ignored where a conversion starts")
+check(sessionKey(session(special: true)) != sessionKey(session()),
+      "the menu key could not tell special from main")
 
 // -- the menu key ---------------------------------------------------------
 

@@ -385,19 +385,36 @@ own marked `not counted` rather than disappearing from the tally.
 
 Hovering any row in the raw list brackets every other row from the same
 session, so the grouping the sessions view gives is readable without leaving
-the list. Each session row opens a panel beside the menu (hover the `‹`) listing its own events — up to
-twenty of them, in the same three columns the raw list uses, ending in a line
-saying how many the cap left out. Grouping is what makes the day readable and
-also what puts the evidence out of reach; the panel is the only place one
-session's rows can be read, since toggling back gives the newest ten events of
-the whole day rather than of that stretch.
+the list. Each session row opens a submenu (hover the `‹`): **Link with Last Session**,
+**Convert to Special Time** (or **Convert to Main Time** on a special session),
+a divider, then the session's own events — up to twenty of them, in the same
+three columns the raw list uses, ending in a line saying how many the cap left
+out. Grouping is what makes the day readable and also what puts the evidence out
+of reach; the submenu is the only place one session's rows can be read, since
+toggling back gives the newest ten events of the whole day rather than of that
+stretch.
 
-It is a panel the app places (`bin/worktime-bar/SessionPopover.swift`) rather
-than a real submenu, for one reason: AppKit puts a submenu flush against its
-parent and offers no offset, and the two windows meeting at a seam read as one
-wide menu whose halves obeyed different rules. The cost is that it can't be
-walked with the arrow keys — nothing in it is a target, so what's lost is
-moving a selection through items that were never selectable.
+It is a real submenu, not a floating panel, because the actions have to be
+clickable: a menu owns the mouse while it is open and swallows a click on any
+other window of the app. AppKit puts a submenu flush against its parent with no
+offset, so the two windows meet at a seam — the price of a row that can be
+clicked. A run of `not counted` minutes has no **Convert** row; it has no time
+to move.
+
+**Special time is its own session.** Every special span is a session of its own
+(purple, tagged `special`), even one with no events yet, and an event inside a
+special span joins it rather than the main session beside it. The probe cuts
+special out of the periods, so the two were never the same kind of time.
+
+**Convert** moves a whole session between the buckets: `convert_session
+special|main <HH:MM> <HH:MM|now>`. The range is the one the probe put on the row
+(`convert` in each session of `status`), and is recorded as an `add` or `cut`
+row in `special.jsonl`, replayed over the on/off toggles. A finished session
+converts as itself. The **running** main session reaches back to where the last
+special session ended — but only while no other main session sits in between, so
+a conversion never swallows a session you did not point at — and leaves special
+on so the next minute is not handed straight back; converting the running
+special session to main turns special off.
 
 ## Meetings
 
@@ -525,7 +542,8 @@ everything else.
   keyboard from the call.
 
 **Files** (all under `~/.claude/stats/worktime/`, append-only like `marks.jsonl`):
-`special.jsonl` holds `on` / `off` toggles and `route` answers;
+`special.jsonl` holds `on` / `off` toggles, `route` answers and the `add` / `cut`
+range rows a session conversion writes;
 `special-targets.jsonl` holds one row per target set. Every figure is derived
 from them on read.
 

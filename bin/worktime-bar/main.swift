@@ -1003,16 +1003,11 @@ final class SessionHover {
     // menu owns the views, this object is rebuilt with them, and both are
     // discarded together on the next build.
     var rows: [NSView] = []
-    // Called with the row that was entered, so the events panel can follow the
-    // pointer. Nil for the raw list, which answers a hover by marking its own
-    // rows and opens nothing.
-    var onEnter: ((Int?, NSView?) -> Void)?
 
-    func enter(_ id: Int?, from view: NSView? = nil) {
+    func enter(_ id: Int?) {
         guard id != session else { return }
         session = id
         for r in rows { r.needsDisplay = true }
-        onEnter?(id, view)
     }
 }
 
@@ -1274,7 +1269,8 @@ final class SessionRowView: NSView {
         let (top, what) = sessionStrings(s)
 
         let topFont = NSFont.systemFont(ofSize: 12, weight: s.current ? .semibold : .regular)
-        let topColor: NSColor = s.counted ? .labelColor : .secondaryLabelColor
+        let topColor: NSColor = s.special ? SPECIAL
+            : s.counted ? .labelColor : .secondaryLabelColor
         let topField = NSTextField(labelWithString: "")
         topField.lineBreakMode = .byTruncatingTail
         // Red and semibold for the "/ Ym" when dead time is present. Orange at
@@ -1361,7 +1357,7 @@ final class SessionRowView: NSView {
     // `self` goes along so whoever opens the panel knows which row to stand
     // beside; the view is the only thing that knows where on screen it ended
     // up.
-    override func mouseEntered(with _: NSEvent) { hover?.enter(session, from: self) }
+    override func mouseEntered(with _: NSEvent) { hover?.enter(session) }
     override func mouseExited(with _: NSEvent) { hover?.enter(nil) }
 
     required init?(coder: NSCoder) { fatalError("not used") }
@@ -1508,9 +1504,6 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
     var sessionItems: [NSMenuItem] = []
     var activityHeader: NSMenuItem?
     var activityToggle: ToggleRowView?
-    // One panel for the app's lifetime -- see SessionPopover for why it is a
-    // panel and not the submenu it replaced.
-    let popover = SessionPopover()
     let focusLog = FocusLog()
     var audioTimer: Timer?
     var detector = CallDetector(minCallSec: MIN_CALL_SEC, settleSec: SETTLE_SEC)
@@ -1942,7 +1935,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         // half a second later, which is the whole reason the flip now hides
         // rows instead.
         let key = ([worked, symbol, why, status.state, status.mode,
-                    status.feedNotice ?? ""] + debug
+                    status.feedNotice ?? "", status.linkFrom ?? ""] + debug
                    + periods.map { p in
                        let s = periodStrings(p)
                        return s.top + "\u{1}" + s.what
@@ -2114,29 +2107,6 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
             // Hiding costs one extra list built per rebuild, which is a dozen
             // labels off data already in hand.
             let sessions = status.sessions
-            // Opening the panel is the menu's job, not the row's: only this
-            // level knows the menu's own window, and the panel has to be
-            // placed against that rather than against the row alone.
-            //
-            // Guarded on grouped because the raw rows share this hover object
-            // and now exist even while the sessions list is the one showing.
-            // Without the guard, pointing at a raw row would open a session
-            // panel beside the list that is meant to answer hovers by marking
-            // its own rows.
-            hover.onEnter = { [weak self] id, view in
-                guard let self else { return }
-                guard self.grouped, let id, id < sessions.count, let view,
-                      let window = view.window, let screen = window.screen
-                else {
-                    self.popover.hide()
-                    return
-                }
-                self.popover.show(sessions[id],
-                                  row: window.convertToScreen(
-                                      view.convert(view.bounds, to: nil)),
-                                  menu: window.frame,
-                                  screen: screen.visibleFrame)
-            }
             sessionItems = sessions.enumerated().map { i, s in
                 let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
                 let view = SessionRowView(s, width: 300)
@@ -2144,6 +2114,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
                 view.hover = hover
                 hover.rows.append(view)
                 item.view = view
+                item.submenu = sessionSubmenu(s)
                 m.addItem(item)
                 return item
             }
@@ -2211,8 +2182,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         // it would make the menu's shape depend on how the morning happened to
         // go, and an item that comes and goes is harder to learn than one that
         // is always in the same place and sometimes dim.
-        let link = NSMenuItem(title: status.linkFrom.map { "Link with Last Session (from \($0))" }
-                                  ?? "Link with Last Session",
+        let link = NSMenuItem(title: linkTitle,
                               action: #selector(linkLastSession), keyEquivalent: "")
         m.addItem(link)
 
@@ -2326,7 +2296,6 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
     // delivers one.
     func menuDidClose(_: NSMenu) {
         menuIsOpen = false
-        popover.hide()
         hover?.enter(nil)
     }
 
@@ -2464,6 +2433,12 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
                            what: g["what"] as? String ?? "",
                            counted: g["counted"] as? Bool ?? true,
                            current: g["current"] as? Bool ?? false,
+                           special: g["special"] as? Bool ?? false,
+                           convert: (g["convert"] as? [String: Any]).map { c in
+                               SessionConvert(to: c["to"] as? String ?? "",
+                                              from: c["from"] as? Int ?? 0,
+                                              until: c["until"] as? Int)
+                           },
                            n: g["n"] as? Int ?? 0,
                            // JSON pairs, not a dictionary, because the order is
                            // the payload's: the probe sorts biggest first so
@@ -2719,10 +2694,6 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         activityHeader?.title = grouped ? "Recent activity — sessions"
                                         : "Recent activity"
         activityToggle?.setOn(grouped)
-        // The panel belongs to the sessions list, so leaving the sessions view
-        // has to take it with it -- the row it was opened from is now hidden
-        // and will never deliver the mouseExited that would have closed it.
-        if !grouped { popover.hide() }
     }
 
     @objc func pickMode(_ sender: NSMenuItem) {
@@ -2835,6 +2806,81 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
                r["linked"] as? Bool == false {
                 FileHandle.standardError.write(
                     "link last: \(r["why"] as? String ?? "refused")\n"
+                        .data(using: .utf8)!)
+            }
+            DispatchQueue.main.async { self.refresh() }
+        }
+    }
+
+    var linkTitle: String {
+        status.linkFrom.map { "Link with Last Session (from \($0))" } ?? "Link with Last Session"
+    }
+
+    // What hovering a session opens: the two things that can be done about it,
+    // a divider, then the events it was made of.
+    //
+    // A real submenu rather than the stand-off panel this list used to use: the
+    // panel could not be clicked, because the menu owns the mouse while it is
+    // open and swallows a click on any other window. Actions have to live in
+    // the menu to be reachable at all, and AppKit puts a submenu flush against
+    // its parent -- the seam the panel was built to avoid comes back.
+    //
+    // The same Link row as the top of the menu, on every session: it claims the
+    // gap before now whichever row it was reached from. Convert is per session
+    // and absent for a run of uncounted minutes, which has no time to move.
+    func sessionSubmenu(_ s: ActSession) -> NSMenu {
+        let sub = NSMenu()
+        let link = NSMenuItem(title: linkTitle, action: #selector(linkLastSession),
+                              keyEquivalent: "")
+        // Targets set by hand: a submenu item left nil falls back to the
+        // responder chain, finds nothing, and is drawn permanently greyed out.
+        link.target = self
+        sub.addItem(link)
+        if let c = s.convert {
+            let convert = NSMenuItem(title: c.title, action: #selector(convertSession(_:)),
+                                     keyEquivalent: "")
+            convert.target = self
+            convert.representedObject = c.probeArgs
+            sub.addItem(convert)
+        }
+        if s.rows.isEmpty && sessionMoreLine(s) == nil { return sub }
+        sub.addItem(.separator())
+
+        // Same three columns as the raw list, for the same reason it has them:
+        // this is the raw list scoped to one session, with clock times in the
+        // first column because inside a stretch that ended an hour ago the
+        // events are read against each other, not against now.
+        let timeWidth = columnWidth(s.rows.map(\.t))
+        let kindWidth = columnWidth(s.rows.map(\.kind))
+        for r in s.rows {
+            let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+            item.view = ActivityRowView(Activity(t: r.t, at: 0, kind: r.kind,
+                                                 what: r.what, n: r.n),
+                                        width: 420, age: r.t,
+                                        ageWidth: timeWidth, kindWidth: kindWidth)
+            sub.addItem(item)
+        }
+        // What the payload's cap left out, said out loud: twenty shown of a
+        // hundred would contradict the count on the row this hangs off.
+        if let line = sessionMoreLine(s) {
+            let more = NSMenuItem(title: line, action: nil, keyEquivalent: "")
+            more.isEnabled = false
+            sub.addItem(more)
+        }
+        return sub
+    }
+
+    // Move a session's minutes to the other bucket. The probe decided the range
+    // when it built the row, so this passes it back untouched.
+    @objc func convertSession(_ sender: NSMenuItem) {
+        guard let args = sender.representedObject as? [String] else { return }
+        probeQueue.async {
+            if case .ok(let out) = runProbe(["convert_session"] + args),
+               let data = out.data(using: .utf8),
+               let r = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               r["converted"] as? Bool == false {
+                FileHandle.standardError.write(
+                    "convert session: \(r["why"] as? String ?? "refused")\n"
                         .data(using: .utf8)!)
             }
             DispatchQueue.main.async { self.refresh() }
