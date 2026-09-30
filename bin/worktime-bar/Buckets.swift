@@ -31,7 +31,7 @@ struct SpecialInfo {
 
 struct BucketInfo {
     var mainCreditedSec = 0
-    var mainTargetSec = 4 * 3600
+    var mainTargetSec = mainBaseTargetSec
     var meetingRawSec = 0
     var meetingCreditedSec = 0
     var special = SpecialInfo()
@@ -57,6 +57,10 @@ func parseBuckets(_ j: [String: Any]) -> BucketInfo {
     }
     return b
 }
+
+/// Main's standing daily target, before any of a special target is set
+/// against it. Mirrors MAIN_TARGET_SEC in the probe.
+let mainBaseTargetSec = 4 * 3600
 
 // "1h24m", "36m" -- the same shape the rest of the menu uses for a duration.
 func hm(_ sec: Int) -> String {
@@ -511,7 +515,8 @@ final class MeetingRoutePanel {
 
 // A radio list of spans with their end dates, and hours per day. The target is
 // a TOTAL across the span (hours per day x days), and replaces the current one.
-// `onSet` receives that total and the day count.
+// A percentage of it can be taken out of main's target rather than sitting on
+// top of it. `onSet` receives the total, the day count and that percentage.
 final class SpecialTargetPanel: NSObject {
     struct Span { let title: String; let days: Int }
     static let spans = [Span(title: "Today", days: 1), Span(title: "3 days", days: 3),
@@ -522,11 +527,13 @@ final class SpecialTargetPanel: NSObject {
     private let hoursField = NSTextField(string: "2")
     private let daysField = NSTextField(string: "5")
     private let totalLabel = NSTextField(labelWithString: "")
-    private let onSet: (Double, Int) -> Void
+    private let pctField = NSTextField(string: "0")
+    private let mainLabel = NSTextField(labelWithString: "")
+    private let onSet: (Double, Int, Double) -> Void
 
-    init(preselect: Int, present: Bool = true, onSet: @escaping (Double, Int) -> Void) {
+    init(preselect: Int, present: Bool = true, onSet: @escaping (Double, Int, Double) -> Void) {
         self.onSet = onSet
-        panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 340, height: 230),
+        panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 340, height: 270),
                         styleMask: [.titled, .nonactivatingPanel, .fullSizeContentView],
                         backing: .buffered, defer: false)
         super.init()
@@ -567,7 +574,7 @@ final class SpecialTargetPanel: NSObject {
             rows.addArrangedSubview(row)
         }
 
-        for fld in [hoursField, daysField] {
+        for fld in [hoursField, daysField, pctField] {
             fld.alignment = .right
             fld.widthAnchor.constraint(equalToConstant: 40).isActive = true
             fld.target = self
@@ -579,6 +586,12 @@ final class SpecialTargetPanel: NSObject {
         perDay.orientation = .horizontal
         perDay.spacing = 6
 
+        let deduct = NSStackView(views: [NSTextField(labelWithString: "Take"), pctField,
+                                         NSTextField(labelWithString: "% off main ·"),
+                                         mainLabel])
+        deduct.orientation = .horizontal
+        deduct.spacing = 6
+
         let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancelTapped))
         cancel.bezelStyle = .rounded
         let set = NSButton(title: "Set", target: self, action: #selector(setTapped))
@@ -588,7 +601,7 @@ final class SpecialTargetPanel: NSObject {
         buttons.orientation = .horizontal
 
         let content = panel.contentView!
-        let stack = NSStackView(views: [title, rows, perDay, buttons])
+        let stack = NSStackView(views: [title, rows, perDay, deduct, buttons])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 10
@@ -624,9 +637,19 @@ final class SpecialTargetPanel: NSObject {
     private var days: Int { Int(daysField.stringValue) ?? 0 }
     private var hours: Double { Double(hoursField.stringValue) ?? -1 }
 
+    private var pct: Double { Double(pctField.stringValue) ?? -1 }
+
     private func refreshTotal() {
         totalLabel.stringValue = days > 0 && hours >= 0
             ? "\(String(format: "%g", hours * Double(days)))h" : "—"
+        // What main's target becomes on each day of the span, so the effect of
+        // the percentage is visible before it is set.
+        if days > 0, hours >= 0, (0...100).contains(pct) {
+            let perDay = Int((hours * 3600 * Double(days) * pct / 100 / Double(days)).rounded())
+            mainLabel.stringValue = "main \(hm(max(mainBaseTargetSec - perDay, 0)))"
+        } else {
+            mainLabel.stringValue = "—"
+        }
     }
 
     @objc private func picked(_ sender: NSButton) { select(sender.tag) }
@@ -637,8 +660,8 @@ final class SpecialTargetPanel: NSObject {
         refreshTotal()
         // Refused rather than coerced: a blank or negative field is a typo,
         // and guessing a number would bank a target nobody asked for.
-        guard days >= 1, hours >= 0 else { NSSound.beep(); return }
+        guard days >= 1, hours >= 0, (0...100).contains(pct) else { NSSound.beep(); return }
         panel.orderOut(nil)
-        onSet(hours * Double(days), days)
+        onSet(hours * Double(days), days, pct)
     }
 }

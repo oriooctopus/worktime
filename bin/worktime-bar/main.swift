@@ -2544,10 +2544,10 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
     // A menu pick of a span opens the panel with that span chosen; the panel
     // is where hours are entered and what sets the target.
     @objc func pickSpecialTarget(_ sender: NSMenuItem) {
-        targetPanel = SpecialTargetPanel(preselect: sender.tag) { [weak self] totalHours, days in
+        targetPanel = SpecialTargetPanel(preselect: sender.tag) { [weak self] totalHours, days, mainPct in
             self?.targetPanel = nil
             probeQueue.async {
-                _ = runProbe(["special_target", String(totalHours), String(days)])
+                _ = runProbe(["special_target", String(totalHours), String(days), String(mainPct)])
                 DispatchQueue.main.async { self?.refresh() }
             }
         }

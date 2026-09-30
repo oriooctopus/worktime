@@ -30,8 +30,9 @@ Usage:
                                           this minute or at the one given
   worktime-probe.py special [on|off|toggle]  -- special time: a separate bucket
                                           that never counts toward main
-  worktime-probe.py special_target <hours> <days>  -- special target, a total
-                                          across <days> days from today
+  worktime-probe.py special_target <hours> <days> [main_pct]  -- special target,
+                                          a total across <days> days from today;
+                                          main_pct of it comes off main's target
   worktime-probe.py meeting_route main|special [HH:MM]  -- answer the bar's "Main or
                                           Special?" for the call open now
   worktime-probe.py missed_call yes|no <block_start> <block_end> [HH:MM HH:MM]
@@ -1461,30 +1462,39 @@ def special_sec_for(day: str, now: datetime | None = None) -> int:
     return sum(e - s for s, e in special_spans_for(day, now))
 
 
-def set_special_target(hours: float, days: int) -> dict:
+def set_special_target(hours: float, days: int, main_pct: float = 0) -> dict:
     """Set the special target: `hours` in TOTAL across `days` days from today.
 
     Replaces the current target rather than adding to it, so "6h across 3
     days" is one number for the whole span. Zero hours is how a target is
     cleared; the default is no target.
+
+    `main_pct` is the share of the special target that is taken out of main's
+    target instead of being extra on top of it: 30 minutes of special with
+    50% comes to 15 minutes off a four hour main. The deduction is fixed here,
+    from the target, not from special time actually tracked, and is spread
+    evenly over the span's days.
     """
     if days < 1:
         raise ValueError("special_target: days must be at least 1")
     if hours < 0:
         raise ValueError("special_target: hours cannot be negative")
+    if not 0 <= main_pct <= 100:
+        raise ValueError("special_target: main_pct must be between 0 and 100")
     now = now_local()
     today = now.strftime("%Y-%m-%d")
     rec = {"set": now.isoformat(), "set_day": today, "start_day": today,
            "end_day": shift_day(today, days - 1),
            "target_sec": int(round(hours * 3600))}
+    rec["main_deduct_sec"] = int(round(rec["target_sec"] * main_pct / 100))
     os.makedirs(STATE, exist_ok=True)
     with open(SPECIAL_TARGETS, "a") as fh:
         fh.write(json.dumps(rec) + "\n")
     return rec
 
 
-def special_target_for(day: str, now: datetime | None = None) -> dict | None:
-    """The target in force on `day`, with progress through that day, or None.
+def _target_row_for(day: str) -> dict | None:
+    """The target row in force on `day`, or None.
 
     The newest row set on or before `day` decides -- it REPLACES whatever was
     there, including for days the older row would still have covered. Looked
@@ -1499,14 +1509,36 @@ def special_target_for(day: str, now: datetime | None = None) -> dict | None:
     r = rows[-1]
     if not (r["start_day"] <= day <= r["end_day"]) or r["target_sec"] == 0:
         return None
+    return r
+
+
+def _span_days(r: dict) -> int:
+    return (datetime.strptime(r["end_day"], "%Y-%m-%d")
+            - datetime.strptime(r["start_day"], "%Y-%m-%d")).days + 1
+
+
+def main_target_for(day: str) -> int:
+    """Main's target on `day`: the standing four hours, less the share of the
+    special target in force that was set aside to come out of it. Rows written
+    before the deduction existed carry none."""
+    r = _target_row_for(day)
+    if r is None:
+        return MAIN_TARGET_SEC
+    per_day = r.get("main_deduct_sec", 0) // _span_days(r)
+    return max(MAIN_TARGET_SEC - per_day, 0)
+
+
+def special_target_for(day: str, now: datetime | None = None) -> dict | None:
+    """The target in force on `day`, with progress through that day, or None."""
+    r = _target_row_for(day)
+    if r is None:
+        return None
     done, d = 0, r["start_day"]
     while d <= day:
         done += special_sec_for(d, now)
         d = shift_day(d, 1)
-    n_days = (datetime.strptime(r["end_day"], "%Y-%m-%d")
-              - datetime.strptime(r["start_day"], "%Y-%m-%d")).days + 1
     return {"target_sec": r["target_sec"], "start_day": r["start_day"],
-            "end_day": r["end_day"], "days": n_days,
+            "end_day": r["end_day"], "days": _span_days(r),
             "done_sec": done,
             "remaining_sec": max(r["target_sec"] - done, 0)}
 
@@ -4433,7 +4465,7 @@ def write_vault_snapshot(day: str, events: list[datetime],
         "buckets": {
             "main": {"raw_sec": sum(w["len_sec"] for w in worked),
                      "credited_sec": sum(w["credited_sec"] for w in worked),
-                     "target_sec": MAIN_TARGET_SEC},
+                     "target_sec": main_target_for(day)},
             "meetings": {
                 "raw_sec": sum(w["meeting_raw_sec"] for w in worked),
                 "credited_sec": sum(w["meeting_credited_sec"] for w in worked),
@@ -5504,8 +5536,10 @@ if __name__ == "__main__":
         write_vault_snapshot(day, events_for(day))
         print(json.dumps(res))
     elif cmd == "special_target":
-        # special_target <hours> <days>: a TOTAL for the span, starting today.
-        res = set_special_target(float(sys.argv[2]), int(sys.argv[3]))
+        # special_target <hours> <days> [main_pct]: a TOTAL for the span,
+        # starting today; main_pct of it comes off main's target.
+        res = set_special_target(float(sys.argv[2]), int(sys.argv[3]),
+                                 float(sys.argv[4]) if len(sys.argv) > 4 else 0)
         day = now_local().strftime("%Y-%m-%d")
         write_vault_snapshot(day, events_for(day))
         print(json.dumps(res))
