@@ -63,18 +63,11 @@ let HOTKEY_MODS = UInt32(cmdKey | optionKey)
 let ENTRY_HOTKEY_CODE = UInt32(kVK_ANSI_W)
 let ENTRY_HOTKEY_MODS = UInt32(optionKey)
 
-// ⌘E ends the session, from anywhere. One press ends it at this minute; two
-// end it at the last entry instead -- the same two minutes End Session's rows
-// name, on the same key, told apart the way ⌥W tells its two meanings apart.
-//
-// This way round, and not the other, because the common case is the one that
-// should cost one press: the ending you mean most of the time is the minute
-// you are in. Ending at the last entry is the correction -- you are leaving
-// and the last half hour was not work -- and a correction is worth a
-// deliberate second press. It is also the recoverable order. A single press
-// that lands End Now claims a few minutes too many, which is visible in the
-// period list and can be walked back; a single press that silently ended the
-// day half an hour ago deletes work nothing in the interface would show.
+// ⌘E ends the session at the current minute, from anywhere. A countdown panel
+// appears and ends the session on expiry; a second ⌘E while the panel is
+// showing skips the countdown and ends immediately (same minute). "End After
+// Last Entry" is available via the menu for the case where the last stretch
+// was not work.
 //
 // ⌘E without ⌥, unlike the shift toggle, because the chord was asked for in
 // that form. It is a common shortcut in other apps -- Finder's Eject, "Use
@@ -86,9 +79,8 @@ let END_HOTKEY_MODS = UInt32(cmdKey)
 // How long the ⌘E undo panel stays on screen. The session is not actually
 // ended until this expires -- pressing Undo dismisses the panel and does
 // nothing. A second ⌘E while the panel is showing skips the countdown and
-// commits immediately (the "at last" path), the same role the old double-press
-// played. 12 seconds is long enough to catch an accidental press without
-// making a deliberate one feel stalled.
+// commits immediately at the current minute. 12 seconds is long enough to
+// catch an accidental press without making a deliberate one feel stalled.
 let END_UNDO_SEC = 12
 
 // How long ⌥W waits to find out whether a second press is coming, before
@@ -2765,27 +2757,17 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         endSession(atLast: atLast)
     }
 
-    // ⌘E, before it is known which of the two endings it means. One press ends
-    // the session at this minute; two end it at the last entry.
+    // ⌘E opens the countdown panel; a second press while the panel is
+    // showing skips the countdown and ends at this minute. The panel itself
+    // calls endSession(atLast: false) on natural expiry, so both paths land
+    // the same way. "End After Last Entry" is a separate menu row.
     //
-    // Which means the single press cannot act until the double press has been
-    // ruled out, so it is scheduled rather than run -- the same shape, and for
-    // the same reason, as ⌥W. Here the reason is sharper: acting immediately
-    // and then also acting on the second press would declare the day over
-    // twice, at two different minutes, and the second declaration cannot undo
-    // the first. `split_at_session_ends` cuts at every minute in the file, so
-    // the stray End Now would go on breaking the period at a minute nobody
-    // chose, with nothing in the menu to say where it came from.
-    //
-    // Always on main: the Carbon handler hops here before calling this, and
-    // First press opens the undo panel; a second press while the panel is
-    // showing commits immediately on the "at last" path (same role the old
-    // 0.5s double press played). The panel itself calls endSession on expiry.
+    // Always on main: the Carbon handler hops here before calling this.
     @objc func endHotKey() {
         if endPanel != nil {
             endPanel?.close()
             endPanel = nil
-            endSession(atLast: true)
+            endSession(atLast: false)
             return
         }
         endPanel = CountdownPanel(
