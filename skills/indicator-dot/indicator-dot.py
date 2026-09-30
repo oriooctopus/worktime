@@ -105,6 +105,10 @@ def report_probe(status):
             lines.append(f"  {s//60:02d}:{s%60:02d}–{e//60:02d}:{e%60:02d} · "
                          f"{took}  {what}".rstrip())
         return 0, lines
+    elif state == "special":
+        # Special time is deliberately not main work, so like idle it exits 1:
+        # a script asking "is main time being accrued" gets no.
+        return 1, [f"PURPLE - {why}", "  special time, not counted toward main"]
     elif state == "idle":
         lines = [f"AMBER - {why}"]
         qs = status.get("quiet_since")
@@ -221,6 +225,7 @@ def report(text, now, age_hours=None):
 # ---------------------------------------------------------------------------
 
 COLOURS = {"GREEN": "\033[32m", "BLUE": "\033[34m", "AMBER": "\033[33m",
+           "PURPLE": "\033[35m",
            "STALE": "\033[31m", "UNKNOWN": "\033[31m"}
 RESET = "\033[0m"
 DIM = "\033[2m"
