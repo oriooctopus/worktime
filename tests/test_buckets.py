@@ -126,6 +126,8 @@ def test_meeting_minutes_blend_full_and_two_thirds(world):
     assert w["bucket"] == "main" and w["weight"] == pytest.approx(440 / 600, abs=1e-3)
     assert w["meetings"][0]["raw_sec"] == 600
     assert w["meetings"][0]["credited_sec"] == 440
+    # Which minutes earned full rate, so the dashboard can draw them.
+    assert w["meetings"][0]["full_spans"] == [[602, 603], [606, 607]]
 
 
 def test_host_app_is_the_one_left_out(world):
@@ -268,6 +270,23 @@ def test_route_meeting_keys_the_answer_to_the_open_meeting(world):
     wp.close_open_meetings()
     with pytest.raises(ValueError):                      # nothing open now
         wp.route_meeting("main")
+
+
+def test_route_meeting_can_name_a_finished_call_by_its_start(world):
+    world.now = at(16, 0)
+    world.meeting(13 * 60 + 20, 13 * 60 + 50)
+    assert wp.route_meeting("main", "13:20")["meeting_start"] == "13:20"
+    with pytest.raises(ValueError):
+        wp.route_meeting("main", "09:00")
+
+
+def test_gap_that_is_mostly_special_is_explained_by_it(world):
+    world.now = at(16, 0)
+    world.prompts[DAY] = [at(9, m) for m in range(0, 10, 2)] + \
+        [at(11, m) for m in range(0, 10, 2)]
+    world.special(at(9, 20), at(10, 50))
+    snap = world.snapshot()
+    assert [g["reason"] for g in snap["gaps"]] == ["special time"]
 
 
 def test_main_routed_call_is_weighted_main_time_inside_special(world):

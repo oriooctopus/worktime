@@ -1539,6 +1539,18 @@ def _evidence_minutes(day: str) -> set[int]:
     return mins
 
 
+def _minute_runs(minutes: list[int]) -> list[list[int]]:
+    """Sorted minute-of-day indices as [start, end) runs, so the dashboard can
+    draw the full-credit stretches of a call without a per-minute array."""
+    runs: list[list[int]] = []
+    for k in sorted(minutes):
+        if runs and runs[-1][1] == k:
+            runs[-1][1] = k + 1
+        else:
+            runs.append([k, k + 1])
+    return runs
+
+
 def bucket_credit(day: str, spans: list[list[int]],
                   meetings: list[dict]) -> dict:
     """Split each main span into full-credit time and discounted meeting time.
@@ -1547,7 +1559,7 @@ def bucket_credit(day: str, spans: list[list[int]],
     Returns {"spans": [...], "cells": [...]}: per span, the raw meeting seconds
     inside it and what they are credited as; per span and meeting, the same
     plus how many of those seconds were credited in full because the minute
-    held work evidence. A minute belongs to the first meeting that covers it,
+    held work evidence, and which minutes those were (`full_spans`). A minute belongs to the first meeting that covers it,
     so two overlapping records cannot be credited twice.
     """
     common = _evidence_minutes(day)
@@ -1577,7 +1589,9 @@ def bucket_credit(day: str, spans: list[list[int]],
                     continue
                 full = k in full_min
                 c = cell.setdefault(j, {"raw_sec": 0.0, "credited_sec": 0.0,
-                                        "full_sec": 0.0})
+                                        "full_sec": 0.0, "full_min": []})
+                if full:
+                    c["full_min"].append(k)
                 c["raw_sec"] += secs
                 c["credited_sec"] += secs if full else secs * MEETING_WEIGHT
                 c["full_sec"] += secs if full else 0
@@ -1585,7 +1599,9 @@ def bucket_credit(day: str, spans: list[list[int]],
                 cred += secs if full else secs * MEETING_WEIGHT
         out_spans.append({"meeting_raw_sec": int(round(raw)),
                           "meeting_credited_sec": int(round(cred))})
-        cells.append({j: {k: int(round(v)) for k, v in c.items()}
+        cells.append({j: {**{k: int(round(v)) for k, v in c.items()
+                             if k != "full_min"},
+                          "full_spans": _minute_runs(c["full_min"])}
                       for j, c in cell.items()})
     return {"spans": out_spans, "cells": cells}
 
@@ -4252,7 +4268,7 @@ def write_vault_snapshot(day: str, events: list[datetime],
                           "app": m["app"],
                           **credit["cells"][i].get(
                               j, {"raw_sec": 0, "credited_sec": 0,
-                                  "full_sec": 0})}
+                                  "full_sec": 0, "full_spans": []})}
                          for j, m in enumerate(meetings)
                          if min(m["end"], b) - max(m["start"], a) > 0],
             "bucket": "main",
@@ -4357,8 +4373,15 @@ def write_vault_snapshot(day: str, events: list[datetime],
                 out.append({"start": a, "end": b, "len": b - a, "text": txt})
         return out
 
+    special_now = special_spans_for(day)
     for g in gaps:
         g["reason"] = reason_for(g["start"], g["end"])
+        # A gap mostly made of special time is explained by it.
+        if not g["reason"]:
+            sp = sum(max(0, min(e, g["end_sec"]) - max(s_, g["start_sec"]))
+                     for s_, e in special_now)
+            if sp * 2 >= g["len_sec"]:
+                g["reason"] = "special time"
         g["asked"] = next(
             (l for l in labels
              if g["start"] <= (int(l["end"][:2]) * 60 + int(l["end"][3:])) <= g["end"] + 2),
