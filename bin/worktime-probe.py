@@ -22,9 +22,10 @@ Usage:
   worktime-probe.py report         -- summarize labels collected so far
   worktime-probe.py backfill [n]   -- rebuild the last n days of snapshots
   worktime-probe.py mode [focused|unfocused]  -- read or set the focus mode
-  worktime-probe.py meeting_start [title] [HH:MM]  -- a call is under way,
+  worktime-probe.py meeting_start [title] [HH:MM] [app]  -- a call is under way,
                                           optionally backdated to where the
-                                          capture actually began
+                                          capture actually began, and the
+                                          bundle id of the app hosting it
   worktime-probe.py meeting_end [HH:MM]  -- the call running now stopped, at
                                           this minute or at the one given
   worktime-probe.py special [on|off|toggle]  -- special time: a separate bucket

@@ -314,7 +314,7 @@ draws a coloured dot; it never recomputes state itself.
   both driven by the menu bar watching the microphone. A meeting extends
   presence across a quiet stretch. See **Meetings** below.
 - **End of session** — written by `worktime-probe.py end_session [last]`. Closes
-  any open mark *and* any open meeting, at one minute: this one, or (`last`) the
+  any open mark, any open meeting *and* any open special span, at one minute: this one, or (`last`) the
   last entry the tracker saw. It is the "that was the day" statement, and unlike
   `unmark` it does not assume a mark was ever started.
 
@@ -349,6 +349,8 @@ it.
 
 For the live dot (`status`), the verdict is:
 
+0. **Purple** — special time is on. Above everything below, because while it
+   runs the time is not main and no main evidence may colour the dot.
 1. **Green** — a prompt arrived or the machine was attended at the front of a
    work app within the current cutoff, OR a manual mark is active right now, OR
    an observed meeting covers the current minute.
@@ -368,6 +370,7 @@ something actually changed.
 |--------|---------|
 | Green  | Working: recent prompt or attended foreground time, or a work meeting is live |
 | Blue   | Manually marked as working |
+| Purple | Special time is on (see **Work buckets**); a soft halo tells it from blue without relying on colour |
 | Amber  | Idle: no recent activity and no meeting |
 | Red    | Probe failed to run or returned an error |
 
@@ -419,11 +422,21 @@ actually have input streams — the built-in speakers report *running* at rest,
 and without that filter the answer is permanently yes). This is a property
 read, not a capture: no microphone permission and no orange recording dot.
 
-That reading is device-level and cannot say *which* app is capturing, so it is
-gated on a meeting app being in the running applications at all
-(`MEETING_APP_BUNDLES` in `main.swift` — currently Zoom and Slack, the latter
-for huddles). Without that gate, dictating into WhisperFlow for a minute opened
-a meeting.
+That reading is device-level and cannot say *which* app is capturing, and it
+cannot tell a work call from dictation into WhisperFlow. So the detector only
+ever *raises a question*: after the capture has run long enough the bar shows an
+**Are you in a meeting?** panel (`MeetingPromptPanel`), and a meeting is written
+only on **Yes**. Nothing is recorded by the microphone alone.
+
+At that moment the bar also records the **host app**: `MEETING_APP_BUNDLES` in
+`main.swift` (Zoom, then Slack for huddles) is checked against the running
+applications and the first one running is written to the meeting record as
+`app`. When both run the call is assumed to be Zoom; when neither does (a call in
+a browser) nothing is written. The probe reads a record with no `app` — every
+call recorded before this existed, and those browser calls — as Zoom
+(`LEGACY_MEETING_APP`). The host matters for one reason: it decides which
+foreground app *is* the call when meeting time is weighted (see **Work
+buckets**).
 
 The rules around that reading, in `bin/worktime-bar/CallDetector.swift`:
 
@@ -433,9 +446,9 @@ The rules around that reading, in `bin/worktime-bar/CallDetector.swift`:
   which clears the flag in about 0.23s, but for device handoff: AirPods dying
   mid-call hands over to the built-in mic with a gap in between.
 
-**Start.** The first tick where the detector calls the run a meeting runs
-`worktime-probe.py meeting_start`, backdated by those 60 seconds — otherwise
-every meeting would lose its first minute. The probe ignores a start while one
+**Start.** A Yes runs `worktime-probe.py meeting_start <title> <HH:MM> [app]`,
+backdated by those 60 seconds — otherwise every meeting would lose its first
+minute. The probe ignores a start while one
 is already open, so one call can never split into two records.
 
 **End.** When capture settles, a panel appears at the top right — the meeting's
@@ -459,6 +472,77 @@ It is a panel rather than a notification because a banner dismisses itself after
 about five seconds — half the countdown — Focus suppresses delivery and a
 meeting is exactly when Focus is on, and `UNUserNotificationCenter` would put a
 permission prompt in front of a tracker that currently asks for nothing.
+
+## Work buckets
+
+The day is counted in two buckets that never mix, and a third figure — how much
+of a call was really a call — that lives inside the first.
+
+**Main** is everything the probe has always counted, with a daily target of four
+hours (`MAIN_TARGET_SEC`). **Meetings are a subtype of main**, credited at 2/3
+(`MEETING_WEIGHT`). The discount is applied **per minute**, not per call,
+because a call is rarely pure:
+
+- a minute inside a meeting that also holds ordinary work evidence — a Claude
+  prompt, a tool approval, attended foreground time in a work app, a
+  code-review page in Chrome — counts **in full**;
+- a minute whose only evidence is the meeting app itself in front (Zoom in a
+  Zoom call, Slack in a huddle — the meeting's recorded `app`) counts at **2/3**.
+
+One call can blend both, and meetings stay distinguishable: the snapshot keeps
+each call's raw length next to what it was credited (`raw_sec`, `credited_sec`,
+`full_sec`, and `full_spans` for where the full-rate minutes fell), and the menu
+says "meetings 1h44m → 1h16m". Past days are recomputed with the weighting the
+next time `backfill` rebuilds their snapshot; nothing is patched in place.
+
+**Special** is a separate bucket for time that is deliberately not main. It is a
+manual toggle — **⌘⌥P** or the menu row **Start special time** — and while it is
+on, *every* wall-clock second between on and off is special. That time is cut out
+of main (not merely labelled), so the two totals add without double counting;
+special never contributes to main. The dot turns purple, and every five minutes a
+panel in the top right (not a notification; Focus suppresses those) says you are
+in special time, with a live clock, target progress and an **End special**
+button. **End Session** ends an open special span at the same minute it ends
+everything else.
+
+- **Special target.** Defaults to none (0h). **Special target…** in the menu
+  (Today / 3 days / A week / Custom…) opens a panel for hours per day × days, and
+  the target is a **total** across that span — 6h over 3 days is one number, not
+  2h a day — that *replaces* the current one; a newer target does not revive an
+  older one. Setting 0 clears it. Each day reads the target it was actually under.
+- **A call while special is on** raises **Main or Special?**, every time. *Main*
+  means special pauses for that call and resumes after it (the call becomes
+  ordinary weighted main time); *Special* keeps the call in special at full
+  length. Unanswered for 60 seconds is Special — all wall-clock time between on
+  and off is special unless Main is asked for. The answer is written as a `route`
+  row keyed by the meeting's start minute. The M/S keys only work once the panel
+  has been clicked: it is non-activating on purpose and does not take the
+  keyboard from the call.
+
+**Files** (all under `~/.claude/stats/worktime/`, append-only like `marks.jsonl`):
+`special.jsonl` holds `on` / `off` toggles and `route` answers;
+`special-targets.jsonl` holds one row per target set. Every figure is derived
+from them on read.
+
+**Menu.** Two bars replace the old "worked today" line: Main (solid for full
+credit, a hatched tail for the meeting credit, a tick at the target, `+41m over`
+past it, with the focus % still in the caption) and Special. The Special bar is
+hidden on a day with no special target and no special time, planned or tracked;
+the **Start special time** and **Special target…** rows stay.
+
+**Snapshot and status.** `Dashboard/worktime/<date>.json` keeps `work_sec` as
+the raw main total, so anything written before buckets keeps its meaning, and
+gains: `credited_sec` (main after the discount) and `buckets`
+(`main.{raw_sec,credited_sec,target_sec}`,
+`meetings.{raw_sec,credited_sec,full_sec,weight,count}`,
+`special.{on,sec,spans,target,visible}`). Each period gains `bucket`, `weight`,
+`credited_sec` and `meeting_{raw,credited}_sec`, and each call inside it gains
+`app`, `raw_sec`, `credited_sec`, `full_sec`, `full_spans`. A gap that is mostly
+special time is explained as `special time`. `status` carries `credited_sec`,
+`buckets` (special re-read live), `special_since` and `meeting_title` — its own
+key, because the status text says "special time" while special is on and the
+bar used to read the meeting back out of it. The widget draws segment height as
+credit, with a dashed outline showing a call's raw length.
 
 ## Starting and ending a shift
 
