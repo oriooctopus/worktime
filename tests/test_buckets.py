@@ -223,6 +223,39 @@ def test_newer_target_replaces_and_does_not_resurrect_the_old_one(world):
     assert wp.special_target_for("2026-03-06") is None
 
 
+def test_main_pct_takes_part_of_the_special_target_off_main(world):
+    world.now = at(9, 0)
+    assert wp.main_target_for(DAY) == 4 * 3600
+    wp.set_special_target(0.5, 1, main_pct=50)           # 30m special, 15m off main
+    assert wp.main_target_for(DAY) == 3 * 3600 + 45 * 60
+    assert wp.special_target_for(DAY)["target_sec"] == 1800   # special unchanged
+    assert wp.main_target_for("2026-03-05") == 4 * 3600  # outside the span
+    # Published where the bar and the widget read main's target.
+    assert world.snapshot()["buckets"]["main"]["target_sec"] == 3 * 3600 + 45 * 60
+
+
+def test_main_pct_is_spread_over_the_span_and_replaced_with_the_target(world):
+    world.now = at(9, 0)
+    wp.set_special_target(6, 3, main_pct=50)             # 3h off main over 3 days
+    for d in ("2026-03-04", "2026-03-05", "2026-03-06"):
+        assert wp.main_target_for(d) == 3 * 3600         # 1h off each day
+    world.now = at(9, 0, day=5)
+    wp.set_special_target(2, 1)                          # replaces it, 0% off main
+    assert wp.main_target_for("2026-03-05") == 4 * 3600
+    assert wp.main_target_for("2026-03-04") == 3 * 3600  # the day it was set under
+
+
+def test_main_pct_is_bounded_and_clearing_the_target_clears_it(world):
+    world.now = at(9, 0)
+    for bad in (-1, 101):
+        with pytest.raises(ValueError):
+            wp.set_special_target(1, 1, main_pct=bad)
+    wp.set_special_target(1, 1, main_pct=100)
+    assert wp.main_target_for(DAY) == 3 * 3600
+    wp.set_special_target(0, 1, main_pct=100)            # 0h clears it all
+    assert wp.main_target_for(DAY) == 4 * 3600
+
+
 def test_zero_hours_clears_the_target_and_hides_the_bar(world):
     world.now = at(9, 0)
     assert wp.special_block(DAY)["visible"] is False      # default: 0h

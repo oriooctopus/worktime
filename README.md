@@ -510,6 +510,11 @@ everything else.
   the target is a **total** across that span — 6h over 3 days is one number, not
   2h a day — that *replaces* the current one; a newer target does not revive an
   older one. Setting 0 clears it. Each day reads the target it was actually under.
+  The panel's **Take __ % off main** sets aside part of the special target to
+  come out of main's four hours instead of sitting on top of them: 30m of special
+  at 50% makes main's target 3h45m. The deduction is fixed when the target is set
+  (from the target, not from special time tracked), spread evenly over the span's
+  days, and replaced along with the target. CLI: `special_target <hours> <days> [main_pct]`.
 - **A call while special is on** raises **Main or Special?**, every time. *Main*
   means special pauses for that call and resumes after it (the call becomes
   ordinary weighted main time); *Special* keeps the call in special at full
