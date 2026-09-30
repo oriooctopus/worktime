@@ -352,3 +352,117 @@ def test_backfill_rebuilds_a_past_day_with_the_weighting(world):
     # One minute carried a prompt; the other 29 are discounted.
     assert snap["credited_sec"] == 60 + 29 * 60 * 2 // 3 + 0
     assert snap["worked"][0]["meetings"][0]["app"] == ZOOM
+
+
+# ------------------------------------------------------ special as sessions
+
+def _row(t, what="x"):
+    return {"t": t, "kind": "prompt", "what": what, "n": 1}
+
+
+def _period(a, b):
+    return {"start": a, "end": b, "len_sec": (b - a) * 60, "what": ""}
+
+
+def test_special_time_is_its_own_session_not_part_of_the_main_one():
+    """An event inside a special span joins that span, never the period beside it."""
+    rows = [_row("10:40"), _row("10:10"), _row("09:30")]
+    worked = [_period(9 * 60, 9 * 60 + 45), _period(10 * 60 + 30, 11 * 60)]
+    special = [[10 * 3600, 10 * 3600 + 25 * 60]]          # 10:00-10:25
+    out = wp.group_sessions(rows, worked, special=special)
+    assert [(s["start"], s["end"], s.get("special", False)) for s in out] == [
+        (10 * 60 + 30, 11 * 60, False), (600, 625, True), (540, 585, False)]
+    assert [s["n"] for s in out] == [1, 1, 1]
+    assert [r["session"] for r in rows] == [0, 1, 2]
+    assert out[1]["len_sec"] == 25 * 60 and out[1]["counted"]
+
+
+def test_a_special_span_with_no_events_still_gets_a_session():
+    out = wp.group_sessions([_row("09:30")], [_period(540, 585)],
+                            special=[[10 * 3600, 10 * 3600 + 600]])
+    assert [(s["start"], s.get("special", False), s["n"]) for s in out] == [
+        (600, True, 0), (540, False, 1)]
+
+
+def test_the_live_special_span_is_the_current_session():
+    out = wp.group_sessions([_row("10:05")], [], special=[[36000, 36600]],
+                            special_live=True)
+    assert out[0]["special"] and out[0]["current"]
+
+
+def test_convert_info_reaches_back_to_the_last_special_session():
+    # special 08:00-08:30, main 08:30-09:00 is gone (nothing main between),
+    # current main starts 09:10.
+    worked = [_period(9 * 60 + 10, 9 * 60 + 40)]
+    special = [[8 * 3600, 8 * 3600 + 1800]]
+    out = wp.group_sessions([_row("09:20"), _row("08:10")], worked,
+                            special=special)
+    cur = out[0]
+    assert cur["current"]
+    assert cur["convert"] == {"to": "special", "from": 8 * 60 + 30, "until": None}
+    assert out[1]["convert"] == {"to": "main", "from": 480, "until": 510}
+
+
+def test_convert_info_never_reaches_over_another_main_session():
+    worked = [_period(8 * 60 + 40, 9 * 60), _period(9 * 60 + 10, 9 * 60 + 40)]
+    special = [[8 * 3600, 8 * 3600 + 1800]]
+    out = wp.group_sessions([_row("09:20"), _row("08:50")], worked,
+                            special=special)
+    assert out[0]["convert"]["from"] == 9 * 60 + 10   # its own start
+    assert out[1]["convert"] == {"to": "special", "from": 8 * 60 + 40,
+                                 "until": 9 * 60}      # finished: as itself
+
+
+def test_uncounted_runs_have_nothing_to_convert():
+    out = wp.group_sessions([_row("12:00")], [_period(540, 570)])
+    assert out[0]["convert"] is None
+
+
+def test_converting_a_finished_session_moves_it_between_buckets(world):
+    world.prompts[DAY] = [at(9, 0), at(9, 4), at(9, 8), at(9, 12)]
+    world.now = at(12, 0)
+    before = world.snapshot()
+    assert before["buckets"]["special"]["sec"] == 0
+    main_before = before["work_sec"]
+    assert main_before > 0
+
+    w = before["worked"][0]
+    res = wp.convert_session("special", hhmm_of(w["start"]), hhmm_of(w["end"]))
+    assert res["converted"]
+    after = json.load(open(wp.snapshot_path(DAY)))
+    assert after["buckets"]["special"]["sec"] == (w["end"] - w["start"]) * 60
+    assert after["work_sec"] == 0
+    # Not left on: the session was finished.
+    assert not wp._special_is_on()
+
+    wp.convert_session("main", hhmm_of(w["start"]), hhmm_of(w["end"]))
+    back = json.load(open(wp.snapshot_path(DAY)))
+    assert back["buckets"]["special"]["sec"] == 0
+    assert back["work_sec"] == main_before
+
+
+def test_converting_the_current_session_leaves_special_on(world):
+    world.prompts[DAY] = [at(9, 0), at(9, 4), at(9, 8)]
+    world.now = at(9, 10)
+    wp.convert_session("special", "09:00", "now")
+    assert wp._special_is_on()
+    assert wp.special_spans_for(DAY) == [[9 * 3600, 9 * 3600 + 600]]
+    world.now = at(9, 20)
+    assert wp.special_spans_for(DAY) == [[9 * 3600, 9 * 3600 + 1200]]
+
+    wp.convert_session("main", "09:00", "now")
+    assert not wp._special_is_on()
+    assert wp.special_spans_for(DAY) == []
+
+
+def test_a_cut_splits_a_special_span_and_an_add_merges_touching_ones(world):
+    world.special(at(10, 0), at(11, 0))
+    world.now = at(12, 0)
+    wp.convert_session("main", "10:20", "10:40")
+    assert wp.special_spans_for(DAY) == [[36000, 37200], [38400, 39600]]
+    wp.convert_session("special", "10:20", "10:40")
+    assert wp.special_spans_for(DAY) == [[36000, 39600]]
+
+
+def hhmm_of(m):
+    return wp.hhmm_of(m)

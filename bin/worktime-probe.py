@@ -33,6 +33,8 @@ Usage:
   worktime-probe.py special_target <hours> <days> [main_pct]  -- special target,
                                           a total across <days> days from today;
                                           main_pct of it comes off main's target
+  worktime-probe.py convert_session special|main <HH:MM> <HH:MM|now>  -- move one
+                                          session's minutes to special time or back
   worktime-probe.py meeting_route main|special [HH:MM]  -- answer the bar's "Main or
                                           Special?" for the call open now
   worktime-probe.py missed_call yes|no <block_start> <block_end> [HH:MM HH:MM]
@@ -1331,8 +1333,9 @@ def special_raw_spans(now_ts: float) -> list[list[float]]:
     runs to now.
     """
     spans, start = [], None
-    toggles = sorted((r for r in read_special_log()
-                      if r["event"] in ("on", "off")), key=lambda r: r["ts"])
+    log = read_special_log()
+    toggles = sorted((r for r in log if r["event"] in ("on", "off")),
+                     key=lambda r: r["ts"])
     for r in toggles:
         if r["event"] == "on" and start is None:
             start = r["ts"]
@@ -1341,7 +1344,27 @@ def special_raw_spans(now_ts: float) -> list[list[float]]:
             start = None
     if start is not None:
         spans.append([start, max(now_ts, start)])
+    # Range edits -- a whole session converted one way or the other -- replay
+    # in the order they were made, over the toggles. They are rows of their own
+    # instead of rewritten toggles so a conversion never has to reason about
+    # the on/off state around it, and the log stays append-only.
+    for r in log:
+        if r["event"] == "add":
+            spans = _merge_spans(spans + [[r["from"], r["to"]]])
+        elif r["event"] == "cut":
+            spans = _cut_spans(spans, [[r["from"], r["to"]]])
     return spans
+
+
+def _merge_spans(spans: list[list[float]]) -> list[list[float]]:
+    """Overlapping or touching spans joined into one, oldest first."""
+    out: list[list[float]] = []
+    for s, e in sorted(spans):
+        if out and s <= out[-1][1]:
+            out[-1][1] = max(out[-1][1], e)
+        else:
+            out.append([s, e])
+    return out
 
 
 def special_open_since() -> float | None:
@@ -1380,6 +1403,45 @@ def set_special(on: bool, at_ts: float | None = None) -> dict:
                              "day": now.strftime("%Y-%m-%d"),
                              "at": now.isoformat()}) + "\n")
     return {"changed": True, "on": on}
+
+
+def convert_session(to: str, start_hhmm: str, until: str) -> dict:
+    """Move one session's minutes to special time, or back to main.
+
+    The range is the session's own, as the session list drew it, so what is
+    converted is what the row said it held. `until` is "now" for the session
+    still running: converting it also has to decide what happens to the next
+    minute, so it leaves special on (to special) or turns it off (to main) --
+    a conversion that left the toggle as it was would hand the next second
+    straight back.
+
+    Recorded as a range row rather than by rewriting toggles; see
+    special_raw_spans. The snapshot is rebuilt, because the minutes move
+    between the two buckets at once.
+    """
+    if to not in ("special", "main"):
+        raise ValueError(f"convert_session: {to!r} is not special or main")
+    now = now_local()
+    day = now.strftime("%Y-%m-%d")
+    lo = _day_start_ts(day)
+    current = until == "now"
+    a = lo + to_min(start_hhmm) * 60
+    b = now.timestamp() if current else min(lo + to_min(until) * 60,
+                                            now.timestamp())
+    if b <= a:
+        return {"converted": False, "why": "nothing between those minutes"}
+    if to == "main" and current:
+        set_special(False, b)
+    os.makedirs(STATE, exist_ok=True)
+    with open(SPECIAL_LOG, "a") as fh:
+        fh.write(json.dumps({"event": "add" if to == "special" else "cut",
+                             "from": a, "to": b, "day": day,
+                             "at": now.isoformat()}) + "\n")
+    if to == "special" and current:
+        set_special(True, b)
+    write_vault_snapshot(day, events_for(day))
+    return {"converted": True, "to": to, "from": hhmm_of(to_min(start_hhmm)),
+            "until": until}
 
 
 def route_meeting(to: str, start_hhmm: str | None = None) -> dict:
@@ -3360,7 +3422,9 @@ SESSION_TIP_N = 20
 
 def group_sessions(rows: list[dict], worked: list[dict],
                    limit: int = SESSION_LIST_N,
-                   live: bool = True) -> list[dict]:
+                   live: bool = True,
+                   special: list[list[int]] | None = None,
+                   special_live: bool = False) -> list[dict]:
     """The same rows, divided into the day's work periods. Newest first.
 
     `live` is whether the newest period is still running, and only it can carry
@@ -3384,17 +3448,44 @@ def group_sessions(rows: list[dict], worked: list[dict],
     their own uncounted sessions instead of being dropped, because the raw list
     shows them and a grouped view that quietly held fewer events than the list
     it toggles with would be the second opinion this is trying not to be.
+
+    `special` is the day's special spans in seconds-of-day, and each is a
+    session of its own: special time is cut out of the periods, so its events
+    used to fall into whichever main session sat next to it or into an
+    uncounted run. A row inside a special span joins that span's session and
+    never a period's, and a span with no events yet still gets its row -- it is
+    tracked time, and the day would show a purple dot over a list that never
+    mentioned it.
+
+    Every counted session also says what converting it would do, so the menu
+    offers exactly the range the probe would act on; see the loop at the end.
     """
+    special = special or []
+
     def minute(r: dict) -> int:
         return int(r["t"][:2]) * 60 + int(r["t"][3:5])
 
-    def period_of(m: int) -> int | None:
+    def period_of(m: int):
+        # Special first: the periods have special cut out, but they are whole
+        # minutes and a special span is not, so the two can share a minute.
+        for i, (a, b) in enumerate(special):
+            if a // 60 <= m <= (b - 1) // 60:
+                return ("special", i)
         for i, w in enumerate(worked):
             if w["start"] <= m <= w["end"]:
                 return i
         return None
 
+    def new_special(i: int) -> dict:
+        a, b = special[i]
+        return {"_idx": ("special", i), "start": a // 60, "end": (b + 59) // 60,
+                "len_sec": b - a, "dead_sec": 0, "what": "", "counted": True,
+                "special": True,
+                "current": special_live and i == len(special) - 1,
+                "n": 0, "kinds": [], "rows": []}
+
     out: list[dict] = []
+    taken: list[tuple[dict, dict]] = []
     for r in rows:
         m = minute(r)
         idx = period_of(m)
@@ -3406,8 +3497,8 @@ def group_sessions(rows: list[dict], worked: list[dict],
                                                or out[-1]["start"] - m <= GAP_AFTER):
             s = out[-1]
         else:
-            w = worked[idx] if idx is not None else None
-            s = {"_idx": idx,
+            w = worked[idx] if isinstance(idx, int) else None
+            s = new_special(idx[1]) if isinstance(idx, tuple) else {"_idx": idx,
                  "start": w["start"] if w else m,
                  "end": w["end"] if w else m,
                  # An uncounted run has no length to report: its minutes are
@@ -3444,10 +3535,51 @@ def group_sessions(rows: list[dict], worked: list[dict],
         # gives, and this is that answer without leaving the list. Written onto
         # the caller's own row dicts, since those are what the raw list is cut
         # from and a parallel index would be a second thing to keep in step.
-        r["session"] = len(out) - 1
+        taken.append((r, s))
+
+    # A special span nobody has an event in yet is still a session.
+    seen = {s["_idx"] for s in out}
+    for i in range(len(special)):
+        if ("special", i) not in seen:
+            es = new_special(i)
+            at = next((j for j, o in enumerate(out) if o["start"] <= es["start"]),
+                      len(out))
+            out.insert(at, es)
+
+    # What converting each counted session would do. Decided here, where the
+    # neighbouring periods are known, and handed to the menu as plain values so
+    # the row offers exactly the range convert_session would act on.
+    #
+    # The running main session reaches back to where the last special session
+    # ended, so the stretch between the two is not left behind as main -- but
+    # only while nothing main sits in between: a conversion must never swallow
+    # a session the person did not point at. A finished session converts as
+    # itself.
+    for s in out:
+        if not s["counted"]:
+            s["convert"] = None
+        elif s.get("special"):
+            s["convert"] = {"to": "main", "from": s["start"],
+                            "until": None if s["current"] else s["end"]}
+        else:
+            start = s["start"]
+            if s["current"]:
+                idx = s["_idx"]
+                prev_main = worked[idx - 1]["end"] if idx > 0 else None
+                prev_special = max(((b + 59) // 60 for _a, b in special
+                                    if (b + 59) // 60 <= s["start"]),
+                                   default=None)
+                if prev_special is not None and (prev_main is None
+                                                 or prev_main < prev_special):
+                    start = prev_special
+            s["convert"] = {"to": "special", "from": start,
+                            "until": None if s["current"] else s["end"]}
 
     for s in out:
         del s["_idx"]
+    where = {id(s): i for i, s in enumerate(out)}
+    for r, s in taken:
+        r["session"] = where[id(s)]
     return out[:limit]
 
 
@@ -5336,7 +5468,9 @@ def status() -> dict:
         # Grouped here, off the snapshot that was just brought up to date --
         # the whole point of the sessions view is that its divisions are the
         # period list's divisions, so it has to read the same copy of them.
-        sessions = group_sessions(all_acts, worked, live=live)
+        sessions = group_sessions(all_acts, worked, live=live,
+                                  special=special_spans_for(day, now),
+                                  special_live=special_since is not None)
         # Absorb not-counted sessions that chronologically follow a counted
         # session with desktop dead time: collapse them into one row.
         # Sessions are newest-first, so the not-counted session appears in
@@ -5535,6 +5669,9 @@ if __name__ == "__main__":
         day = now_local().strftime("%Y-%m-%d")
         write_vault_snapshot(day, events_for(day))
         print(json.dumps(res))
+    elif cmd == "convert_session":
+        # convert_session special|main <from HH:MM> <until HH:MM|now>
+        print(json.dumps(convert_session(sys.argv[2], sys.argv[3], sys.argv[4])))
     elif cmd == "special_target":
         # special_target <hours> <days> [main_pct]: a TOTAL for the span,
         # starting today; main_pct of it comes off main's target.
