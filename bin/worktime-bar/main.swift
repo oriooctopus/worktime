@@ -83,15 +83,13 @@ let ENTRY_HOTKEY_MODS = UInt32(optionKey)
 let END_HOTKEY_CODE = UInt32(kVK_ANSI_E)
 let END_HOTKEY_MODS = UInt32(cmdKey)
 
-// How long ⌘E waits to find out whether a second press is coming.
-//
-// Longer than ⌥W's 0.33: that key's single press only files a minute, while
-// this one declares the day over, and the cost of the two mistakes is not the
-// same. A double press read as two singles ends the day at the wrong minute
-// and posts two banners saying so; the price of the extra time is that every
-// single press is a beat slower to land, which is a delay before a banner and
-// not before anything that could be lost.
-let END_DOUBLE_PRESS_SEC = 0.5
+// How long the ⌘E undo panel stays on screen. The session is not actually
+// ended until this expires -- pressing Undo dismisses the panel and does
+// nothing. A second ⌘E while the panel is showing skips the countdown and
+// commits immediately (the "at last" path), the same role the old double-press
+// played. 12 seconds is long enough to catch an accidental press without
+// making a deliberate one feel stalled.
+let END_UNDO_SEC = 12
 
 // How long ⌥W waits to find out whether a second press is coming, before
 // treating the first as a single press.
@@ -1515,9 +1513,9 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
     // instead. Cleared by the work item itself so a press that has already
     // fired cannot be cancelled retroactively by a much later one.
     var pendingEntry: DispatchWorkItem?
-    // The same thing for ⌘E: scheduled-but-not-yet-run End Now, whose
-    // existence is the "a press is pending" flag a second press cancels.
-    var pendingEnd: DispatchWorkItem?
+    // The ⌘E undo panel. Stays on screen for END_UNDO_SEC; a second press
+    // while it is showing skips the countdown and commits immediately (at last).
+    var endPanel: CountdownPanel?
     let idleWatcher = IdleWatcher()
     // One menu for the app's lifetime, mutated in place rather than replaced.
     // Assigning a freshly built NSMenu to item.menu does nothing to a menu that
@@ -2597,21 +2595,28 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
     // chose, with nothing in the menu to say where it came from.
     //
     // Always on main: the Carbon handler hops here before calling this, and
-    // pendingEnd is read and written from nowhere else, so the cancel and the
-    // fire cannot race.
+    // First press opens the undo panel; a second press while the panel is
+    // showing commits immediately on the "at last" path (same role the old
+    // 0.5s double press played). The panel itself calls endSession on expiry.
     @objc func endHotKey() {
-        if let pending = pendingEnd {
-            pending.cancel()
-            pendingEnd = nil
+        if endPanel != nil {
+            endPanel?.close()
+            endPanel = nil
             endSession(atLast: true)
             return
         }
-        let work = DispatchWorkItem { [weak self] in
-            self?.pendingEnd = nil
-            self?.endSession(atLast: false)
-        }
-        pendingEnd = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + END_DOUBLE_PRESS_SEC, execute: work)
+        endPanel = CountdownPanel(
+            meeting: "End session",
+            seconds: END_UNDO_SEC,
+            buttonTitle: "Undo",
+            messageFor: { "Ending in \($0)s — press ⌘E again to end now" },
+            onExpire: { [weak self] in
+                self?.endPanel = nil
+                self?.endSession(atLast: false)
+            },
+            onCancel: { [weak self] in
+                self?.endPanel = nil
+            })
     }
 
     // The declaration itself, reached from the two rows and from ⌘E. Split out
