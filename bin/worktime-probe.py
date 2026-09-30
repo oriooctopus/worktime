@@ -27,6 +27,12 @@ Usage:
                                           capture actually began
   worktime-probe.py meeting_end [HH:MM]  -- the call running now stopped, at
                                           this minute or at the one given
+  worktime-probe.py special [on|off|toggle]  -- special time: a separate bucket
+                                          that never counts toward main
+  worktime-probe.py special_target <hours> <days>  -- special target, a total
+                                          across <days> days from today
+  worktime-probe.py meeting_route main|special  -- answer the bar's "Main or
+                                          Special?" for the call open now
   worktime-probe.py missed_call yes|no <block_start> <block_end> [HH:MM HH:MM]
                                        -- answer the bar's "were you on this
                                           call?" for a busy block; yes records
@@ -1132,6 +1138,14 @@ MEETINGS = os.path.join(STATE, "meetings.jsonl")
 # long call and still bounds what a crash can invent.
 MEETING_MAX_OPEN_MIN = 180
 
+# Records written before the bar recorded a host app carry no `app`. They are
+# read as Zoom: it is the app the recorder itself assumes when Zoom and Slack
+# are both running, so it is the likeliest host for a call nobody labelled. A
+# Slack huddle recorded before this change is therefore read as a Zoom call,
+# and Slack foreground during it counts as ordinary work -- a known, accepted
+# blur in old days only.
+LEGACY_MEETING_APP = "us.zoom.xos"
+
 
 def meetings_for(day: str) -> list[dict]:
     """Observed meetings for one day, as concrete spans in minutes.
@@ -1184,11 +1198,13 @@ def meetings_for(day: str) -> list[dict]:
         if end > start or (is_open and end == start):
             out.append({"start": start, "end": end,
                         "title": r.get("title") or "meeting",
-                        "counts": True, "open": is_open})
+                        "counts": True, "open": is_open,
+                        "app": r.get("app", LEGACY_MEETING_APP)})
     return sorted(out, key=lambda m: m["start"])
 
 
-def start_meeting(title: str, at: int | None = None) -> dict | None:
+def start_meeting(title: str, at: int | None = None,
+                  app: str | None = None) -> dict | None:
     """Open a meeting. Returns None when one is already running.
 
     Idempotent on purpose, because the bar can raise a second start against a
@@ -1200,6 +1216,11 @@ def start_meeting(title: str, at: int | None = None) -> dict | None:
     `at` backdates the start. The detector cannot call a run a meeting until it
     has lasted MIN_CALL_SEC, so the moment the bar learns of a call is always a
     minute after the call began, and the bar passes the earlier minute.
+
+    `app` is the bundle id of the meeting app the bar saw running, recorded
+    because the work-bucket weighting needs to know which foreground app IS the
+    call (see bucket_credit). Only the bar can say: CoreAudio reports that an
+    input device is running, never which process holds it.
     """
     now = now_local()
     day = now.strftime("%Y-%m-%d")
@@ -1208,6 +1229,8 @@ def start_meeting(title: str, at: int | None = None) -> dict | None:
     start = now.hour * 60 + now.minute if at is None else at
     rec = {"day": day, "start": start, "end": None, "title": title,
            "created": now.isoformat()}
+    if app is not None:
+        rec["app"] = app
     os.makedirs(STATE, exist_ok=True)
     with open(MEETINGS, "a") as fh:
         fh.write(json.dumps(rec) + "\n")
@@ -1248,6 +1271,316 @@ def close_open_meetings(when: int | None = None) -> list[dict]:
             fh.write(json.dumps(r) + "\n")
     os.replace(tmp, MEETINGS)
     return closed
+
+
+# ---------------------------------------------------------------------------
+# Work buckets
+#
+# The day is counted in two buckets that never mix.
+#
+# MAIN is everything this probe has always counted. Its target is four hours a
+# day (MAIN_TARGET_SEC). Meetings are a subtype of it, credited at two thirds:
+# a call is presence but it is not the deep work the target is about, and a
+# full-rate call made a day of meetings look like a productive one.
+#
+# The weighting is per MINUTE, not per call, because a call is rarely pure. A
+# minute inside a meeting that also holds ordinary work evidence -- a prompt, a
+# tool approval, attended foreground time in a work app, a code-review page --
+# counts in full; a minute whose only evidence is the meeting app itself in
+# front (Zoom in a Zoom call, Slack in a huddle) counts at MEETING_WEIGHT. One
+# call can therefore blend both, and the snapshot keeps the raw duration beside
+# the credited one so the discount is always legible.
+#
+# SPECIAL is a manually toggled bucket for time that is deliberately not main:
+# every wall-clock second between on and off is special, and it is cut out of
+# main entirely rather than merely labelled, so the two totals can be added
+# without double counting. It has its own target, set ad hoc for a span of days
+# and read as a TOTAL across that span.
+#
+# Both are append-only jsonl in STATE like marks.jsonl, and every figure is
+# derived from them on read -- a past day is re-derived by `backfill`, never
+# patched.
+# ---------------------------------------------------------------------------
+MAIN_TARGET_SEC = 4 * 3600
+MEETING_WEIGHT = 2 / 3
+# on / off toggles and meeting routing answers, in one file so one replay sees
+# them in the order they were made.
+SPECIAL_LOG = os.path.join(STATE, "special.jsonl")
+# One row per "set the special target" action; the newest row decides.
+SPECIAL_TARGETS = os.path.join(STATE, "special-targets.jsonl")
+
+
+def _day_start_ts(day: str) -> float:
+    return datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=LOCAL).timestamp()
+
+
+def read_special_log() -> list[dict]:
+    if not os.path.exists(SPECIAL_LOG):
+        return []
+    return [json.loads(l) for l in open(SPECIAL_LOG) if l.strip()]
+
+
+def special_raw_spans(now_ts: float) -> list[list[float]]:
+    """Special spans as [start_ts, end_ts] epoch pairs, replayed from the log.
+
+    An `on` while already on and an `off` while already off are ignored, for
+    the same reason start_meeting is idempotent: the hotkey and the menu row
+    are two doors to one toggle and either can be pressed twice. An open span
+    runs to now.
+    """
+    spans, start = [], None
+    toggles = sorted((r for r in read_special_log()
+                      if r["event"] in ("on", "off")), key=lambda r: r["ts"])
+    for r in toggles:
+        if r["event"] == "on" and start is None:
+            start = r["ts"]
+        elif r["event"] == "off" and start is not None:
+            spans.append([start, max(r["ts"], start)])
+            start = None
+    if start is not None:
+        spans.append([start, max(now_ts, start)])
+    return spans
+
+
+def special_open_since() -> float | None:
+    """Epoch start of the special span running now, or None."""
+    start = None
+    for r in sorted((r for r in read_special_log()
+                     if r["event"] in ("on", "off")), key=lambda r: r["ts"]):
+        if r["event"] == "on" and start is None:
+            start = r["ts"]
+        elif r["event"] == "off":
+            start = None
+    return start
+
+
+def _special_is_on() -> bool:
+    return special_open_since() is not None
+
+
+def set_special(on: bool, at_ts: float | None = None) -> dict:
+    """Turn special time on or off. Returns {"changed", "on"}.
+
+    `at_ts` places the event; end_session uses it so a declared end lands on
+    the minute the day was ended at. An `off` is clamped to never precede the
+    span's own start, which is what makes end-of-day at the last entry safe
+    when special was switched on after it.
+    """
+    if _special_is_on() == on:
+        return {"changed": False, "on": on}
+    now = now_local()
+    ts = now.timestamp() if at_ts is None else at_ts
+    if not on:
+        ts = max(ts, special_open_since())
+    os.makedirs(STATE, exist_ok=True)
+    with open(SPECIAL_LOG, "a") as fh:
+        fh.write(json.dumps({"event": "on" if on else "off", "ts": ts,
+                             "day": now.strftime("%Y-%m-%d"),
+                             "at": now.isoformat()}) + "\n")
+    return {"changed": True, "on": on}
+
+
+def route_meeting(to: str) -> dict:
+    """Answer "Main or Special?" for the meeting open right now.
+
+    Keyed by the meeting's own start minute so the answer belongs to that call
+    and never leaks onto the next one. Only `main` changes any arithmetic
+    (special pauses for the call); `special` is what a call inside special
+    time already is, and is recorded so the answer is not lost.
+    """
+    if to not in ("main", "special"):
+        raise ValueError(f"meeting_route: {to!r} is not main or special")
+    now = now_local()
+    day = now.strftime("%Y-%m-%d")
+    opened = [m for m in meetings_for(day) if m["open"]]
+    if not opened:
+        raise ValueError("meeting_route: no meeting is open to route")
+    start = opened[-1]["start"]
+    os.makedirs(STATE, exist_ok=True)
+    with open(SPECIAL_LOG, "a") as fh:
+        fh.write(json.dumps({"event": "route", "day": day, "start": start,
+                             "to": to, "at": now.isoformat()}) + "\n")
+    return {"day": day, "meeting_start": hhmm_of(start), "to": to}
+
+
+def _cut_spans(spans: list[list[int]],
+               holes: list[list[int]]) -> list[list[int]]:
+    """spans minus holes, exactly -- no remnant is dropped.
+
+    subtract_spans discards pieces under MIN_PERIOD_SEC because a sliver of a
+    period is residue; a sliver of special time is still special time.
+    """
+    out = [list(s) for s in spans]
+    for hs, he in holes:
+        nxt = []
+        for s, e in out:
+            if he <= s or hs >= e:
+                nxt.append([s, e])
+                continue
+            if hs > s:
+                nxt.append([s, hs])
+            if he < e:
+                nxt.append([he, e])
+        out = nxt
+    return out
+
+
+def special_spans_for(day: str, now: datetime | None = None) -> list[list[int]]:
+    """Special time on `day` as [start_sec, end_sec] seconds-of-day.
+
+    Clipped to the day (a span left on past midnight is split between the two
+    days) and to elapsed_s, then cut by every meeting the person routed to
+    Main: that call is main time and special resumes after it. A meeting with
+    no answer is NOT cut -- all wall-clock time between on and off is special,
+    and Main is the exception that has to be asked for.
+    """
+    now = now or now_local()
+    lo = _day_start_ts(day)
+    hi = lo + elapsed_s(day, now)
+    spans = [[int(round(max(a, lo) - lo)), int(round(min(b, hi) - lo))]
+             for a, b in special_raw_spans(now.timestamp())
+             if b > lo and a < hi]
+    spans = [s for s in spans if s[1] > s[0]]
+    routed_main = {r["start"] for r in read_special_log()
+                   if r["event"] == "route" and r["day"] == day
+                   and r["to"] == "main"}
+    holes = [[m["start"] * 60, m["end"] * 60] for m in meetings_for(day)
+             if m["start"] in routed_main]
+    return _cut_spans(spans, holes)
+
+
+def special_sec_for(day: str, now: datetime | None = None) -> int:
+    return sum(e - s for s, e in special_spans_for(day, now))
+
+
+def set_special_target(hours: float, days: int) -> dict:
+    """Set the special target: `hours` in TOTAL across `days` days from today.
+
+    Replaces the current target rather than adding to it, so "6h across 3
+    days" is one number for the whole span. Zero hours is how a target is
+    cleared; the default is no target.
+    """
+    if days < 1:
+        raise ValueError("special_target: days must be at least 1")
+    if hours < 0:
+        raise ValueError("special_target: hours cannot be negative")
+    now = now_local()
+    today = now.strftime("%Y-%m-%d")
+    rec = {"set": now.isoformat(), "set_day": today, "start_day": today,
+           "end_day": shift_day(today, days - 1),
+           "target_sec": int(round(hours * 3600))}
+    os.makedirs(STATE, exist_ok=True)
+    with open(SPECIAL_TARGETS, "a") as fh:
+        fh.write(json.dumps(rec) + "\n")
+    return rec
+
+
+def special_target_for(day: str, now: datetime | None = None) -> dict | None:
+    """The target in force on `day`, with progress through that day, or None.
+
+    The newest row set on or before `day` decides -- it REPLACES whatever was
+    there, including for days the older row would still have covered. Looked
+    up per day so a past day shows the target it was actually under.
+    """
+    if not os.path.exists(SPECIAL_TARGETS):
+        return None
+    rows = [json.loads(l) for l in open(SPECIAL_TARGETS) if l.strip()]
+    rows = [r for r in rows if r["set_day"] <= day]
+    if not rows:
+        return None
+    r = rows[-1]
+    if not (r["start_day"] <= day <= r["end_day"]) or r["target_sec"] == 0:
+        return None
+    done, d = 0, r["start_day"]
+    while d <= day:
+        done += special_sec_for(d, now)
+        d = shift_day(d, 1)
+    n_days = (datetime.strptime(r["end_day"], "%Y-%m-%d")
+              - datetime.strptime(r["start_day"], "%Y-%m-%d")).days + 1
+    return {"target_sec": r["target_sec"], "start_day": r["start_day"],
+            "end_day": r["end_day"], "days": n_days,
+            "done_sec": done,
+            "remaining_sec": max(r["target_sec"] - done, 0)}
+
+
+def special_block(day: str, now: datetime | None = None) -> dict:
+    """Everything the menu and the widget need about special time on `day`.
+
+    `visible` is the rule for showing the Special bar at all: a day with no
+    target and no special time, planned or tracked, has nothing to say about it.
+    """
+    now = now or now_local()
+    spans = special_spans_for(day, now)
+    sec = sum(e - s for s, e in spans)
+    target = special_target_for(day, now)
+    return {"on": _special_is_on(), "sec": sec,
+            "spans": [{"start": s // 60, "end": e // 60,
+                       "start_sec": s, "end_sec": e} for s, e in spans],
+            "target": target,
+            "visible": target is not None or sec > 0}
+
+
+def _evidence_minutes(day: str) -> set[int]:
+    """Minutes holding ordinary work evidence other than the meeting app.
+
+    Prompts, tool approvals and code-review visits; attended focus is added
+    per meeting because which app to leave out depends on the call.
+    """
+    mins = {t.hour * 60 + t.minute for t in prompts_for(day)}
+    mins |= {sec_of(t) // 60 for t in approvals_for(day)}
+    mins |= {t.hour * 60 + t.minute for t in github_visits_for(day)}
+    return mins
+
+
+def bucket_credit(day: str, spans: list[list[int]],
+                  meetings: list[dict]) -> dict:
+    """Split each main span into full-credit time and discounted meeting time.
+
+    `spans` are the main work spans in seconds (special already cut out).
+    Returns {"spans": [...], "cells": [...]}: per span, the raw meeting seconds
+    inside it and what they are credited as; per span and meeting, the same
+    plus how many of those seconds were credited in full because the minute
+    held work evidence. A minute belongs to the first meeting that covers it,
+    so two overlapping records cannot be credited twice.
+    """
+    common = _evidence_minutes(day)
+    focus_cache: dict[str, set[int]] = {}
+
+    def focus_minutes(app: str) -> set[int]:
+        if app not in focus_cache:
+            focus_cache[app] = {t.hour * 60 + t.minute
+                                for t in focus_for(day, frozenset([app]))}
+        return focus_cache[app]
+
+    owner: dict[int, int] = {}
+    out_spans, cells = [], []
+    for lo, hi in spans:
+        raw = cred = 0.0
+        cell: dict[int, dict] = {}
+        for j, m in enumerate(meetings):
+            a, b = max(lo, m["start"] * 60), min(hi, m["end"] * 60)
+            if b <= a:
+                continue
+            full_min = common | focus_minutes(m["app"])
+            for k in range(a // 60, (b - 1) // 60 + 1):
+                if owner.setdefault(k, j) != j:
+                    continue
+                secs = min(b, (k + 1) * 60) - max(a, k * 60)
+                if secs <= 0:
+                    continue
+                full = k in full_min
+                c = cell.setdefault(j, {"raw_sec": 0.0, "credited_sec": 0.0,
+                                        "full_sec": 0.0})
+                c["raw_sec"] += secs
+                c["credited_sec"] += secs if full else secs * MEETING_WEIGHT
+                c["full_sec"] += secs if full else 0
+                raw += secs
+                cred += secs if full else secs * MEETING_WEIGHT
+        out_spans.append({"meeting_raw_sec": int(round(raw)),
+                          "meeting_credited_sec": int(round(cred))})
+        cells.append({j: {k: int(round(v)) for k, v in c.items()}
+                      for j, c in cell.items()})
+    return {"spans": out_spans, "cells": cells}
 
 
 # A call the microphone never saw: a listen-only webinar, or one sat through
@@ -1412,6 +1745,9 @@ def end_session(at_last: bool = False) -> dict:
     closed = close_open_marks(when)
     meetings = close_open_meetings(when)
     ends = append_session_end(when)
+    # A special span left open would keep accruing after the day was declared
+    # over, so the declaration ends it at the same minute as everything else.
+    set_special(False, _day_start_ts(day) + when * 60)
     write_vault_snapshot(day, events)
     return {
         "at": hhmm_of(when),
@@ -2080,8 +2416,13 @@ def focus_windows(day: str):
             yield lo, hi, a
 
 
-def focus_for(day: str) -> list[datetime]:
+def focus_for(day: str, exclude_bundles: frozenset = frozenset()
+              ) -> list[datetime]:
     """Minutes spent attended, at the front of an app that counts as work.
+
+    `exclude_bundles` leaves named apps out of the evidence. Only the bucket
+    weighting passes it: during a call, the meeting app in front is the call
+    itself and must not also vouch for ordinary work (see bucket_credit).
 
     This is what replaced Slack sends as the evidence that a stretch in Slack
     was work. Sends were a bad proxy in the one direction that mattered:
@@ -2122,6 +2463,8 @@ def focus_for(day: str) -> list[datetime]:
     for a, nxt in zip(acts, acts[1:] + [None]):
         if not focus_counts(a) or self_raised(nxt, a):
             continue
+        if a.get("bundle") in exclude_bundles:
+            continue
         if (_SHORT_FOCUS_MIN_SEC is not None and nxt is not None
                 and sec_of(nxt["t"]) - sec_of(a["t"]) < _SHORT_FOCUS_MIN_SEC
                 and (_SHORT_FOCUS_ENABLED_AT is None
@@ -2129,10 +2472,11 @@ def focus_for(day: str) -> list[datetime]:
                      >= _SHORT_FOCUS_ENABLED_AT)):
             continue
         out.append(base + timedelta(seconds=sec_of(a["t"])))
-    return sorted(set(out) | set(focus_dwell_for(day)))
+    return sorted(set(out) | set(focus_dwell_for(day, exclude_bundles)))
 
 
-def focus_dwell_for(day: str) -> list[datetime]:
+def focus_dwell_for(day: str, exclude_bundles: frozenset = frozenset()
+                    ) -> list[datetime]:
     """Events DURING a stay on one thing, while somebody keeps touching it.
 
     Always on, gated by focus_dwell_settings(): by default a heartbeat row
@@ -2184,6 +2528,7 @@ def focus_dwell_for(day: str) -> list[datetime]:
             key_prev, anchor = key, at
             continue
         if (at - anchor >= stride and focus_app(r)
+                and b not in exclude_bundles
                 and r.get("idle", 0) <= max_idle):
             out.append(base + timedelta(seconds=at))
             anchor = at
@@ -3795,6 +4140,13 @@ def write_vault_snapshot(day: str, events: list[datetime],
     # and still shown on the timeline -- it just no longer changes the total.
     merged = subtract_spans(merged, idle_cut(day, protected))
 
+    # Special time is cut out of main last, after every other rule has had its
+    # say, because it is not evidence about presence at all: every wall-clock
+    # second between on and off belongs to the other bucket whatever was
+    # happening in it. Cutting (rather than tagging) is what keeps the two
+    # totals addable -- see the Work buckets section.
+    merged = subtract_spans(merged, special_spans_for(day))
+
     # Back to minutes for publication. Rounding the boundaries rather than the
     # durations keeps work and gaps tiling exactly: every gap still starts where
     # the period before it ends.
@@ -3824,6 +4176,10 @@ def write_vault_snapshot(day: str, events: list[datetime],
     # be shown side by side without one contradicting the other.
     slack_rows = slack_for(day)
     mark_rows = marks_for(day)
+    # What each span and each call in it is credited as. Computed once, before
+    # the period loop, so the period rows and the bucket totals below cannot
+    # disagree about a minute.
+    credit = bucket_credit(day, merged_sec, meetings)
     worked = []
     for i, (a, b) in enumerate(merged):
         lo, hi = merged_sec[i]
@@ -3878,11 +4234,30 @@ def write_vault_snapshot(day: str, events: list[datetime],
             "sessions": sessions_in(day, a, b),
             # A call observed here explains why the period holds together
             # across a stretch with no prompts in it.
+            # `raw_sec` is how long the call ran inside this period, and
+            # `credited_sec` what it earns after the per-minute weighting;
+            # `full_sec` is the part of raw that held ordinary work evidence
+            # and so earned full rate. Zero across the board means the call
+            # overlaps the period by under a minute of main time.
             "meetings": [{"start": m["start"], "end": m["end"],
                           "title": m.get("title", ""),
-                          "counts": m.get("counts", True)}
-                         for m in meetings
+                          "counts": m.get("counts", True),
+                          "app": m["app"],
+                          **credit["cells"][i].get(
+                              j, {"raw_sec": 0, "credited_sec": 0,
+                                  "full_sec": 0})}
+                         for j, m in enumerate(meetings)
                          if min(m["end"], b) - max(m["start"], a) > 0],
+            "bucket": "main",
+            "meeting_raw_sec": credit["spans"][i]["meeting_raw_sec"],
+            "meeting_credited_sec": credit["spans"][i]["meeting_credited_sec"],
+            "credited_sec": (hi - lo
+                             - credit["spans"][i]["meeting_raw_sec"]
+                             + credit["spans"][i]["meeting_credited_sec"]),
+            "weight": round((hi - lo
+                             - credit["spans"][i]["meeting_raw_sec"]
+                             + credit["spans"][i]["meeting_credited_sec"])
+                            / (hi - lo), 4),
         })
 
     # Every run of `check` already appends its verdict here, so the probe's own
@@ -4021,6 +4396,23 @@ def write_vault_snapshot(day: str, events: list[datetime],
         # prompting and nothing more. It is a floor on the working day, not the
         # working day: reading a response is real work that leaves no stamp.
         "work_sec": sum(w["len_sec"] for w in worked),
+        # Main time after the meeting discount. `work_sec` above stays the raw
+        # sum so every reader written before buckets keeps its meaning.
+        "credited_sec": sum(w["credited_sec"] for w in worked),
+        "buckets": {
+            "main": {"raw_sec": sum(w["len_sec"] for w in worked),
+                     "credited_sec": sum(w["credited_sec"] for w in worked),
+                     "target_sec": MAIN_TARGET_SEC},
+            "meetings": {
+                "raw_sec": sum(w["meeting_raw_sec"] for w in worked),
+                "credited_sec": sum(w["meeting_credited_sec"] for w in worked),
+                "full_sec": sum(m["full_sec"] for w in worked
+                                for m in w["meetings"]),
+                "weight": MEETING_WEIGHT,
+                "count": len({(m["start"], m["end"]) for w in worked
+                              for m in w["meetings"] if m["raw_sec"] > 0})},
+            "special": special_block(day),
+        },
         # `events` is prompts and attended foreground minutes together, so it is
         # not the prompt count and must not be published as one -- the
         # dashboard's "N prompts" would otherwise silently start counting focus.
@@ -4143,6 +4535,12 @@ def render_markdown_snapshot(day: str, snap: dict) -> str:
         f"{len(worked)} work {'period' if len(worked) == 1 else 'periods'}, "
         f"{total // 60}h{total % 60:02d}m total.",
         "",
+        *([f"Credited {snap['credited_sec'] // 3600}h"
+           f"{snap['credited_sec'] // 60 % 60:02d}m main "
+           f"(meetings {snap['buckets']['meetings']['raw_sec'] // 60}m raw, "
+           f"{snap['buckets']['meetings']['credited_sec'] // 60}m credited); "
+           f"special {snap['buckets']['special']['sec'] // 60}m.", ""]
+          if "buckets" in snap else []),
         "Written by worktime-probe.py. Read-only — edits are overwritten on the",
         "next run. Prompt text is deliberately not published here.",
         "",
@@ -4542,7 +4940,16 @@ def activity_fingerprint(day: str) -> str:
     # without waiting for something else to happen. It is the one input that
     # changes on its own while the person is doing nothing this probe can
     # otherwise see, which is the whole reason the live read exists.
-    for p in (MARKS, MEETINGS, APPROVALS, NOTES, MODEFILE, IDLE_CLAIMS,
+    # Bucket model version: bump it when a snapshot gains bucket fields, so an
+    # old file is rebuilt on the next poll instead of read without them.
+    parts.append("buckets-v1")
+    if special_open_since() is not None:
+        # An open special span grows with the clock and changes no file, so the
+        # snapshot would freeze its special total. Five minutes matches the bar's
+        # reminder cadence.
+        parts.append(f"special-open:{int(time.time()) // 300}")
+    for p in (MARKS, MEETINGS, SPECIAL_LOG, SPECIAL_TARGETS,
+              APPROVALS, NOTES, MODEFILE, IDLE_CLAIMS,
               os.path.join(SLACK_DIR, f"{day}.json"),
               os.path.join(FOCUS_DIR, f"{day}.jsonl"),
               chrome_history_path() or "chrome-history-absent"):
@@ -4721,7 +5128,15 @@ def status() -> dict:
     ended_ts = read_session_end_ts(day, ended_at) if ended_at is not None else None
     in_meeting = covered_by_meeting(now, [
         m for m in meetings_for(day) if m.get("counts", True)])
-    if open_mark:
+    special_since = special_open_since()
+    if special_since is not None:
+        # Above everything, including a mark and a meeting: while special is on
+        # this is not main time, so no main evidence is allowed to colour the
+        # dot as if it were.
+        state = "special"
+        why = ("special time since "
+               + datetime.fromtimestamp(special_since, LOCAL).strftime("%H:%M"))
+    elif open_mark:
         state, why = "marked", open_mark["note"] or "marked as working"
     elif in_meeting:
         state, why = "working", f"in {in_meeting.get('title') or 'meeting'}"
@@ -4770,6 +5185,8 @@ def status() -> dict:
     # This still does not call check() -- the cursor and the label log are its
     # alone, and this remains read-only with respect to both.
     worked_sec = 0
+    credited_sec = 0
+    buckets = None
     periods = []
     sessions = []
     focus_pct = None
@@ -4785,6 +5202,11 @@ def status() -> dict:
     if os.path.exists(path):
         snap = json.load(open(path))
         worked_sec = snap["work_sec"]
+        credited_sec = snap["credited_sec"]
+        buckets = dict(snap["buckets"])
+        # Special is re-read live rather than taken from the snapshot: an open
+        # span grows by the second and the menu shows a running figure.
+        buckets["special"] = special_block(day, now)
         worked = snap.get("worked", [])
         # Annotate each period with the desktop-caused dead time it should
         # answer for, charged to the period holding the DESKTOP STAMP rather
@@ -4842,6 +5264,8 @@ def status() -> dict:
                 "dead_sec": w.get("dead_sec", 0),
                 "n_prompts": w.get("n_prompts", 0),
                 "n_slack": w.get("n_slack", 0),
+                "credited_sec": w["credited_sec"],
+                "meeting_raw_sec": w["meeting_raw_sec"],
                 "what": w.get("what", ""),
                 "current": live and i == len(worked) - 1,
             })
@@ -4875,6 +5299,13 @@ def status() -> dict:
     # recomputed here -- this is the on-disk record of the last completed
     # `check()`, and this call is deliberately read-only (see docstring).
     return {"state": state, "why": why, "worked_sec": worked_sec,
+            # Main after the meeting discount, and the per-bucket figures the
+            # menu draws. `worked_sec` stays the raw sum.
+            "credited_sec": credited_sec,
+            "buckets": buckets,
+            "special_since": (datetime.fromtimestamp(special_since, LOCAL)
+                              .strftime("%H:%M")
+                              if special_since is not None else None),
             "at": now.strftime("%H:%M"),
             "quiet_since": last.strftime("%H:%M") if last else None,
             # Precise seconds, not the rounded "why" text -- the menu bar uses
@@ -4921,7 +5352,7 @@ def backfill(days: int) -> None:
     for i in range(days):
         day = (today - timedelta(days=i)).strftime("%Y-%m-%d")
         events = events_for(day)
-        if not events:
+        if not events and not special_spans_for(day):
             print(f"{day}  --")
             continue
         write_vault_snapshot(day, events)
@@ -5016,7 +5447,8 @@ if __name__ == "__main__":
         # 20-minute check would leave both stale for the whole of a short call.
         title = sys.argv[2] if len(sys.argv) > 2 else "meeting"
         at = to_min(sys.argv[3]) if len(sys.argv) > 3 else None
-        rec = start_meeting(title, at)
+        app = sys.argv[4] if len(sys.argv) > 4 else None
+        rec = start_meeting(title, at, app)
         day = now_local().strftime("%Y-%m-%d")
         write_vault_snapshot(day, events_for(day))
         print(json.dumps({
@@ -5024,6 +5456,27 @@ if __name__ == "__main__":
             "at": hhmm_of(rec["start"]) if rec else None,
             "title": rec["title"] if rec else None,
         }))
+    elif cmd == "special":
+        # special on | off | toggle. Rebuilds the snapshot because the toggle
+        # moves time between the buckets at once.
+        arg = sys.argv[2] if len(sys.argv) > 2 else "toggle"
+        if arg not in ("on", "off", "toggle"):
+            sys.exit(f"special: {arg!r} is not on, off or toggle")
+        res = set_special(_special_is_on() is False if arg == "toggle"
+                          else arg == "on")
+        day = now_local().strftime("%Y-%m-%d")
+        write_vault_snapshot(day, events_for(day))
+        print(json.dumps(res))
+    elif cmd == "special_target":
+        # special_target <hours> <days>: a TOTAL for the span, starting today.
+        res = set_special_target(float(sys.argv[2]), int(sys.argv[3]))
+        day = now_local().strftime("%Y-%m-%d")
+        write_vault_snapshot(day, events_for(day))
+        print(json.dumps(res))
+    elif cmd == "meeting_route":
+        print(json.dumps(route_meeting(sys.argv[2])))
+        day = now_local().strftime("%Y-%m-%d")
+        write_vault_snapshot(day, events_for(day))
     elif cmd == "meeting_end":
         # The capture settled: the call is over. Stamps the end onto every
         # meeting still open today, which is what makes the span stop growing.
