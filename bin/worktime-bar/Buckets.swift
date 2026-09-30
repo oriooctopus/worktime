@@ -204,7 +204,7 @@ final class BucketRowView: NSView {
 // the target's progress, offers End special, and withdraws itself after
 // AUTOHIDE_SEC with a hairline along the bottom counting that down.
 final class SpecialReminderPanel {
-    static let AUTOHIDE_SEC = 20
+    static let AUTOHIDE_SEC = 10
 
     private let panel: NSPanel
     private let clockLabel = NSTextField(labelWithString: "")
