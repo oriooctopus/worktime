@@ -2731,13 +2731,17 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
 
     func showIdleEndPanel(at: String) {
         idleEndPanel?.close()
-        let heading = "Session ended at \(at) — no input for \(Int(IDLE_END_SEC))s"
+        // One line for the held and the counting state alike, so the panel
+        // never changes wording when input resumes -- only the number moves.
+        let line: (Int) -> String = {
+            "No input for \(Int(IDLE_END_SEC))s — closing in \($0)s"
+        }
         let panel = CountdownPanel(
-            meeting: "Session ended",
+            meeting: "Session ended at \(at)",
             seconds: IDLE_END_PANEL_SEC,
             buttonTitle: "Keep tracking through now",
-            messageFor: { "No input for \(Int(IDLE_END_SEC))s — closing in \($0)s" },
-            holdMessage: heading,
+            messageFor: line,
+            holdMessage: line(IDLE_END_PANEL_SEC),
             onExpire: { [weak self] in self?.idleEndPanel = nil },
             onCancel: { [weak self] in
                 self?.idleEndPanel = nil
