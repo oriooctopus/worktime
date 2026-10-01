@@ -46,6 +46,8 @@ final class TrackPanel: NSObject, NSTextFieldDelegate, NSWindowDelegate {
         "Special — extra, only untracked minutes",
         "Special — take the minutes out of main",
     ]
+    // A negative count under either special row hands that many special
+    // minutes back to main, so the same two rows serve as the undo.
 
     /// Where the minute count starts, and what a previous answer does to it.
     ///
@@ -100,6 +102,8 @@ final class TrackPanel: NSObject, NSTextFieldDelegate, NSWindowDelegate {
         // at a different rule the day a third one is added in the middle.
         let savedMode = UserDefaults.standard.string(forKey: TrackPanel.modeKey) ?? ""
         modePicker.selectItem(at: TrackPanel.modes.firstIndex(of: savedMode) ?? 0)
+        modePicker.target = self
+        modePicker.action = #selector(modeChanged)
 
         trackButton = NSButton(title: "Track", target: self,
                                action: #selector(trackTapped))
@@ -159,28 +163,43 @@ final class TrackPanel: NSObject, NSTextFieldDelegate, NSWindowDelegate {
                                      y: visible.maxY - panel.frame.height - 16))
     }
 
-    /// The typed count, or nil if it is not a positive number of minutes.
+    /// The typed count, or nil if it is not a number of minutes the picked
+    /// rule can act on.
     ///
     /// nil rather than a default, and the button is disabled on it rather than
     /// falling back to five: a panel that banks a number the person did not
     /// type is worse than one that refuses to act, because the minutes land in
     /// the day either way and only one of those can be noticed.
+    ///
+    /// Negative is a real answer for the special rules -- "-2" hands two
+    /// special minutes back to main -- and meaningless for the main ones, where
+    /// there is nothing to hand back, so it is refused there rather than
+    /// quietly read as its absolute value.
     var minutes: Int? {
         let raw = minutesField.stringValue.trimmingCharacters(in: .whitespaces)
-        guard let n = Int(raw), n > 0 else { return nil }
+        guard let n = Int(raw), n != 0 else { return nil }
+        if n < 0 && !TrackPanel.isSpecial(mode) { return nil }
         return n
     }
 
     var mode: String { TrackPanel.modes[modePicker.indexOfSelectedItem] }
 
-    func controlTextDidChange(_: Notification) {
-        trackButton.isEnabled = minutes != nil
-    }
+    static func isSpecial(_ mode: String) -> Bool { mode.hasPrefix("special_") }
+
+    func controlTextDidChange(_: Notification) { syncButton() }
+
+    /// Also on the picker: "-2" is valid under one rule and not the next, so
+    /// changing the rule can enable or disable the button with no typing.
+    @objc func modeChanged() { syncButton() }
+
+    private func syncButton() { trackButton.isEnabled = minutes != nil }
 
     @objc func trackTapped() {
         guard let n = minutes else { return }
         let picked = mode
-        UserDefaults.standard.set(n, forKey: TrackPanel.minutesKey)
+        // An undo is a correction, not the usual length: remembering "-2"
+        // would replace the ten-minute call the next press is expecting.
+        if n > 0 { UserDefaults.standard.set(n, forKey: TrackPanel.minutesKey) }
         UserDefaults.standard.set(picked, forKey: TrackPanel.modeKey)
         close()
         onTrack(n, picked)

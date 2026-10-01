@@ -96,7 +96,7 @@ enum TrackPanelTests {
         // probe. A panel that fell back to a default here would bank minutes
         // nobody typed, and they would land in the day either way -- only one
         // of those outcomes can be noticed.
-        for bad in ["", "  ", "abc", "0", "-3", "2.5"] {
+        for bad in ["", "  ", "abc", "0", "2.5"] {
             got = nil
             let p = TrackPanel(present: false) { got = ($0, $1) }
             p.minutesField.stringValue = bad
@@ -104,6 +104,58 @@ enum TrackPanelTests {
             check(got == nil, "refuses \"\(bad)\" (banked \(String(describing: got)))")
             p.close()
         }
+
+        // A negative count is the undo, and only the special rows have one to
+        // do. Under a main rule there is nothing to hand back, so it is
+        // refused instead of read as its absolute value.
+        for (i, name) in ["clip", "split"].enumerated() {
+            got = nil
+            let p = TrackPanel(present: false) { got = ($0, $1) }
+            p.modePicker.selectItem(at: i)
+            p.minutesField.stringValue = "-3"
+            p.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
+            check(p.trackButton.isEnabled == false, "-3 is not trackable under \(name)")
+            p.trackButton.performClick(nil)
+            check(got == nil, "refuses -3 under \(name) (banked \(String(describing: got)))")
+            p.close()
+        }
+        for name in ["special_extra", "special_take"] {
+            got = nil
+            let p = TrackPanel(present: false) { got = ($0, $1) }
+            p.modePicker.selectItem(at: TrackPanel.modes.firstIndex(of: name)!)
+            p.minutesField.stringValue = "-2"
+            p.modeChanged()
+            check(p.trackButton.isEnabled, "-2 is trackable under \(name)")
+            p.trackButton.performClick(nil)
+            check(got?.0 == -2 && got?.1 == name,
+                  "-2 under \(name) reaches the probe, got \(String(describing: got))")
+            p.close()
+        }
+        // Switching to a main rule with a negative typed switches the button off
+        // without any typing.
+        do {
+            let p = TrackPanel(present: false) { _, _ in }
+            p.modePicker.selectItem(at: 3)
+            p.minutesField.stringValue = "-2"
+            p.modeChanged()
+            p.modePicker.selectItem(at: 0)
+            p.modeChanged()
+            check(p.trackButton.isEnabled == false,
+                  "changing to a main rule disables a typed negative")
+            p.close()
+        }
+        // The undo is not remembered as the usual length.
+        UserDefaults.standard.set(7, forKey: TrackPanel.minutesKey)
+        do {
+            let p = TrackPanel(present: false) { _, _ in }
+            p.modePicker.selectItem(at: 3)
+            p.minutesField.stringValue = "-2"
+            p.trackButton.performClick(nil)
+            check(UserDefaults.standard.integer(forKey: TrackPanel.minutesKey) == 7,
+                  "a negative count does not replace the remembered one")
+        }
+        UserDefaults.standard.set(7, forKey: TrackPanel.minutesKey)
+        UserDefaults.standard.set("split", forKey: TrackPanel.modeKey)
 
         // Cancelling does nothing at all, which is the only thing it may do.
         got = nil

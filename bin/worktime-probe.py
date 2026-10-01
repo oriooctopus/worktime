@@ -53,7 +53,8 @@ Usage:
   worktime-probe.py track <n> special_extra|special_take  -- log the last n
                                           minutes as special time: only
                                           untracked minutes, or taking them
-                                          out of main
+                                          out of main; a negative n hands the
+                                          newest n special minutes back to main
 """
 
 from __future__ import annotations  # 3.8 can parse the annotations
@@ -2290,7 +2291,9 @@ def track_special(minutes: int, mode: str) -> dict:
     """
     if mode not in SPECIAL_TRACK_MODES:
         return {"tracked": False, "why": f"unknown mode {mode!r}"}
-    if minutes <= 0:
+    if minutes < 0:
+        return release_special(-minutes, mode)
+    if minutes == 0:
         return {"tracked": False, "why": "nothing to track"}
     now = now_local()
     day = now.strftime("%Y-%m-%d")
@@ -2331,6 +2334,55 @@ def track_special(minutes: int, mode: str) -> dict:
             "spans": [{"start": hhmm_of(int((a - lo) // 60)),
                        "end": hhmm_of(int(-(-(b - lo) // 60)))}
                       for a, b in spans_sec]}
+
+
+def release_special(minutes: int, mode: str) -> dict:
+    """Hand the newest `minutes` of special time back to main.
+
+    The undo of `special_take`, reached by typing a negative count into the
+    track panel with a special rule picked. It takes the newest special
+    minutes wherever they are rather than the last `minutes` of the clock: the
+    person is correcting the special total, and special that ended an hour ago
+    is still the newest special there is.
+
+    Cutting alone would only return minutes the tracker had already counted as
+    main -- special time logged by hand over untracked minutes would simply
+    vanish -- so each cut span is also claimed as an ordinary mark. Periods
+    are unioned, so a span that was main underneath is not counted twice.
+    """
+    now = now_local()
+    day = now.strftime("%Y-%m-%d")
+    lo = _day_start_ts(day)
+    now_m = now.hour * 60 + now.minute
+    before = special_sec_for(day, now)
+
+    remaining = minutes * 60
+    cuts: list[list[float]] = []
+    for s, e in reversed(special_spans_for(day, now)):
+        take = min(e - s, remaining)
+        cuts.append([lo + e - take, lo + e])
+        remaining -= take
+        if remaining <= 0:
+            break
+
+    os.makedirs(STATE, exist_ok=True)
+    with open(SPECIAL_LOG, "a") as fh:
+        for a, b in cuts:
+            fh.write(json.dumps({"event": "cut", "from": a, "to": b,
+                                 "day": day, "at": now.isoformat()}) + "\n")
+    spans = []
+    for a, b in reversed(cuts):
+        start_m = int((a - lo) // 60)
+        end_m = min(-(-int(b - lo) // 60), now_m)
+        if end_m > start_m:
+            add_mark(f"{hhmm_of(start_m)}-{hhmm_of(end_m)}", TRACK_NOTE)
+            spans.append({"start": hhmm_of(start_m), "end": hhmm_of(end_m)})
+    if cuts:
+        write_vault_snapshot(day, events_for(day))
+    claimed = round((before - special_sec_for(day, now)) / 60)
+    return {"tracked": claimed > 0, "bucket": "main", "mode": mode,
+            "returned": True, "asked": minutes, "claimed": claimed,
+            "unplaced": minutes - claimed, "spans": spans}
 
 
 def to_min(hhmm: str) -> int:

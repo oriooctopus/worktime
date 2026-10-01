@@ -312,9 +312,14 @@ func runProbe(_ args: [String]) -> ProbeRun {
 // the default rule, not an error, and reads as one unless it is spelled out.
 // Says which bucket, because the same panel logs either and a banner that did
 // not would leave the period list as the only way to find out.
-func notifyTracked(claimed: Int, asked: Int, special: Bool = false, take: Bool = false) {
+func notifyTracked(claimed: Int, asked: Int, special: Bool = false, take: Bool = false,
+                   returned: Bool = false) {
     let what = special ? "special time" : "work"
-    if claimed == 0 && take {
+    if returned {
+        notify(claimed == 0 ? "Nothing to return — there was no special time to take back."
+            : claimed < asked ? "Moved \(claimed)m from special to main — that was all the special there was."
+            : "Moved \(claimed)m from special to main.")
+    } else if claimed == 0 && take {
         // "Already counted" would read as if main held them. For a take the
         // only way to claim nothing is that they were special already.
         notify("Nothing to take — those minutes were already special time.")
@@ -2608,8 +2613,9 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
             // of a notification nothing depends on would trade the pileup for
             // a smaller one.
             DispatchQueue.global(qos: .utility).async {
-                notifyTracked(claimed: claimed, asked: minutes, special: special,
-                              take: r["mode"] as? String == "special_take")
+                notifyTracked(claimed: claimed, asked: abs(minutes), special: special,
+                              take: r["mode"] as? String == "special_take",
+                              returned: r["returned"] as? Bool == true)
             }
             DispatchQueue.main.async { self.refresh() }
         }
