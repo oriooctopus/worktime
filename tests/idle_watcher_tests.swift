@@ -67,6 +67,34 @@ enum IdleWatcherTests {
         w.tick(idle: 200)
         check(w.noticed == 2, "a later absence is noticed again")
 
+        // The session end is the other half, and it runs off a shorter clock
+        // than the notice above: 45s, not two minutes.
+        let e = IdleWatcher(claimsPath: dir + "/ends.jsonl")
+        var firedWith: [Double] = []
+        e.onIdleEnd = { firedWith.append($0) }
+        e.tick(idle: IDLE_END_SEC - 1)
+        check(e.idleEnds == 0, "under 45s of no input does not end the session")
+        e.tick(idle: 50)
+        check(firedWith == [50], "45s of no input ends the session, carrying the idle seconds")
+        e.tick(idle: 55)
+        check(e.idleEnds == 1, "a continuing absence ends the session once")
+        e.tick(idle: 1)
+        e.tick(idle: 60)
+        check(e.idleEnds == 2, "input then another absence ends it again")
+
+        // A call is somebody there with no input. Ending at the last keystroke
+        // would cut the whole call out, so the end is skipped -- and consumed:
+        // the call finishing while the machine is still untouched must not
+        // end the session retroactively.
+        let m = IdleWatcher(claimsPath: dir + "/meeting.jsonl")
+        m.onIdleEnd = { _ in }
+        m.tick(idle: 50, inMeeting: true)
+        m.tick(idle: 400, inMeeting: false)
+        check(m.idleEnds == 0, "no session end during a meeting, nor after it for the same absence")
+        m.tick(idle: 1)
+        m.tick(idle: 50)
+        check(m.idleEnds == 1, "the next absence after the meeting ends it normally")
+
         // Nothing is recorded. A claim only exists to protect time from being
         // cut, and with the probe's IDLE_SUBTRACTS off there is no cut to
         // protect anything from -- a file here would be a record of an answer

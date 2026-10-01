@@ -1658,13 +1658,17 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
             self?.focusLog.sample(app: app)
         }
         registerHotKey()
+        idleWatcher.onIdleEnd = { [weak self] idle in self?.endSessionForIdle(idle) }
         timer = Timer.scheduledTimer(withTimeInterval: POLL_SEC, repeats: true) { _ in
             // Sampled here and not inside refresh(): menuNeedsUpdate also calls
             // refresh(), so opening the menu would otherwise log an extra
             // sample and make "how often was this app frontmost" partly a
             // measure of how often the dropdown was opened.
             self.focusLog.sample()
-            self.idleWatcher.tick(idle: FocusLog.idleSeconds())
+            self.idleWatcher.tick(idle: FocusLog.idleSeconds(),
+                                  inMeeting: self.status.inMeeting
+                                      || self.meetingOpenedHere
+                                      || anythingIsCapturing())
             self.refreshOnTimer()
         }
         blinkTimer = Timer.scheduledTimer(withTimeInterval: BLINK_INTERVAL, repeats: true) { _ in
@@ -2765,6 +2769,26 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
             onCancel: { [weak self] in
                 self?.endPanel = nil
             })
+    }
+
+    // Nobody touched the machine for IDLE_END_SEC. Ends the session at the last
+    // input rather than now, whatever the focus mode. Only when something is
+    // actually running: ending an already-ended day would draw a second line
+    // through it at an earlier minute for nothing. No banner -- stepping away
+    // is the ordinary case and the dot going out is the notice.
+    func endSessionForIdle(_ idle: Double) {
+        guard ["working", "marked", "special"].contains(status.state) else { return }
+        let sec = Int(idle.rounded())
+        probeQueue.async {
+            guard case .ok = runProbe(["end_session", "idle", String(sec)]) else {
+                FileHandle.standardError.write(
+                    "idle end: probe refused end_session idle \(sec)\n".data(using: .utf8)!)
+                return
+            }
+            FileHandle.standardError.write(
+                "idle \(sec)s: session ended at last input\n".data(using: .utf8)!)
+            DispatchQueue.main.async { self.refresh() }
+        }
     }
 
     // The declaration itself, reached from the two rows and from ⌘E. Split out

@@ -10,6 +10,13 @@ import AppKit
 // stretch that was never going to be cut.
 let IDLE_PROMPT_SEC = 120.0
 
+// How long the machine goes untouched before the session is ended for it. Much
+// shorter than the prompt threshold above, and unrelated to it: that one asks
+// whether a stretch should be cut, this one declares the session over. The
+// session ends at the last input, not at the moment this fires, so the 45s of
+// waiting is never credited.
+let IDLE_END_SEC = 45.0
+
 // How long the panel waits for an answer. Nobody at the machine cannot reply,
 // which is the point: silence IS the answer, and the exclusion it produces
 // needs no record written for it.
@@ -54,6 +61,17 @@ final class IdleWatcher {
     // silence.
     private var asked = false
     private var graceUntil = Date.distantPast
+    // One session end per absence, for the same reason as `asked`: without it
+    // the end would be re-declared every poll for as long as somebody stayed
+    // away. Re-armed the moment input resumes.
+    private var ended = false
+
+    /// Called once per absence that reaches IDLE_END_SEC outside a meeting,
+    /// with the idle seconds so the end can be placed at the last input.
+    var onIdleEnd: ((Double) -> Void)?
+
+    /// Idle-ends fired, so a test can see one happened without a probe.
+    private(set) var idleEnds = 0
 
     /// Absences seen, so a test can prove the watcher still notices them with
     /// the panel off -- the half of the feature that is deliberately kept.
@@ -78,7 +96,22 @@ final class IdleWatcher {
 
     /// `idle` is passed in rather than read here: FocusLog owns the reading,
     /// and a test cannot make the real machine go untouched for two minutes.
-    func tick(idle: Double, now: Date = Date()) {
+    ///
+    /// `inMeeting` suppresses the session end: a call is somebody at the
+    /// machine in every sense that matters and no input at all. The absence is
+    /// still consumed, so a meeting that ends while the machine is still
+    /// untouched does not retroactively end the session at the last keystroke
+    /// -- which would cut the whole call back out of the day.
+    func tick(idle: Double, now: Date = Date(), inMeeting: Bool = false) {
+        if idle < IDLE_END_SEC {
+            ended = false
+        } else if !ended {
+            ended = true
+            if !inMeeting {
+                idleEnds += 1
+                onIdleEnd?(idle)
+            }
+        }
         // Back at the machine: re-arm for the next absence. This is the only
         // thing that clears `asked`, so one absence can only ever ask once.
         if idle <= IDLE_PROMPT_SEC {
