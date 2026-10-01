@@ -46,6 +46,7 @@ final class CountdownPanel {
     private var remaining: Int
     private var timer: Timer?
     private let messageFor: (Int) -> String
+    private let holdMessage: String
     private let onExpire: () -> Void
     private let onCancel: () -> Void
 
@@ -64,10 +65,12 @@ final class CountdownPanel {
          messageFor: @escaping (Int) -> String = {
              "Ended — stopping tracking in \($0)s"
          },
+         holdMessage: String = "Mic is back — holding",
          present: Bool = true,
          onExpire: @escaping () -> Void, onCancel: @escaping () -> Void) {
         self.remaining = seconds
         self.messageFor = messageFor
+        self.holdMessage = holdMessage
         self.onExpire = onExpire
         self.onCancel = onCancel
 
@@ -152,13 +155,15 @@ final class CountdownPanel {
     }
 
     /// Frozen while the caller decides whether what interrupted it is real --
-    /// the mic coming back mid-countdown might be the call or a dictation.
+    /// the mic coming back mid-countdown might be the call or a dictation. The
+    /// idle-end panel also starts frozen: its countdown only begins once
+    /// somebody is back at the machine to read it.
     var paused = false {
         didSet { redraw() }
     }
 
     private func redraw() {
-        message.stringValue = paused ? "Mic is back — holding" : messageFor(remaining)
+        message.stringValue = paused ? holdMessage : messageFor(remaining)
     }
 
     private func tick() {

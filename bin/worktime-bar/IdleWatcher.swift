@@ -70,6 +70,11 @@ final class IdleWatcher {
     /// with the idle seconds so the end can be placed at the last input.
     var onIdleEnd: ((Double) -> Void)?
 
+    /// Called when input resumes after an absence that reached IDLE_END_SEC,
+    /// whether or not an end fired for it -- a nil-safe no-op for the caller
+    /// when nothing is waiting on it.
+    var onInputResumed: (() -> Void)?
+
     /// Idle-ends fired, so a test can see one happened without a probe.
     private(set) var idleEnds = 0
 
@@ -104,6 +109,7 @@ final class IdleWatcher {
     /// -- which would cut the whole call back out of the day.
     func tick(idle: Double, now: Date = Date(), inMeeting: Bool = false) {
         if idle < IDLE_END_SEC {
+            if ended { onInputResumed?() }
             ended = false
         } else if !ended {
             ended = true
