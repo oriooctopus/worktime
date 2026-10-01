@@ -611,8 +611,8 @@ landing End Now claims a few minutes too many, which shows in the period list
 and can be walked back; a single press that silently ended the day half an hour
 ago deletes work nothing in the interface would show.
 
-So the single press cannot act until the double press has been ruled out, the
-Here the reason is sharp: acting at once and then again on
+So the single press cannot act until the double press has been ruled out.
+Acting at once and then again on
 the second press would declare the day over twice, at two minutes, and the
 second declaration cannot undo the first — `split_at_session_ends` cuts at
 every minute in the file, so the stray End Now would go on breaking the period
