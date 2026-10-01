@@ -34,3 +34,26 @@ class StateIsolation(unittest.TestCase):
 
     def test_the_goals_file_follows_the_test_dashboard_dir(self):
         self.assertTrue(wp.GOALS_FILE.startswith(os.environ["WORKTIME_DASHBOARD"]))
+
+
+class StaleTestRowsAreIgnored(unittest.TestCase):
+    """Old checkouts still run unsandboxed tests against the real log; the
+    rows those write must not count as events."""
+
+    def test_naive_at_rows_are_dropped_and_real_ones_kept(self):
+        import json
+        import tempfile
+        tmp = tempfile.mkdtemp()
+        saved = wp.SPECIAL_LOG
+        wp.SPECIAL_LOG = os.path.join(tmp, "special.jsonl")
+        try:
+            rows = [
+                {"event": "on", "ts": 100.0, "at": "2026-10-01T12:01:59.5-04:00"},
+                {"event": "off", "ts": 100.0, "at": "2026-03-04T15:00:10"},
+            ]
+            with open(wp.SPECIAL_LOG, "w") as fh:
+                fh.writelines(json.dumps(r) + "\n" for r in rows)
+            self.assertEqual([r["event"] for r in wp.read_special_log()], ["on"])
+            self.assertEqual(wp.special_open_since(), 100.0)
+        finally:
+            wp.SPECIAL_LOG = saved

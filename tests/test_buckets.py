@@ -37,6 +37,12 @@ def at(h, m, s=0, day=4):
     return datetime(2026, 3, day, h, m, s, tzinfo=wp.LOCAL)
 
 
+def logrow(fields):
+    # Stamped like the probe stamps its own rows: the reader treats a row with
+    # no timezone on `at` as one a stale test run wrote, and drops it.
+    return json.dumps({**fields, "at": at(12, 0).isoformat()})
+
+
 class World:
     """One fake day: the inputs the snapshot reads, and the files it writes."""
 
@@ -94,9 +100,9 @@ class World:
     def special(self, on_at, off_at=None, day=4):
         ts = lambda t: t.timestamp()  # noqa: E731
         with open(wp.SPECIAL_LOG, "a") as fh:
-            fh.write(json.dumps({"event": "on", "ts": ts(on_at)}) + "\n")
+            fh.write(logrow({"event": "on", "ts": ts(on_at)}) + "\n")
             if off_at:
-                fh.write(json.dumps({"event": "off", "ts": ts(off_at)}) + "\n")
+                fh.write(logrow({"event": "off", "ts": ts(off_at)}) + "\n")
 
     def snapshot(self, day=DAY):
         wp.write_vault_snapshot(day, self._events_for(day))
@@ -338,7 +344,7 @@ def test_meeting_routed_to_main_pauses_special_then_it_resumes(world):
     # Unanswered: all wall-clock time is special, the call included.
     assert wp.special_spans_for(DAY) == [[13 * 3600, 16 * 3600]]
     with open(wp.SPECIAL_LOG, "a") as fh:
-        fh.write(json.dumps({"event": "route", "day": DAY,
+        fh.write(logrow({"event": "route", "day": DAY,
                              "start": 13 * 60 + 20, "to": "main"}) + "\n")
     assert wp.special_spans_for(DAY) == [
         [13 * 3600, 13 * 3600 + 20 * 60], [13 * 3600 + 50 * 60, 16 * 3600]]
@@ -349,7 +355,7 @@ def test_meeting_routed_to_special_stays_special(world):
     world.special(at(13, 0))
     world.meeting(13 * 60 + 20, 13 * 60 + 50)
     with open(wp.SPECIAL_LOG, "a") as fh:
-        fh.write(json.dumps({"event": "route", "day": DAY,
+        fh.write(logrow({"event": "route", "day": DAY,
                              "start": 13 * 60 + 20, "to": "special"}) + "\n")
     assert wp.special_spans_for(DAY) == [[13 * 3600, 16 * 3600]]
 
@@ -387,7 +393,7 @@ def test_main_routed_call_is_weighted_main_time_inside_special(world):
     world.special(at(13, 0))
     world.meeting(13 * 60 + 20, 13 * 60 + 50, app=ZOOM)
     with open(wp.SPECIAL_LOG, "a") as fh:
-        fh.write(json.dumps({"event": "route", "day": DAY,
+        fh.write(logrow({"event": "route", "day": DAY,
                              "start": 13 * 60 + 20, "to": "main"}) + "\n")
     snap = world.snapshot()
     assert snap["buckets"]["meetings"]["raw_sec"] == 1800

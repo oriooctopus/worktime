@@ -1340,10 +1340,25 @@ def _day_start_ts(day: str) -> float:
     return datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=LOCAL).timestamp()
 
 
+def _written_by_the_probe(row: dict) -> bool:
+    """True for a row the real probe wrote, False for one a test run did.
+
+    The probe stamps `at` from the timezone-aware now_local(); the tests pin
+    now_local to a naive datetime, so their rows carry no UTC offset. Tests run
+    from old checkouts (this repo keeps well over a hundred worktrees, most
+    branched before tests were sandboxed) still wrote their end_session `off`
+    into the real log, switching special time off seconds after it was turned
+    on. Their code cannot be fixed from here, so the reader is where they are
+    kept out.
+    """
+    return datetime.fromisoformat(row["at"]).tzinfo is not None
+
+
 def read_special_log() -> list[dict]:
     if not os.path.exists(SPECIAL_LOG):
         return []
-    return [json.loads(l) for l in open(SPECIAL_LOG) if l.strip()]
+    rows = [json.loads(l) for l in open(SPECIAL_LOG) if l.strip()]
+    return [r for r in rows if _written_by_the_probe(r)]
 
 
 def special_raw_spans(now_ts: float) -> list[list[float]]:
