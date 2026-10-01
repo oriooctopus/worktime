@@ -41,7 +41,7 @@ Usage:
                                        -- answer the bar's "were you on this
                                           call?" for a busy block; yes records
                                           the meeting at the two times given
-  worktime-probe.py end_session [last]  -- end the day: break the period, close
+  worktime-probe.py end_session [last | idle <sec>]  -- end the day: break the period, close
                                           the mark, close the meeting, at this
                                           minute or at the last entry
   worktime-probe.py note [text]    -- record work this probe cannot see
@@ -1865,7 +1865,7 @@ def last_entry_end(events: list[datetime]) -> int:
     return last.hour * 60 + last.minute
 
 
-def end_session(at_last: bool = False) -> dict:
+def end_session(at_last: bool = False, idle_sec: int | None = None) -> dict:
     """Close everything currently holding the day open, at one minute.
 
     `unmark` alone is not that. It ends a manual mark, and a mark is only one of
@@ -1882,6 +1882,14 @@ def end_session(at_last: bool = False) -> dict:
     `at_last` ends at the last entry instead of at this minute, through the same
     last_entry_end the ⌘⌥S stop uses: they are one decision made in two places
     and must not resolve to two different minutes.
+
+    `idle_sec` is the third way to name the minute, used when the bar ends the
+    session because nobody touched the machine: the session ended when the last
+    input happened, which is `idle_sec` ago, not now -- ending it now would
+    credit the whole wait. It is read off the same HID idle clock the focus log
+    samples, so the minute lands where the log already says the machine went
+    quiet. Floored to the minute like every other end, and clamped to the start
+    of today for an absence that began before midnight.
 
     Closing when nothing is open is inert, so this does not need to ask whether
     a mark or a call is running, and cannot get that question wrong.
@@ -1903,7 +1911,13 @@ def end_session(at_last: bool = False) -> dict:
     now = now_local()
     day = now.strftime("%Y-%m-%d")
     events = events_for(day)
-    when = last_entry_end(events) if at_last else now.hour * 60 + now.minute
+    if idle_sec is not None:
+        sec_of_day = now.hour * 3600 + now.minute * 60 + now.second
+        when = max(0, (sec_of_day - idle_sec) // 60)
+    elif at_last:
+        when = last_entry_end(events)
+    else:
+        when = now.hour * 60 + now.minute
     closed = close_open_marks(when)
     meetings = close_open_meetings(when)
     ends = append_session_end(when)
@@ -5662,7 +5676,9 @@ if __name__ == "__main__":
         }))
     elif cmd == "end_session":
         print(json.dumps(end_session(
-            at_last=len(sys.argv) > 2 and sys.argv[2] == "last")))
+            at_last=len(sys.argv) > 2 and sys.argv[2] == "last",
+            idle_sec=int(sys.argv[3])
+            if len(sys.argv) > 3 and sys.argv[2] == "idle" else None)))
     elif cmd == "link_last":
         print(json.dumps(link_last_session()))
     elif cmd == "mode":

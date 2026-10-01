@@ -131,6 +131,21 @@ class EndSessionCase(unittest.TestCase):
         self.assertTrue(out["at_last_entry"])
         self.assertEqual(self.marks()[0]["end"], 15 * 60 + 13)
 
+    def test_idle_end_lands_at_the_last_input_not_now(self):
+        # Nobody touched the machine for 45s as of 16:40:00, so the last input
+        # was 16:39:15 and the session ended in 16:39 -- ending it at 16:40
+        # would credit the wait.
+        self.open_mark(16 * 60 + 20)
+        out = wp.end_session(idle_sec=45)
+        self.assertEqual(out["at"], "16:39")
+        self.assertEqual(self.marks()[0]["end"], 16 * 60 + 39)
+        self.assertEqual(wp.read_session_ends(DAY), [16 * 60 + 39])
+
+    def test_idle_end_across_midnight_clamps_to_the_start_of_today(self):
+        # An absence that began yesterday has no minute today to land on.
+        out = wp.end_session(idle_sec=17 * 3600)
+        self.assertEqual(out["at"], "00:00")
+
     def test_closing_never_reaches_past_where_the_mark_already_did(self):
         # The 2026-09-04 bug. A link left open at 10:08 resolved to the first
         # event after it and was read as four minutes all morning; End Session
