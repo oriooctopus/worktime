@@ -54,6 +54,13 @@ sessions don't collide.
   (`~/.claude/projects` and `~/.claude-personal/projects`) so background-job
   prompts count as presence too — if that stops showing up in tracking,
   check both roots are still in `PROJECT_ROOTS` there.
+- **The built Swift binary is tracked in git — commit it with the change.**
+  `bin/worktime-bar/WorktimeBar.app/Contents/MacOS/WorktimeBar` is what
+  launchd runs and it is checked in. Whenever `.swift` files change: run
+  `bin/worktime-bar/build.sh`, restart with
+  `launchctl kickstart -k gui/$(id -u)/com.oliver.worktime-bar`, and commit
+  the rebuilt binary in the same push as the source. Never leave it showing
+  as modified in `git status`, and never ask whether to commit it.
 - **Data lives in Obsidian, never in this repo.**
   `Dashboard/calendar-today.md`, `Dashboard/activity/<date>/HH.md`,
   `Dashboard/worktime/<date>.json` are read/written by the exporters but
