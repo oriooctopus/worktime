@@ -79,9 +79,9 @@ let END_HOTKEY_MODS = UInt32(cmdKey)
 // How long the ⌘E undo panel stays on screen. The session is not actually
 // ended until this expires -- pressing Undo dismisses the panel and does
 // nothing. A second ⌘E while the panel is showing skips the countdown and
-// commits immediately at the current minute. 12 seconds is long enough to
+// commits immediately at the current minute. 5 seconds is long enough to
 // catch an accidental press without making a deliberate one feel stalled.
-let END_UNDO_SEC = 12
+let END_UNDO_SEC = 5
 
 // How long ⌥W waits to find out whether a second press is coming, before
 // treating the first as a single press.
