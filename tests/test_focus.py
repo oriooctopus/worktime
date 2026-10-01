@@ -809,5 +809,73 @@ class TestShortFocusMinSec(FocusCase):
         self.assertEqual(len(events), 2)
 
 
+class TestPendingGlance(FocusCase):
+    """pending_glance_sec: the dot is green on a glance that has not yet earned it.
+
+    Only when the glance is what lit the dot -- from idle, inside the filter's
+    window. A switch mid-session, a glance that is already over, or the filter
+    being off all leave the dot as it was.
+    """
+
+    NOTES = "com.apple.Notes"
+
+    def setUp(self):
+        super().setUp()
+        self.orig_min_sec = wp._SHORT_FOCUS_MIN_SEC
+        wp._SHORT_FOCUS_MIN_SEC = 7
+
+    def tearDown(self):
+        wp._SHORT_FOCUS_MIN_SEC = self.orig_min_sec
+        super().tearDown()
+
+    def at(self, hms):
+        h, m, sec = (int(x) for x in hms.split(":"))
+        return wp.datetime.strptime(DAY, "%Y-%m-%d").replace(
+            tzinfo=wp.LOCAL, hour=h, minute=m, second=sec)
+
+    def glance(self, hms="09:00:00"):
+        return {"day": DAY, "t": hms, "bundle": SLACK, "app": "Slack", "idle": 0}
+
+    def test_fresh_glance_from_idle_is_pending(self):
+        self.write([self.glance()])
+        self.assertEqual(wp.pending_glance_sec(DAY, self.at("09:00:03"), 300), 4.0)
+
+    def test_confirmed_once_the_window_has_run(self):
+        self.write([self.glance()])
+        self.assertIsNone(wp.pending_glance_sec(DAY, self.at("09:00:07"), 300))
+
+    def test_not_pending_mid_session(self):
+        # Zed at 08:58 is two minutes before the Slack switch, well inside the
+        # five-minute cutoff, so the run was already going.
+        self.write([
+            {"day": DAY, "t": "08:58:00", "bundle": ZED, "app": "Zed", "idle": 0},
+            {"day": DAY, "t": "08:58:30", "bundle": SLACK, "app": "Slack", "idle": 0},
+            self.glance("09:00:00"),
+        ])
+        self.assertIsNone(wp.pending_glance_sec(DAY, self.at("09:00:03"), 300))
+
+    def test_pending_after_a_lapsed_session(self):
+        self.write([
+            {"day": DAY, "t": "08:00:00", "bundle": ZED, "app": "Zed", "idle": 0},
+            {"day": DAY, "t": "08:00:30", "bundle": self.NOTES, "app": "Notes", "idle": 0},
+            self.glance("09:00:00"),
+        ])
+        self.assertEqual(wp.pending_glance_sec(DAY, self.at("09:00:02"), 300), 5.0)
+
+    def test_glance_left_early_is_not_pending(self):
+        # Notes took the front at 09:00:03: Slack is no longer the newest
+        # activation, so nothing is lit on its account.
+        self.write([
+            self.glance(),
+            {"day": DAY, "t": "09:00:03", "bundle": self.NOTES, "app": "Notes", "idle": 0},
+        ])
+        self.assertIsNone(wp.pending_glance_sec(DAY, self.at("09:00:04"), 300))
+
+    def test_filter_off_means_never_pending(self):
+        wp._SHORT_FOCUS_MIN_SEC = None
+        self.write([self.glance()])
+        self.assertIsNone(wp.pending_glance_sec(DAY, self.at("09:00:03"), 300))
+
+
 if __name__ == "__main__":
     unittest.main()

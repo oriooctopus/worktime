@@ -5325,7 +5325,7 @@ MIN_RECOMPUTE_SEC = 10
 # versioning is a .get() default on every read -- which would quietly serve an
 # empty activity list as though the day had none. A version mismatch is simply
 # a miss, handled by the path that already exists for a stale day.
-STATUS_CACHE_V = 6
+STATUS_CACHE_V = 7
 
 
 # One file, overwritten by bin/worktime-prompt-mark.py on every prompt in every
@@ -5501,7 +5501,13 @@ def live_activity(day: str) -> tuple[datetime | None, list[int], list[int],
     # cost of the verdict trailing reality by at most MIN_RECOMPUTE_SEC --
     # which is invisible, because a stretch of work in progress is already
     # green and stays green.
-    if hit and time.time() - c.get("at", 0) < MIN_RECOMPUTE_SEC:
+    #
+    # A new activation is the exception: a glance from idle has to reach the
+    # dot within a second or two, or the 7s pending state it opens would be
+    # over before the cache admitted the glance had happened.
+    n_acts = len(list(focus_activations(day)))
+    if (hit and time.time() - c.get("at", 0) < MIN_RECOMPUTE_SEC
+            and c.get("n_acts") == n_acts):
         return ((datetime.fromisoformat(c["last"]) if c["last"] else None),
                 c["stamps"], c["ev_stamps"], c["acts"])
 
@@ -5536,10 +5542,45 @@ def live_activity(day: str) -> tuple[datetime | None, list[int], list[int],
     with open(tmp, "w") as fh:
         json.dump({"v": STATUS_CACHE_V, "fp": fp, "day": day, "stamps": stamps,
                    "ev_stamps": ev_stamps,
-                   "at": time.time(), "acts": acts,
+                   "at": time.time(), "acts": acts, "n_acts": n_acts,
                    "last": last.isoformat() if last else None}, fh)
     os.replace(tmp, STATUS_CACHE)
     return last, stamps, ev_stamps, acts
+
+
+def pending_glance_sec(day: str, now: datetime, cutoff_sec: float) -> float | None:
+    """Seconds until a fresh glance has earned its credit, or None.
+
+    Only the glance filter makes an activation provisional: it is dropped when
+    the NEXT activation lands under short_focus_min_sec after it, so until that
+    window has run the newest one is neither confirmed nor refuted. The dot is
+    green for it regardless -- this says that it is green on credit not yet
+    earned, so the bar can draw it half-filled until the answer is known.
+
+    Only when the glance is what lit the dot. Mid-session, the run it joined
+    was already going, nothing about it is in doubt, and a window switch must
+    not make a steady dot flicker.
+    """
+    min_sec = _SHORT_FOCUS_MIN_SEC
+    if min_sec is None:
+        return None
+    acts = list(focus_activations(day))
+    if not acts:
+        return None
+    a = acts[-1]
+    if not focus_counts(a):
+        return None
+    base = datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=LOCAL)
+    a_dt = base + timedelta(seconds=sec_of(a["t"]))
+    if _SHORT_FOCUS_ENABLED_AT is not None and a_dt < _SHORT_FOCUS_ENABLED_AT:
+        return None
+    remaining = min_sec - (now - a_dt).total_seconds()
+    if remaining <= 0:
+        return None
+    prior = max((e for e in events_for(day) if e < a_dt), default=None)
+    if prior is not None and (a_dt - prior).total_seconds() <= cutoff_sec:
+        return None
+    return round(remaining, 1)
 
 
 def status() -> dict:
@@ -5598,6 +5639,8 @@ def status() -> dict:
     # mode a lone prompt lapses after a minute and only a session that has been
     # going a while holds the dot green for the full five.
     cutoff_sec = live_cutoff(day, [m * 60 for m in ev_stamps])
+
+    pending_sec = pending_glance_sec(day, now, cutoff_sec)
 
     open_mark = next((m for m in marks_for(day, stamps)
                       if m["open"] and m["start"] <= now_m <= m["end"]), None)
@@ -5799,6 +5842,10 @@ def status() -> dict:
             "gap_after_sec": cutoff_sec,
             "mode": mode_now(),
             "short_focus_min_sec": short_focus_state() or wc.short_focus_min_sec(),
+            # Set only while the dot is green on a glance that is still inside
+            # the filter's window; the bar draws it half-filled until then.
+            "pending_sec": (pending_sec if state == "working" and not in_meeting
+                            else None),
             "focus_pct": focus_pct,
             # The minute "Link with last session" would claim from, as HH:MM,
             # or null when there is nothing to link to. The menu greys the item

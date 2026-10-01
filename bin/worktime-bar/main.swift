@@ -210,6 +210,9 @@ struct Status {
     var gapAfterSec: Int?
     var mode = "focused"
     var shortFocusMinSec: Int?
+    // Seconds until the glance that lit the dot has earned its credit, or nil
+    // when nothing about the green is in doubt. Draws the dot half-filled.
+    var pendingSec: Double?
     var focusPct: Int?
     // HH:MM the link item would claim from, nil when there is nothing to link
     // to. Decided by the probe off the same periods the list is drawn from --
@@ -703,7 +706,7 @@ final class FocusLog {
 // Drawn as a bitmap, not a text glyph -- SF's circle glyphs sit off-center
 // within a button's text baseline, and no attributedTitle tweak fixes that
 // reliably. A custom-drawn image centers exactly in its frame every time.
-func dotImage(_ color: NSColor, hollow: Bool, halo: Bool = false) -> NSImage {
+func dotImage(_ color: NSColor, hollow: Bool, halo: Bool = false, half: Bool = false) -> NSImage {
     let size = NSSize(width: 18, height: 18)
     let image = NSImage(size: size)
     image.lockFocus()
@@ -717,7 +720,21 @@ func dotImage(_ color: NSColor, hollow: Bool, halo: Bool = false) -> NSImage {
         NSBezierPath(ovalIn: rect.insetBy(dx: -2.5, dy: -2.5)).fill()
     }
     let path = NSBezierPath(ovalIn: rect)
-    if hollow {
+    if half {
+        // A glance not yet confirmed: the ring says "tracking", the left half
+        // says "not yet earned". Stroked inside the dot's own rect so it is the
+        // same size as the filled one and swapping between them does not jump.
+        color.setStroke()
+        let ring = NSBezierPath(ovalIn: rect.insetBy(dx: 0.75, dy: 0.75))
+        ring.lineWidth = 1.5
+        ring.stroke()
+        NSGraphicsContext.saveGraphicsState()
+        NSBezierPath(rect: NSRect(x: rect.minX, y: rect.minY,
+                                  width: rect.width / 2, height: rect.height)).addClip()
+        color.setFill()
+        path.fill()
+        NSGraphicsContext.restoreGraphicsState()
+    } else if hollow {
         color.setStroke()
         path.lineWidth = 1.5
         path.stroke()
@@ -1525,6 +1542,8 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
     // When the first ⌘E opened endPanel, to tell a rapid double press from a
     // later "end now" press.
     var endPanelOpenedAt = Date()
+    // The refresh due when the pending glance's window closes.
+    var pendingConfirm: DispatchWorkItem?
     // The "session ended for idle" panel. Held at its hold message until input
     // resumes (see idleWatcher.onInputResumed), then counts IDLE_END_PANEL_SEC.
     var idleEndPanel: CountdownPanel?
@@ -1636,6 +1655,10 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
                 return
             }
             self?.focusLog.sample(app: app)
+            // The poll is up to 5s away and a glance's pending window is 7s.
+            // The delay lets the sample above reach the log first, since the
+            // probe reads the dot's answer from it.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { self?.refresh() }
         }
         registerHotKey()
         idleWatcher.onIdleEnd = { [weak self] idle in self?.endSessionForIdle(idle) }
@@ -1795,12 +1818,16 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
 
     // Only a working period can lapse, so only "working" ever blinks -- marked
     // spans are ended by hand, and idle/broken have nothing to warn about.
+    func workingDot() -> NSImage {
+        dotImage(WORKING, hollow: false, half: status.pendingSec != nil)
+    }
+
     func tickBlink() {
         guard status.state == "working",
               let anchor = lastActivityAt,
               let gapAfterSec = status.gapAfterSec
         else {
-            if !blinkOn { blinkOn = true; item.button?.image = dotImage(WORKING, hollow: false) }
+            if !blinkOn { blinkOn = true; item.button?.image = workingDot() }
             return
         }
         // A minute of warning on a five-minute period is a warning; a minute of
@@ -1811,11 +1838,11 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         let warn = min(BLINK_WARNING_SEC, Double(gapAfterSec) / 3)
         let remaining = Double(gapAfterSec) - Date().timeIntervalSince(anchor)
         guard remaining > 0, remaining <= warn else {
-            if !blinkOn { blinkOn = true; item.button?.image = dotImage(WORKING, hollow: false) }
+            if !blinkOn { blinkOn = true; item.button?.image = workingDot() }
             return
         }
         blinkOn.toggle()
-        item.button?.image = blinkOn ? dotImage(WORKING, hollow: false) : emptyDotImage()
+        item.button?.image = blinkOn ? workingDot() : emptyDotImage()
     }
 
     // Called on every poll and again from menuNeedsUpdate just before the
@@ -1846,7 +1873,8 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         // Broken is filled and red like the dot in the bar, not hollow amber:
         // this row is the caption on that dot, and the two disagreeing about
         // which state the app is in is worse than either colour alone.
-        let symbol = status.state == "idle" || status.state == "unknown" ? "○" : "●"
+        let symbol = status.state == "idle" || status.state == "unknown" ? "○"
+            : status.state == "working" && status.pendingSec != nil ? "◐" : "●"
         let color: NSColor = status.state == "marked" ? MARKED
             : status.state == "special" ? SPECIAL
             : status.state == "working" ? WORKING
@@ -2391,6 +2419,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
             s.gapAfterSec = j["gap_after_sec"] as? Int
             s.mode = j["mode"] as? String ?? "focused"
             s.shortFocusMinSec = j["short_focus_min_sec"] as? Int
+            s.pendingSec = j["pending_sec"] as? Double
             s.focusPct = j["focus_pct"] as? Int
             s.linkFrom = j["link_from"] as? String
             s.meetingStart = j["meeting_start"] as? String
@@ -2480,12 +2509,22 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
             }
         }
         status = s
+        pendingConfirm?.cancel()
+        pendingConfirm = nil
+        if let p = s.pendingSec {
+            // The probe cannot be asked "is it confirmed yet" without being
+            // asked, so ask at the moment the window ends. The small margin is
+            // so the answer comes back after the glance's 7s, not just before.
+            let w = DispatchWorkItem { [weak self] in self?.refresh() }
+            pendingConfirm = w
+            DispatchQueue.main.asyncAfter(deadline: .now() + p + 0.3, execute: w)
+        }
         syncSpecialReminder(on: s.state == "special")
         askAboutMissedCall(s.missedCall)
         lastActivityAt = s.quietSec.map { Date().addingTimeInterval(-Double($0)) }
         blinkOn = true
         switch s.state {
-        case "working": item.button?.image = dotImage(WORKING, hollow: false)
+        case "working": item.button?.image = workingDot()
         case "marked":  item.button?.image = dotImage(MARKED, hollow: false)
         case "special": item.button?.image = dotImage(SPECIAL, hollow: false, halo: true)
         case "broken":  item.button?.image = dotImage(BROKEN, hollow: false)
