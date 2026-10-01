@@ -529,7 +529,12 @@ everything else.
   week's workdays; the default covers the rest. The Vault Dashboard widget edits
   the file (Week view: click the default, this week's goal, or a day's goal), and
   the probe resolves the same rule into `buckets.main.target_sec` for the menu
-  bar. A 0h goal shows "no goal today" instead of a bar. The special target's
+  bar. **Carries** sit on top as a ledger
+  (`"carries": [{"from_week", "delta_sec", "days"}]`): a week's surplus (+) or
+  deficit (-) spread evenly over the chosen days, a surplus lowering each day's
+  goal, floored at 0. The widget's ⚙ section applies one to next week / 2 weeks /
+  4 weeks counted from the week viewed (or the rest of the current week), lists
+  carries in and out with Undo each, and both weeks say so above the rows. A 0h goal shows "no goal today" instead of a bar. The special target's
   deduction (below) comes off whatever the goal is.
 - **Special target.** Defaults to none (0h). **Special target…** in the menu
   (Today / 3 days / A week / Custom…) opens a panel for hours per day × days, and

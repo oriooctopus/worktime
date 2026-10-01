@@ -249,6 +249,23 @@ def test_goal_day_beats_week_beats_default(world):
     assert wp.goal_sec_for("2026-03-09") == 5 * 3600         # next week: the default
 
 
+def test_carries_spread_stack_and_floor_at_zero(world):
+    week = ["2026-03-03", "2026-03-04", "2026-03-05", "2026-03-06"]  # Tue-Fri
+    write_goals(world, {"days": {"2026-03-02": 0}, "carries": [
+        # a 4h surplus from the week before, spread over Tue-Fri: -1h each
+        {"from_week": "2026-02-23", "delta_sec": 4 * 3600, "days": week},
+        # a 2h deficit landing on Wed and Thu only: +1h each
+        {"from_week": "2026-02-02", "delta_sec": -2 * 3600, "days": week[1:3]},
+        # a surplus far bigger than Friday's goal stops at zero
+        {"from_week": "2026-02-16", "delta_sec": 20 * 3600, "days": week[3:]}]})
+    assert wp.goal_sec_for("2026-03-02") == 0               # day off untouched
+    assert wp.goal_sec_for("2026-03-03") == 3 * 3600
+    assert wp.goal_sec_for("2026-03-04") == 4 * 3600        # -1h +1h
+    assert wp.goal_sec_for("2026-03-05") == 4 * 3600
+    assert wp.goal_sec_for("2026-03-06") == 0               # floored
+    assert wp.goal_sec_for("2026-03-09") == 4 * 3600        # outside every carry
+
+
 def test_goal_is_the_target_and_the_special_deduction_comes_off_it(world):
     world.now = at(9, 0)
     write_goals(world, {"weeks": {"2026-03-02": 3}})

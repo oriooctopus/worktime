@@ -1311,7 +1311,11 @@ DEFAULT_GOAL_HOURS = 4
 # the vault, hence a vault file rather than STATE. Shape:
 #   {"default_hours": 4,
 #    "weeks": {"<monday YYYY-MM-DD>": hours},   # that week's workdays
-#    "days":  {"YYYY-MM-DD": hours}}            # that one day, any day
+#    "days":  {"YYYY-MM-DD": hours},            # that one day, any day
+#    "carries": [{"from_week": "<monday>", "delta_sec": n, "days": [...]}]}
+# `carries` is a ledger of one week's surplus (+) or deficit (-) spread evenly
+# over `days`: a surplus lowers each day's goal by delta_sec / len(days). They
+# are kept apart from the goals themselves so they stack and undo one at a time.
 # The widget resolves the same rule (goalFor in the Vault Dashboard note) so a
 # past day with no snapshot target and a fresh edit both show the right figure.
 GOALS_FILE = os.path.join(wc.dashboard_dir(), "worktime-goals.json")
@@ -1588,17 +1592,10 @@ def _span_days(r: dict) -> int:
             - datetime.strptime(r["start_day"], "%Y-%m-%d")).days + 1
 
 
-def goal_sec_for(day: str) -> int:
-    """Main's goal on `day`, before any special-target deduction.
-
-    A per-day entry wins outright and may be set on any day. Otherwise
-    weekends have no goal, and a workday takes its week's entry (keyed by that
-    week's Monday) or else the default. No file means all defaults.
-    """
-    goals = {}
-    if os.path.exists(GOALS_FILE):
-        with open(GOALS_FILE) as fh:
-            goals = json.load(fh)
+def _base_goal_sec(goals: dict, day: str) -> int:
+    """The goal as set, before carries: a per-day entry wins outright and may
+    be set on any day; otherwise weekends have none and a workday takes its
+    week's entry (keyed by that week's Monday) or else the default."""
     if day in goals.get("days", {}):
         return int(round(goals["days"][day] * 3600))
     weekday = datetime.strptime(day, "%Y-%m-%d").weekday()  # Mon=0
@@ -1607,6 +1604,19 @@ def goal_sec_for(day: str) -> int:
     week = goals.get("weeks", {}).get(shift_day(day, -weekday))
     hours = week if week is not None else goals.get("default_hours", DEFAULT_GOAL_HOURS)
     return int(round(hours * 3600))
+
+
+def goal_sec_for(day: str) -> int:
+    """Main's goal on `day`, before any special-target deduction: the goal as
+    set, less every carry landing on the day, floored at zero. No file means
+    all defaults."""
+    goals = {}
+    if os.path.exists(GOALS_FILE):
+        with open(GOALS_FILE) as fh:
+            goals = json.load(fh)
+    carried = sum(c["delta_sec"] / len(c["days"])
+                  for c in goals.get("carries", []) if day in c["days"])
+    return max(int(round(_base_goal_sec(goals, day) - carried)), 0)
 
 
 def main_deduct_for(day: str) -> int:
