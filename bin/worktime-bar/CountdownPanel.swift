@@ -1,5 +1,16 @@
 import AppKit
 
+// MARK: - ⌘E double press
+
+// A second ⌘E within this many seconds of the first is a deliberate double
+// press: end at the last entry. Slower than that it is the "skip the
+// countdown" press on a panel somebody has been looking at: end now.
+let END_DOUBLE_PRESS_SEC = 1.0
+
+func isEndDoublePress(openedAt: Date, now: Date) -> Bool {
+    now.timeIntervalSince(openedAt) <= END_DOUBLE_PRESS_SEC
+}
+
 // MARK: - The countdown panel
 
 // Shared by the two prompts that need an answer inside a few seconds: a call

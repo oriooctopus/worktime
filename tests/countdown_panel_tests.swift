@@ -104,6 +104,16 @@ enum CountdownPanelTests {
         check(unnamed.messageText.hasPrefix("Ended"), "an unnamed meeting still opens")
         unnamed.close()
 
+        // ⌘E: a second press within a second is the double press (last entry);
+        // a slower one is "end now".
+        let t0 = Date()
+        check(isEndDoublePress(openedAt: t0, now: t0.addingTimeInterval(0.2)),
+              "second ⌘E at 0.2s is a double press")
+        check(isEndDoublePress(openedAt: t0, now: t0.addingTimeInterval(1.0)),
+              "second ⌘E at exactly 1s is still a double press")
+        check(!isEndDoublePress(openedAt: t0, now: t0.addingTimeInterval(1.5)),
+              "second ⌘E at 1.5s is end-now, not a double press")
+
         print(failures == 0 ? "all countdown panel checks passed"
                             : "\(failures) countdown panel check(s) failed")
         exit(failures == 0 ? 0 : 1)

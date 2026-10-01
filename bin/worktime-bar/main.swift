@@ -64,10 +64,11 @@ let ENTRY_HOTKEY_CODE = UInt32(kVK_ANSI_W)
 let ENTRY_HOTKEY_MODS = UInt32(optionKey)
 
 // ⌘E ends the session at the current minute, from anywhere. A countdown panel
-// appears and ends the session on expiry; a second ⌘E while the panel is
-// showing skips the countdown and ends immediately (same minute). "End After
-// Last Entry" is available via the menu for the case where the last stretch
-// was not work.
+// appears and ends the session on expiry. A second ⌘E skips the countdown, and
+// which minute it ends at depends on how fast it came: within
+// END_DOUBLE_PRESS_SEC of the first it is a double press and ends at the last
+// entry (the last stretch was not work); later than that it is "end now, don't
+// wait for the countdown" and ends at the current minute.
 //
 // ⌘E without ⌥, unlike the shift toggle, because the chord was asked for in
 // that form. It is a common shortcut in other apps -- Finder's Eject, "Use
@@ -1543,8 +1544,12 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
     // fired cannot be cancelled retroactively by a much later one.
     var pendingEntry: DispatchWorkItem?
     // The ⌘E undo panel. Stays on screen for END_UNDO_SEC; a second press
-    // while it is showing skips the countdown and commits immediately (at last).
+    // while it is showing skips the countdown and commits immediately -- at
+    // the last entry if it came within END_DOUBLE_PRESS_SEC, else at this minute.
     var endPanel: CountdownPanel?
+    // When the first ⌘E opened endPanel, to tell a rapid double press from a
+    // later "end now" press.
+    var endPanelOpenedAt = Date()
     let idleWatcher = IdleWatcher()
     // One menu for the app's lifetime, mutated in place rather than replaced.
     // Assigning a freshly built NSMenu to item.menu does nothing to a menu that
@@ -2733,24 +2738,26 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         endSession(atLast: atLast)
     }
 
-    // ⌘E opens the countdown panel; a second press while the panel is
-    // showing skips the countdown and ends at this minute. The panel itself
-    // calls endSession(atLast: false) on natural expiry, so both paths land
-    // the same way. "End After Last Entry" is a separate menu row.
+    // ⌘E opens the countdown panel. A second press while it is showing skips
+    // the countdown: within END_DOUBLE_PRESS_SEC it ends at the last entry
+    // (the double press), later it ends at this minute (end now). The panel
+    // itself calls endSession(atLast: false) on natural expiry. "End After
+    // Last Entry" is also a menu row.
     //
     // Always on main: the Carbon handler hops here before calling this.
     @objc func endHotKey() {
         if endPanel != nil {
             endPanel?.close()
             endPanel = nil
-            endSession(atLast: false)
+            endSession(atLast: isEndDoublePress(openedAt: endPanelOpenedAt, now: Date()))
             return
         }
+        endPanelOpenedAt = Date()
         endPanel = CountdownPanel(
             meeting: "End session",
             seconds: END_UNDO_SEC,
             buttonTitle: "Undo",
-            messageFor: { "Ending in \($0)s — press ⌘E again to end now" },
+            messageFor: { "Ending in \($0)s — ⌘E again: end now (twice fast: at last entry)" },
             onExpire: { [weak self] in
                 self?.endPanel = nil
                 self?.endSession(atLast: false)

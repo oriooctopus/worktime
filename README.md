@@ -602,8 +602,9 @@ picking one:
 | **End Now** | this minute |
 | **End After Last Entry** | the last entry, plus `TAIL_SEC` — same rule as ⌘⌥S |
 
-**⌘E** makes either of them from anywhere: one press ends at this minute, two
-within `END_DOUBLE_PRESS_SEC` end at the last entry. One press is End Now
+**⌘E** makes either of them from anywhere: one press opens a 5s undo panel that
+ends at this minute; a second press within `END_DOUBLE_PRESS_SEC` (1s) ends at the
+last entry, and a slower one skips the countdown and ends now. One press is End Now
 because that is the common case — the ending you mean most of the time is the
 minute you are in — and because it is the recoverable order. A single press
 landing End Now claims a few minutes too many, which shows in the period list
