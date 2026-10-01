@@ -46,8 +46,9 @@ final class TrackPanel: NSObject, NSTextFieldDelegate, NSWindowDelegate {
         "Special — extra, only untracked minutes",
         "Special — take the minutes out of main",
     ]
-    // A negative count under either special row hands that many special
-    // minutes back to main, so the same two rows serve as the undo.
+    // A negative count is the undo for every row: under a special row it hands
+    // that many special minutes back to main, under a main row it takes that
+    // many minutes off main.
 
     /// Where the minute count starts, and what a previous answer does to it.
     ///
@@ -171,25 +172,19 @@ final class TrackPanel: NSObject, NSTextFieldDelegate, NSWindowDelegate {
     /// type is worse than one that refuses to act, because the minutes land in
     /// the day either way and only one of those can be noticed.
     ///
-    /// Negative is a real answer for the special rules -- "-2" hands two
-    /// special minutes back to main -- and meaningless for the main ones, where
-    /// there is nothing to hand back, so it is refused there rather than
-    /// quietly read as its absolute value.
+    /// Negative is a real answer under every rule -- "-2" hands two special
+    /// minutes back to main, or takes two minutes off main -- so the sign is
+    /// not judged here; the probe owns what each rule does with it.
     var minutes: Int? {
         let raw = minutesField.stringValue.trimmingCharacters(in: .whitespaces)
         guard let n = Int(raw), n != 0 else { return nil }
-        if n < 0 && !TrackPanel.isSpecial(mode) { return nil }
         return n
     }
 
     var mode: String { TrackPanel.modes[modePicker.indexOfSelectedItem] }
 
-    static func isSpecial(_ mode: String) -> Bool { mode.hasPrefix("special_") }
-
     func controlTextDidChange(_: Notification) { syncButton() }
 
-    /// Also on the picker: "-2" is valid under one rule and not the next, so
-    /// changing the rule can enable or disable the button with no typing.
     @objc func modeChanged() { syncButton() }
 
     private func syncButton() { trackButton.isEnabled = minutes != nil }

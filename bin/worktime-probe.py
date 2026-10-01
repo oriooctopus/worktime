@@ -55,6 +55,8 @@ Usage:
                                           untracked minutes, or taking them
                                           out of main; a negative n hands the
                                           newest n special minutes back to main
+  worktime-probe.py track -<n> clip|split  -- take the newest n minutes of main
+                                          off today
 """
 
 from __future__ import annotations  # 3.8 can parse the annotations
@@ -946,6 +948,13 @@ def sec_of(hms: str) -> int:
 
 
 MARKS = os.path.join(STATE, "marks.jsonl")
+
+# Stretches the person took back out of main by hand (a negative count in the
+# track panel). Append-only, one row per cut span, in seconds from the day's
+# midnight like the special log's cuts. Applied when the day's periods are
+# built rather than by editing the evidence: the prompts, focus and marks
+# underneath are still true, and a rebuild must land on the same answer.
+MAIN_CUTS = os.path.join(STATE, "main-cuts.jsonl")
 
 # The note link_last_session() writes. A linked stretch is work nobody
 # described -- the whole reason it needs claiming is that the tracker saw
@@ -2274,6 +2283,59 @@ def track_back(minutes: int, mode: str = "clip") -> dict:
             "unplaced": unplaced,
             "spans": [{"start": hhmm_of(a), "end": hhmm_of(b)}
                       for a, b in spans]}
+
+
+def main_cut_spans_for(day: str) -> list[list[int]]:
+    """The spans removed from main on `day`, in seconds from midnight."""
+    if not os.path.exists(MAIN_CUTS):
+        return []
+    out = [[r["from"], r["to"]]
+           for r in (json.loads(l) for l in open(MAIN_CUTS) if l.strip())
+           if r.get("day") == day]
+    return sorted(out)
+
+
+def remove_main(minutes: int, mode: str) -> dict:
+    """Take the newest `minutes` of main time off today.
+
+    The negative of track_back, reached by typing a negative count into the
+    track panel with a main rule picked. Like release_special it takes the
+    newest counted minutes wherever they are, not the last `minutes` of the
+    clock: the person is correcting the day's total, and work that ended an
+    hour ago is still the newest work there is. Walks the published periods
+    back from the end, so it can never cut a minute main was not counting.
+    """
+    now = now_local()
+    day = now.strftime("%Y-%m-%d")
+    events = events_for(day)
+    write_vault_snapshot(day, events)
+    worked = json.load(open(snapshot_path(day))).get("worked", [])
+    before = sum(w["end"] - w["start"] for w in worked)
+
+    remaining = minutes
+    cuts: list[list[int]] = []
+    for w in sorted(worked, key=lambda w: w["end"], reverse=True):
+        take = min(w["end"] - w["start"], remaining)
+        if take > 0:
+            cuts.append([(w["end"] - take) * 60, w["end"] * 60])
+            remaining -= take
+        if remaining <= 0:
+            break
+
+    os.makedirs(STATE, exist_ok=True)
+    with open(MAIN_CUTS, "a") as fh:
+        for a, b in cuts:
+            fh.write(json.dumps({"day": day, "from": a, "to": b,
+                                 "at": now.isoformat()}) + "\n")
+    if cuts:
+        write_vault_snapshot(day, events)
+    after = json.load(open(snapshot_path(day))).get("worked", [])
+    claimed = before - sum(w["end"] - w["start"] for w in after)
+    return {"tracked": claimed > 0, "bucket": "main", "mode": mode,
+            "removed": True, "asked": minutes, "claimed": claimed,
+            "unplaced": minutes - claimed,
+            "spans": [{"start": hhmm_of(a // 60), "end": hhmm_of(b // 60)}
+                      for a, b in reversed(cuts)]}
 
 
 def track_special(minutes: int, mode: str) -> dict:
@@ -4615,6 +4677,11 @@ def write_vault_snapshot(day: str, events: list[datetime],
     # totals addable -- see the Work buckets section.
     merged = subtract_spans(merged, special_spans_for(day))
 
+    # Minutes the person removed from main by hand. Last of all, for the same
+    # reason as special: it is a statement about the total, not evidence about
+    # presence, so nothing may rejoin or re-earn what it took out.
+    merged = subtract_spans(merged, main_cut_spans_for(day))
+
     # Back to minutes for publication. Rounding the boundaries rather than the
     # durations keeps work and gaps tiling exactly: every gap still starts where
     # the period before it ends.
@@ -5426,7 +5493,7 @@ def activity_fingerprint(day: str) -> str:
         # snapshot would freeze its special total. Five minutes matches the bar's
         # reminder cadence.
         parts.append(f"special-open:{int(time.time()) // 300}")
-    for p in (MARKS, MEETINGS, SPECIAL_LOG, SPECIAL_TARGETS,
+    for p in (MARKS, MAIN_CUTS, MEETINGS, SPECIAL_LOG, SPECIAL_TARGETS,
               APPROVALS, NOTES, MODEFILE, IDLE_CLAIMS,
               os.path.join(SLACK_DIR, f"{day}.json"),
               os.path.join(FOCUS_DIR, f"{day}.jsonl"),
@@ -6075,9 +6142,13 @@ if __name__ == "__main__":
             print(json.dumps({"tracked": False, "why": "track needs a minute count"}))
         else:
             mode = sys.argv[3] if len(sys.argv) > 3 else "clip"
-            print(json.dumps(track_special(n, mode)
-                             if mode in SPECIAL_TRACK_MODES
-                             else track_back(n, mode)))
+            if mode in SPECIAL_TRACK_MODES:
+                out = track_special(n, mode)
+            elif n < 0 and mode in TRACK_MODES:
+                out = remove_main(-n, mode)
+            else:
+                out = track_back(n, mode)
+            print(json.dumps(out))
     elif cmd == "status":
         # One small line for the menu bar: what the tracker thinks right now.
         print(json.dumps(status()))

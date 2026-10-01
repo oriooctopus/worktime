@@ -55,6 +55,7 @@ class World:
         p = lambda n: os.path.join(self.tmp, n)  # noqa: E731
         for name, f in (("STATE", ""), ("MARKS", "marks.jsonl"),
                         ("MEETINGS", "meetings.jsonl"),
+                        ("MAIN_CUTS", "main-cuts.jsonl"),
                         ("SPECIAL_LOG", "special.jsonl"),
                         ("SPECIAL_TARGETS", "special-targets.jsonl"),
                         ("GOALS_FILE", "worktime-goals.json"),

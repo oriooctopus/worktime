@@ -316,9 +316,13 @@ func runProbe(_ args: [String]) -> ProbeRun {
 // Says which bucket, because the same panel logs either and a banner that did
 // not would leave the period list as the only way to find out.
 func notifyTracked(claimed: Int, asked: Int, special: Bool = false, take: Bool = false,
-                   returned: Bool = false) {
+                   returned: Bool = false, removed: Bool = false) {
     let what = special ? "special time" : "work"
-    if returned {
+    if removed {
+        notify(claimed == 0 ? "Nothing to remove — there was no work counted today."
+            : claimed < asked ? "Removed \(claimed)m from main — that was all there was."
+            : "Removed \(claimed)m from main.")
+    } else if returned {
         notify(claimed == 0 ? "Nothing to return — there was no special time to take back."
             : claimed < asked ? "Moved \(claimed)m from special to main — that was all the special there was."
             : "Moved \(claimed)m from special to main.")
@@ -2654,7 +2658,8 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
             DispatchQueue.global(qos: .utility).async {
                 notifyTracked(claimed: claimed, asked: abs(minutes), special: special,
                               take: r["mode"] as? String == "special_take",
-                              returned: r["returned"] as? Bool == true)
+                              returned: r["returned"] as? Bool == true,
+                              removed: r["removed"] as? Bool == true)
             }
             DispatchQueue.main.async { self.refresh() }
         }
