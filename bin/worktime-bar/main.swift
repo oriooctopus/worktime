@@ -52,14 +52,13 @@ let BLINK_INTERVAL = 0.5
 let HOTKEY_CODE = UInt32(kVK_ANSI_S)
 let HOTKEY_MODS = UInt32(cmdKey | optionKey)
 
-// ⌥W logs an entry: one keypress saying this minute was worked, for work this
-// machine has no way to see. Nothing opens, nothing is asked.
+// ⌥W opens the track-time panel: log minutes you were working that this machine
+// could not see, as main or special time.
 //
 // Registered the same way, and deliberately without ⌘: the shift toggle is a
-// decision about the whole day and wants the harder chord, while this is meant
-// to be cheap enough to press mid-thought. ⌥W types "∑" in a text field, so
-// the two-key form is only safe because a Carbon hot key consumes the event
-// before the frontmost app sees it.
+// decision about the whole day and wants the harder chord. ⌥W types "∑" in a
+// text field, so the two-key form is only safe because a Carbon hot key
+// consumes the event before the frontmost app sees it.
 let ENTRY_HOTKEY_CODE = UInt32(kVK_ANSI_W)
 let ENTRY_HOTKEY_MODS = UInt32(optionKey)
 
@@ -83,18 +82,6 @@ let END_HOTKEY_MODS = UInt32(cmdKey)
 // commits immediately at the current minute. 5 seconds is long enough to
 // catch an accidental press without making a deliberate one feel stalled.
 let END_UNDO_SEC = 5
-
-// How long ⌥W waits to find out whether a second press is coming, before
-// treating the first as a single press.
-//
-// The single press has to be delayed by this much, which is the price of the
-// double press existing at all: acting immediately and then also opening the
-// panel would file an entry every time somebody meant to open the panel, and
-// those stray entries would be indistinguishable from real ones. A third of a
-// second is comfortably inside a deliberate double press and short enough that
-// the banner still reads as a response to the key rather than as something
-// that happened later.
-let DOUBLE_PRESS_SEC = 0.33
 
 // ⌘⌥P starts or stops special time, from anywhere. The same chord family as the
 // shift toggle because it is the same kind of decision -- a statement about how
@@ -316,39 +303,19 @@ func runProbe(_ args: [String]) -> ProbeRun {
     return .ok(String(data: data, encoding: .utf8) ?? "")
 }
 
-// Confirmation for ⌥W. The press is silent by design -- nothing opens, no
-// window takes the caret -- and the dot only moves if the minute was not
-// already counted, so a working shortcut and a dead one look identical from
-// the outside. The banner is the only thing that tells them apart.
-//
-// Posted with osascript rather than UNUserNotificationCenter because this app
-// carries an ad-hoc signature, and macOS refuses an ad-hoc identity notification
-// authorization outright: requestAuthorization returns "Notifications are not
-// allowed for this application", after which a post is *accepted* at the call
-// site and then silently dropped. A path that reports success and shows nothing
-// is the worst possible shape for the one thing standing in for feedback, so
-// this goes through an identity the system already trusts. Registering the
-// bundle with lsregister and launching through LaunchServices were both tried;
-// neither lifts the refusal.
-//
-// The cost of that choice is that macOS owns how long the banner stays up
-// (roughly five seconds). A notification withdrawn on our own schedule needs
-// the native API, which needs a real signing identity.
-func notifyEntryLogged() {
-    notify("Logged this minute as work.")
-}
-
-// The same banner for the double press. Names the minutes that actually
-// landed, and the ones asked for when the two differ -- which is the ordinary
-// outcome of the default rule, not an error, and reads as one unless it is
-// spelled out.
-func notifyTracked(claimed: Int, asked: Int) {
+// Banner for the track-time panel. Names the minutes that actually landed, and
+// the ones asked for when the two differ -- which is the ordinary outcome of
+// the default rule, not an error, and reads as one unless it is spelled out.
+// Says which bucket, because the same panel logs either and a banner that did
+// not would leave the period list as the only way to find out.
+func notifyTracked(claimed: Int, asked: Int, special: Bool = false) {
+    let what = special ? "special time" : "work"
     if claimed == 0 {
         notify("Nothing to track — those minutes are already counted.")
     } else if claimed < asked {
-        notify("Tracked \(claimed)m of \(asked)m — the rest was already counted.")
+        notify("Tracked \(claimed)m of \(asked)m as \(what) — the rest was already counted.")
     } else {
-        notify("Tracked \(claimed)m as work.")
+        notify("Tracked \(claimed)m as \(what).")
     }
 }
 
@@ -1539,14 +1506,9 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
     // the whole of a call.
     var wasInCall = false
     // Non-nil only while the track-back panel is on screen. Held so a second
-    // double press raises the panel already up rather than stacking a new one
+    // press raises the panel already up rather than stacking a new one
     // behind it, each with its own copy of the number being typed.
     var trackPanel: TrackPanel?
-    // The single-press action, scheduled but not yet run. Its existence IS the
-    // "a press is pending" flag: a second press cancels it and opens the panel
-    // instead. Cleared by the work item itself so a press that has already
-    // fired cannot be cancelled retroactively by a much later one.
-    var pendingEntry: DispatchWorkItem?
     // The ⌘E undo panel. Stays on screen for END_UNDO_SEC; a second press
     // while it is showing skips the countdown and commits immediately -- at
     // the last entry if it came within END_DOUBLE_PRESS_SEC, else at this minute.
@@ -1595,7 +1557,9 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
                               MemoryLayout<EventHotKeyID>.size, nil, &id)
             DispatchQueue.main.async {
                 switch id.id {
-                case HOTKEY_ID_ENTRY: bar.entryHotKey()
+                // Guarded like the others: the Track time row carries ⌥W as
+                // its key equivalent, so with the menu open both would fire.
+                case HOTKEY_ID_ENTRY: if !bar.menuIsOpen { bar.showTrackPanel() }
                 // Guarded like the shift toggle and for the same reason: the
                 // End Now row carries ⌘E as its key equivalent, so with the
                 // menu open both that row and this would fire.
@@ -2215,9 +2179,8 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         // submenu rather than doing anything, and a chord on it would advertise
         // the choice rather than an ending. It goes on this row specifically
         // because this is what one press does; the other row is what two
-        // presses do, and a menu cannot express that -- the same reason "Track
-        // time…" below carries no key equivalent for ⌥W pressed twice. So the
-        // second row's title is where the double press is written down.
+        // presses do, and a menu cannot express that. So the second row's
+        // title is where the double press is written down.
         let endSub = NSMenu()
         for (title, atLast, key) in [("End Now", false, "e"),
                                      ("End After Last Entry (⌘E twice)", true, "")] {
@@ -2245,14 +2208,10 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         }
         // Here as well as on ⌥W, because a shortcut nothing in the interface
         // mentions is a shortcut that is forgotten by the week after it ships.
-        m.addItem(NSMenuItem(title: "Log an entry",
-                             action: #selector(logEntry), keyEquivalent: "w"))
-        // No key equivalent of its own: the shortcut is ⌥W pressed twice, and
-        // a menu cannot express that. The row is here so the panel is
-        // reachable by somebody who never learns the double press, and so the
-        // double press is discoverable by somebody reading the menu.
-        m.addItem(NSMenuItem(title: "Track time…",
-                             action: #selector(showTrackPanel), keyEquivalent: ""))
+        let trackItem = NSMenuItem(title: "Track time…",
+                                   action: #selector(showTrackPanel), keyEquivalent: "w")
+        trackItem.keyEquivalentModifierMask = [.option]
+        m.addItem(trackItem)
         m.addItem(NSMenuItem(title: "Refresh now",
                              action: #selector(refreshNow), keyEquivalent: "r"))
         m.addItem(.separator())
@@ -2594,64 +2553,15 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         }
     }
 
-    // ⌥W. One keypress, no window, no question: it records that this minute
-    // was worked and nothing else. Deliberately not a text prompt -- the value
-    // of the shortcut is that it costs nothing to press mid-thought, and a
-    // dialog that takes the caret to ask what you are doing is an interruption
-    // of the very work it is trying to record.
-    @objc func logEntry() {
-        probeQueue.async {
-            // Only claims what actually happened. runProbe reports its own
-            // failure to stderr; a banner saying the minute was logged when
-            // the write never landed would be worse than no banner at all,
-            // because it is the thing being trusted instead of checking.
-            guard case .ok = runProbe(["note"]) else { return }
-            // Off the probe queue: the banner is an osascript of its own, and
-            // holding a serial queue that every poll and every clicked row now
-            // waits behind, for the sake of a notification nothing depends on,
-            // would trade the pileup for a smaller one.
-            DispatchQueue.global(qos: .utility).async { notifyEntryLogged() }
-            DispatchQueue.main.async { self.refresh() }
-        }
-    }
-
-    // ⌥W, before it is known which of the two things it means. One press logs
-    // an entry; two open the track-back panel.
-    //
-    // Which means the single press cannot act until the double press has been
-    // ruled out, so it is scheduled rather than run. The alternative -- log
-    // immediately, and open the panel as well if a second press arrives --
-    // needs no delay but leaves a stray entry behind every trip to the panel,
-    // at a minute the person did not mean to claim and with nothing to
-    // distinguish it from an entry they did.
-    //
-    // Always on main: the Carbon handler hops here before calling this, and
-    // pendingEntry is read and written from nowhere else, so the cancel and
-    // the fire cannot race.
-    @objc func entryHotKey() {
-        if let pending = pendingEntry {
-            pending.cancel()
-            pendingEntry = nil
-            showTrackPanel()
-            return
-        }
-        let work = DispatchWorkItem { [weak self] in
-            self?.pendingEntry = nil
-            self?.logEntry()
-        }
-        pendingEntry = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + DOUBLE_PRESS_SEC, execute: work)
-    }
-
-    // ⌥W twice, and the menu row that names it. Asks for a number of minutes
-    // and what to do about work already counted inside them, then hands both
-    // to the probe, which owns the arithmetic -- the panel neither knows nor
+    // ⌥W, and the menu row that names it. Asks for a number of minutes, which
+    // bucket they belong to, and what to do about work already counted inside
+    // them, then hands both to the probe, which owns the arithmetic -- the panel neither knows nor
     // decides where the minutes land.
     @objc func showTrackPanel() {
         // Asked of the window, not of this reference. Holding a TrackPanel is
         // not the same as one being on screen -- a cancelled panel is a live
         // object with nothing visible -- and testing the reference is how the
-        // shortcut broke the first time: cancel it once and every later double
+        // shortcut broke the first time: cancel it once and every later
         // press took this branch, activating the app and showing nothing.
         if trackPanel?.isOnScreen == true {
             // Genuinely up. Raising it is the whole response: opening a second
@@ -2681,9 +2591,13 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
                   let r = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
             else { return }
             let claimed = r["claimed"] as? Int ?? 0
-            // Off the probe queue, same as the entry banner.
+            let special = r["bucket"] as? String == "special"
+            // Off the probe queue: the banner is an osascript of its own, and
+            // holding a serial queue that every poll waits behind for the sake
+            // of a notification nothing depends on would trade the pileup for
+            // a smaller one.
             DispatchQueue.global(qos: .utility).async {
-                notifyTracked(claimed: claimed, asked: minutes)
+                notifyTracked(claimed: claimed, asked: minutes, special: special)
             }
             DispatchQueue.main.async { self.refresh() }
         }

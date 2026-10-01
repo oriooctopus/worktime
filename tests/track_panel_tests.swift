@@ -58,6 +58,23 @@ enum TrackPanelTests {
         check(got?.1 == "clip", "banks the picked rule, got \(String(describing: got?.1))")
         panel = nil
 
+        // The special rows are reachable and map to the probe's names, in the
+        // order they are titled.
+        for (i, name) in ["clip", "split", "special_extra", "special_take"].enumerated() {
+            got = nil
+            let p = TrackPanel(present: false) { got = ($0, $1) }
+            p.modePicker.selectItem(at: i)
+            p.minutesField.stringValue = "3"
+            p.trackButton.performClick(nil)
+            check(got?.1 == name, "row \(i) is \(name), got \(String(describing: got?.1))")
+            p.close()
+        }
+        check(TrackPanel.modeTitles[2].hasPrefix("Special")
+              && TrackPanel.modeTitles[3].hasPrefix("Special"),
+              "the last two rows are the special ones")
+        UserDefaults.standard.removeObject(forKey: TrackPanel.minutesKey)
+        UserDefaults.standard.removeObject(forKey: TrackPanel.modeKey)
+
         // The picker's second row is the second rule, not merely a second row.
         got = nil
         panel = TrackPanel(present: false) { got = ($0, $1) }

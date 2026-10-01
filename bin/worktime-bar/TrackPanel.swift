@@ -2,21 +2,20 @@ import AppKit
 
 // MARK: - The track-back panel
 
-// ⌥W twice. The single press is deliberately silent -- one keystroke saying
-// this minute was worked, with nothing to answer -- and that is exactly why it
-// cannot serve the other case: a phone call that just ended, a conversation at
-// somebody's desk, where the length is known and the minutes are behind you.
-// Claiming those needs a number, and a number needs somewhere to type it.
+// ⌥W. A phone call that just ended, a conversation at somebody's desk: the
+// length is known and the minutes are behind you. Claiming those needs a
+// number, and a number needs somewhere to type it. The same panel logs main
+// time or special time, and for special either as an extra block or by taking
+// the minutes out of main.
 //
-// So the second press opens the only window this app has. Everything else the
+// This is the only window this app has. Everything else the
 // tracker offers is a menu row or a keystroke, which is the right shape for a
 // choice between fixed options; this asks for a quantity, and a quantity
 // cannot be a menu without pre-deciding which quantities a person is allowed
 // to have.
 //
 // Unlike CountdownPanel this one DOES take the keyboard, and has to: it exists
-// to be typed into. That is the cost of the double press -- it interrupts --
-// and it is why it is on the double press rather than the single one.
+// to be typed into, which means it interrupts.
 //
 // It lives in its own file for the same reason the countdown does: a test can
 // build one, set its fields and press its button without also standing up the
@@ -32,14 +31,20 @@ final class TrackPanel: NSObject, NSTextFieldDelegate, NSWindowDelegate {
     private(set) var modePicker: NSPopUpButton!
     private(set) var trackButton: NSButton!
 
-    /// The probe's names for the two rules, in the order they are offered.
-    /// Parallel to the menu titles below -- the picker reports an index, and
+    /// The probe's names for the rules, in the order they are offered. Each
+    /// one is a bucket AND a rule about minutes already counted, which is why
+    /// they share one picker: "Special, taking from main" is a different claim
+    /// from "Special, extra", not the same claim with a flag.
+    ///
+    /// Parallel to the titles below -- the picker reports an index, and
     /// mapping it back through this is what keeps the row somebody read from
     /// naming a different rule than the one that runs.
-    static let modes = ["clip", "split"]
+    static let modes = ["clip", "split", "special_extra", "special_take"]
     static let modeTitles = [
-        "Stop at the last tracked session",
-        "Split — put the rest before it",
+        "Main — stop at the last tracked session",
+        "Main — split the rest before it",
+        "Special — extra, only untracked minutes",
+        "Special — take the minutes out of main",
     ]
 
     /// Where the minute count starts, and what a previous answer does to it.
@@ -64,7 +69,7 @@ final class TrackPanel: NSObject, NSTextFieldDelegate, NSWindowDelegate {
         self.onTrack = onTrack
         self.onClose = onClose
 
-        panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 320, height: 148),
+        panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 360, height: 148),
                         styleMask: [.titled, .closable, .utilityWindow],
                         backing: .buffered, defer: false)
         panel.title = "Track time"

@@ -612,12 +612,11 @@ and can be walked back; a single press that silently ended the day half an hour
 ago deletes work nothing in the interface would show.
 
 So the single press cannot act until the double press has been ruled out, the
-same shape as ⌥W. Here the reason is sharper: acting at once and then again on
+Here the reason is sharp: acting at once and then again on
 the second press would declare the day over twice, at two minutes, and the
 second declaration cannot undo the first — `split_at_session_ends` cuts at
 every minute in the file, so the stray End Now would go on breaking the period
-at a minute nobody chose. The wait is 0.5s rather than ⌥W's 0.33 because that
-key files a minute and this one ends the day.
+at a minute nobody chose. The wait is 0.5s because a stray End Now ends the day.
 
 Either ending posts a banner naming the minute *and* the rule
 (`Session ended at 13:05 — the last entry.`). The dot going out looks the same
@@ -629,7 +628,7 @@ entry" resolved to.
 
 The menu carries the chord on **End Now**, because that is what one press does;
 the other row names the double press in its title, as a menu cannot express one
-— the same reason "Track time…" carries no key equivalent for ⌥W twice. Being a
+— a menu cannot express a double press. Being a
 Carbon hot key, ⌘E is consumed before the frontmost app sees it — Finder's Eject
 and "Use Selection for Find" lose it while the bar is running.
 
@@ -700,48 +699,44 @@ allowance on minutes that had already elapsed before it existed: a 35-minute
 gap linked at 12:15 would reach only 12:10, and one backdated an hour would
 expire before it was written.
 
-## ⌥W, once and twice
+## ⌥W: track time
 
-**⌥W** logs an entry: one keypress saying this minute was worked, for work this
-machine has no way to see. Nothing opens and nothing is asked, which is the
-whole value of it — a dialog that took the caret to ask what you were doing
-would interrupt the work it is trying to record. It writes a point event to
-`notes.jsonl`, and the ordinary chaining rule joins it to whatever is around it.
-
-**⌥W twice** opens the one window this app has, because the other case needs a
-number. A phone call that just ended has a length you already know and minutes
-that are already behind you, and the single press cannot say either. The panel
-asks how many minutes, and what to do about work already counted inside them:
+**⌥W** (or the **Track time…** menu row) opens the one window this app has,
+because logging time by hand needs a number. A phone call that just ended has a
+length you already know and minutes that are already behind you. The panel asks
+how many minutes, which bucket they belong to, and what to do about time
+already counted inside them:
 
 | | claims |
 |---|---|
-| **Stop at the last tracked session** | only the minutes between that session and now |
-| **Split — put the rest before it** | those, plus the remainder in the free minutes before it |
+| **Main — stop at the last tracked session** | only the minutes between that session and now |
+| **Main — split the rest before it** | those, plus the remainder in the free minutes before it |
+| **Special — extra, only untracked minutes** | free minutes only; main is untouched, so the day gets longer |
+| **Special — take the minutes out of main** | the last N minutes outright; main time inside them becomes special |
 
 Five minutes asked for with a Slack message sent two minutes ago banks two
 under the first rule and 2 + 3 under the second — the same total, placed where
 there was actually a hole to put it in. The first is the default because it is
 the reading that cannot overstate the day, and the banner names what landed
-(`Tracked 2m of 5m`) because the difference between the two rules is invisible
-in the period list afterwards.
+(`Tracked 2m of 5m as work`, `… as special time`) because the difference
+between the rules is invisible in the period list afterwards.
 
-Neither rule ever claims a minute that is already counted. Periods are unioned,
-so an overlapping claim would not lengthen the day — it would silently shorten
-the claim, and the minutes that went missing would be exactly the ones being
-recorded. `split` walks back over as many periods as it needs to place the
-remainder, not just the first; stopping at the second would drop the rest with
-nothing said about it.
+No rule except *take the minutes out of main* ever claims a minute that is
+already counted. Periods are unioned, so an overlapping claim would not
+lengthen the day — it would silently shorten the claim, and the minutes that
+went missing would be exactly the ones being recorded. `split` walks back over
+as many periods as it needs to place the remainder, not just the first.
+*Extra* treats existing special time as counted too. *Take* is the deliberate
+exception: special is cut out of main entirely, so converting counted main time
+is its whole purpose, and the two buckets still add up to what they did before.
+Minutes already special are not counted twice.
 
-The spans are written as ordinary closed marks, so nothing downstream needs to
-know the command exists. Closed, not open, because the stretch is over — that
-is why it needed claiming by hand — and an open mark would go on crediting
-minutes forward from a call that has already ended.
+Main claims are written as ordinary closed marks. Special claims are `add` rows
+in `special.jsonl` — the same row converting a session writes — so the toggle
+and everything downstream of it need no new case. Neither crosses midnight.
 
-The cost of the double press is that the single one now waits `DOUBLE_PRESS_SEC`
-(a third of a second) to find out whether a second is coming. Acting immediately
-and *also* opening the panel would need no delay, but it would file a stray
-entry every time somebody meant to open the panel, at a minute they did not mean
-to claim and with nothing to distinguish it from a real one.
+The old single-press "Log an entry" is gone; `worktime-probe.py note` still
+exists for scripts.
 
 ## Building the menu bar app
 

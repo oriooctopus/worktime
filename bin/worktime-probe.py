@@ -48,6 +48,10 @@ Usage:
   worktime-probe.py track <n> [clip|split]  -- claim the last n minutes as
                                           worked, stopping at work already
                                           counted or stepping over it
+  worktime-probe.py track <n> special_extra|special_take  -- log the last n
+                                          minutes as special time: only
+                                          untracked minutes, or taking them
+                                          out of main
 """
 
 from __future__ import annotations  # 3.8 can parse the annotations
@@ -2075,7 +2079,20 @@ TRACK_NOTE = "tracked by hand"
 # remainder to the free minutes in front of it. The five minutes then land as
 # two after the period and three before it -- the same total, placed where
 # there was actually a hole to put it in.
+#
+# Two more modes put the claim in the special bucket instead of main, and they
+# differ in what they do about minutes that are already counted:
+#
+# "special_extra" is an additional block: it behaves like "clip" (never
+# overlaps anything already counted), but the minutes it places are special.
+# Main loses nothing, the day just gets longer.
+#
+# "special_take" is the opposite: the last N wall-clock minutes become special
+# whatever they currently are. Main time inside them is cannibalised -- it is
+# cut out of main and counted as special, so the two buckets still add up to
+# what they did before.
 TRACK_MODES = ("clip", "split")
+SPECIAL_TRACK_MODES = ("special_extra", "special_take")
 
 
 def claim_spans(worked: list[dict], now_m: int, minutes: int,
@@ -2171,10 +2188,69 @@ def track_back(minutes: int, mode: str = "clip") -> dict:
         add_mark(f"{hhmm_of(start)}-{hhmm_of(end)}", TRACK_NOTE)
     if spans:
         write_vault_snapshot(day, events_for(day))
-    return {"tracked": bool(spans), "mode": mode, "asked": minutes,
-            "claimed": minutes - unplaced, "unplaced": unplaced,
+    return {"tracked": bool(spans), "bucket": "main", "mode": mode,
+            "asked": minutes, "claimed": minutes - unplaced,
+            "unplaced": unplaced,
             "spans": [{"start": hhmm_of(a), "end": hhmm_of(b)}
                       for a, b in spans]}
+
+
+def track_special(minutes: int, mode: str) -> dict:
+    """Log the last `minutes` as special time, by hand.
+
+    The special-bucket twin of track_back, for the same case -- a stretch that
+    just ended and was never going to be seen by the tracker. Written as
+    "add" rows in the special log, the same row convert_session writes, so
+    special_raw_spans needs no new case and the toggle state is untouched.
+
+    `special_take` converts the last `minutes` outright, which is the only
+    mode that can reduce main. `special_extra` places the minutes only where
+    nothing is counted yet (main periods and existing special both block it),
+    and reports the shortfall rather than overlapping.
+    """
+    if mode not in SPECIAL_TRACK_MODES:
+        return {"tracked": False, "why": f"unknown mode {mode!r}"}
+    if minutes <= 0:
+        return {"tracked": False, "why": "nothing to track"}
+    now = now_local()
+    day = now.strftime("%Y-%m-%d")
+    lo = _day_start_ts(day)
+    now_m = now.hour * 60 + now.minute
+    before = special_sec_for(day, now)
+
+    if mode == "special_take":
+        # Stops at midnight, like claim_spans: minutes filed against a closed
+        # day are minutes nobody looks for.
+        spans_sec = [[max(now.timestamp() - minutes * 60, lo), now.timestamp()]]
+    else:
+        events = events_for(day)
+        path = snapshot_path(day)
+        if not os.path.exists(path) or \
+                json.load(open(path)).get("fp") != activity_fingerprint(day):
+            write_vault_snapshot(day, events)
+        worked = (json.load(open(path)).get("worked", [])
+                  if os.path.exists(path) else [])
+        # Whole minutes, rounded outwards, so a sliver of existing special
+        # still blocks the minute it touches.
+        counted = worked + [{"start": int(s // 60), "end": -(-int(e) // 60)}
+                            for s, e in special_spans_for(day, now)]
+        placed, _ = claim_spans(counted, now_m, minutes, False)
+        spans_sec = [[lo + a * 60, lo + b * 60] for a, b in placed]
+
+    os.makedirs(STATE, exist_ok=True)
+    with open(SPECIAL_LOG, "a") as fh:
+        for a, b in spans_sec:
+            fh.write(json.dumps({"event": "add", "from": a, "to": b,
+                                 "day": day, "at": now.isoformat()}) + "\n")
+    if spans_sec:
+        write_vault_snapshot(day, events_for(day))
+    claimed = round((special_sec_for(day, now) - before) / 60)
+    return {"tracked": claimed > 0, "bucket": "special", "mode": mode,
+            "asked": minutes, "claimed": claimed,
+            "unplaced": minutes - claimed,
+            "spans": [{"start": hhmm_of(int((a - lo) // 60)),
+                       "end": hhmm_of(int(-(-(b - lo) // 60)))}
+                      for a, b in spans_sec]}
 
 
 def to_min(hhmm: str) -> int:
@@ -5797,8 +5873,10 @@ if __name__ == "__main__":
         except (IndexError, ValueError):
             print(json.dumps({"tracked": False, "why": "track needs a minute count"}))
         else:
-            print(json.dumps(track_back(
-                n, sys.argv[3] if len(sys.argv) > 3 else "clip")))
+            mode = sys.argv[3] if len(sys.argv) > 3 else "clip"
+            print(json.dumps(track_special(n, mode)
+                             if mode in SPECIAL_TRACK_MODES
+                             else track_back(n, mode)))
     elif cmd == "status":
         # One small line for the menu bar: what the tracker thinks right now.
         print(json.dumps(status()))
