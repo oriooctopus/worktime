@@ -360,7 +360,11 @@ func notifyTracked(claimed: Int, asked: Int) {
 // Naming which rule ran as well as the minute is what lets a mistaken double
 // press be recognised as one: "at 13:05 — the last entry" after a single press
 // meant for now is the only thing that would say so.
-func notifySessionEnded(at: String, atLast: Bool) {
+func notifySessionEnded(at: String, atLast: Bool = false, idle: Bool = false) {
+    if idle {
+        notify("Session ended at \(at) — no input for \(Int(IDLE_END_SEC))s.")
+        return
+    }
     notify(atLast ? "Session ended at \(at) — the last entry."
                   : "Session ended at \(at).")
 }
@@ -2774,19 +2778,26 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
     // Nobody touched the machine for IDLE_END_SEC. Ends the session at the last
     // input rather than now, whatever the focus mode. Only when something is
     // actually running: ending an already-ended day would draw a second line
-    // through it at an earlier minute for nothing. No banner -- stepping away
-    // is the ordinary case and the dot going out is the notice.
+    // through it at an earlier minute for nothing. A banner names the minute,
+    // since this is the one ending nobody pressed a key for.
     func endSessionForIdle(_ idle: Double) {
         guard ["working", "marked", "special"].contains(status.state) else { return }
         let sec = Int(idle.rounded())
         probeQueue.async {
-            guard case .ok = runProbe(["end_session", "idle", String(sec)]) else {
+            guard case .ok(let out) = runProbe(["end_session", "idle", String(sec)]),
+                  let data = out.data(using: .utf8),
+                  let r = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let at = r["at"] as? String
+            else {
                 FileHandle.standardError.write(
-                    "idle end: probe refused end_session idle \(sec)\n".data(using: .utf8)!)
+                    "idle end: probe returned no minute for idle \(sec)\n".data(using: .utf8)!)
                 return
             }
             FileHandle.standardError.write(
-                "idle \(sec)s: session ended at last input\n".data(using: .utf8)!)
+                "idle \(sec)s: session ended at \(at)\n".data(using: .utf8)!)
+            DispatchQueue.global(qos: .utility).async {
+                notifySessionEnded(at: at, idle: true)
+            }
             DispatchQueue.main.async { self.refresh() }
         }
     }
