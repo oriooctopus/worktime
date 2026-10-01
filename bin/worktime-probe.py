@@ -116,7 +116,12 @@ PROMPT_COUNT = os.path.join(ROOT, "bin", "prompt-count.py")
 def now_local() -> datetime:
     return datetime.now(timezone.utc).astimezone(LOCAL)
 
-STATE = os.path.expanduser("~/.claude/stats/worktime")
+# WORKTIME_STATE exists for the tests (tests/conftest.py sets it). Every path
+# below is derived from STATE when the module is imported, so a test that only
+# patches `wp.STATE` afterwards still writes to the real SPECIAL_LOG, MARKS and
+# the rest -- which is how end_session in a test once turned the real special
+# time off, over and over.
+STATE = os.path.expanduser(os.environ.get("WORKTIME_STATE") or "~/.claude/stats/worktime")
 LABELS = os.path.join(STATE, "labels.jsonl")
 CURSOR = os.path.join(STATE, "cursor.json")
 

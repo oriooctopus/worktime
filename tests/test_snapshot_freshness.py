@@ -46,12 +46,16 @@ class SnapshotFingerprint(unittest.TestCase):
     what is asserted here is only which fingerprint comes out the other end.
     """
 
-    NAMES = ("snapshot_path", "activity_fingerprint", "meetings_for")
+    NAMES = ("snapshot_path", "activity_fingerprint", "meetings_for",
+             "slack_for")
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         self.saved = {n: getattr(wp, n) for n in self.NAMES}
         wp.snapshot_path = lambda day: os.path.join(self.tmp, f"{day}.json")
+        # No cached Slack day in the temp state dir, so the real read would go
+        # to the network.
+        wp.slack_for = lambda day: []
 
     def tearDown(self):
         for name, value in self.saved.items():

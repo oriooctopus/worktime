@@ -49,7 +49,7 @@ class SkipsTheNoOpWrite(unittest.TestCase):
     """Two runs, same inputs, different wall clock -- one write, not two."""
 
     NAMES = ("snapshot_path", "markdown_snapshot_path", "now_local",
-             "marks_for")
+             "marks_for", "slack_for")
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
@@ -62,6 +62,9 @@ class SkipsTheNoOpWrite(unittest.TestCase):
         # directly keeps the two runs from differing only because the marks
         # path is briefly a different one on disk.
         wp.marks_for = lambda day, stamps=None: []
+        # The state dir is a fresh temp one, so there is no cached Slack day to
+        # fall back on and the real read would go to the network.
+        wp.slack_for = lambda day: []
 
     def tearDown(self):
         for name, value in self.saved.items():
