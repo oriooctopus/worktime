@@ -44,6 +44,8 @@ Usage:
   worktime-probe.py end_session [last | idle <sec>]  -- end the day: break the period, close
                                           the mark, close the meeting, at this
                                           minute or at the last entry
+  worktime-probe.py keep_tracking <HH:MM>  -- take back the end at that minute
+                                          and count the time through now
   worktime-probe.py note [text]    -- record work this probe cannot see
   worktime-probe.py track <n> [clip|split]  -- claim the last n minutes as
                                           worked, stopping at work already
@@ -949,6 +951,7 @@ MARKS = os.path.join(STATE, "marks.jsonl")
 # nothing in it -- so the note says where the minutes came from rather than
 # what they were, and the period list has something to show besides a blank.
 LINK_NOTE = "linked to the last session"
+KEEP_NOTE = "kept tracking after idle end"
 
 
 def mark_stamps(day: str) -> list[int]:
@@ -1958,6 +1961,31 @@ def end_session(at_last: bool = False, idle_sec: int | None = None) -> dict:
                       "title": r.get("title")} for r in meetings],
         "ends": [hhmm_of(m) for m in ends],
     }
+
+
+def keep_tracking(end_hhmm: str) -> dict:
+    """Undo an idle end: the session never stopped, so count it through now.
+
+    The counterpart to end_session(idle_sec=...). That ending lands at the last
+    input, 45s before anyone could object; the person who comes back and says
+    they were working (reading, on a call, thinking) wants the declaration
+    withdrawn and the stretch since it claimed. So this removes the end at
+    `end_hhmm` and writes a mark from that minute, left open for the same
+    reason link_last_session leaves its mark open: the person is back at the
+    desk and the work is still going, and closing at the click would end the day
+    in the act of extending it.
+
+    It cannot restore what end_session closed besides the period break -- an
+    open mark or meeting was stamped shut at that minute and stays shut; the
+    new mark carries the time on from there as plain work.
+    """
+    end_min = to_min(end_hhmm)
+    now = now_local()
+    day = now.strftime("%Y-%m-%d")
+    remove_session_end(end_min)
+    add_mark(end_hhmm, KEEP_NOTE)
+    write_vault_snapshot(day, events_for(day))
+    return {"from": hhmm_of(end_min)}
 
 
 def link_anchor(worked: list[dict], now_m: int, cutoff_sec: int,
@@ -4187,6 +4215,20 @@ def append_session_end(end_min: int) -> list[int]:
     return ends
 
 
+def remove_session_end(end_min: int) -> list[int]:
+    """Take back a declared end. Returns today's remaining list."""
+    day = now_local().strftime("%Y-%m-%d")
+    prior_ends = read_session_ends(day)
+    ends = [m for m in prior_ends if m != end_min]
+    ends_ts = {str(m): read_session_end_ts(day, m) for m in ends}
+    ends_ts = {k: v for k, v in ends_ts.items() if v is not None}
+    tmp = SESSION_END + f".{os.getpid()}.tmp"
+    with open(tmp, "w") as fh:
+        json.dump({"day": day, "ends": ends, "ends_ts": ends_ts}, fh)
+    os.replace(tmp, SESSION_END)
+    return ends
+
+
 def split_at_session_ends(spans: list[list[int]], ends_sec: list[int],
                           stamps: list[int]) -> list[list[int]]:
     """Break work spans where the day was declared over, in seconds.
@@ -5775,6 +5817,8 @@ if __name__ == "__main__":
             at_last=len(sys.argv) > 2 and sys.argv[2] == "last",
             idle_sec=int(sys.argv[3])
             if len(sys.argv) > 3 and sys.argv[2] == "idle" else None)))
+    elif cmd == "keep_tracking":
+        print(json.dumps(keep_tracking(sys.argv[2])))
     elif cmd == "link_last":
         print(json.dumps(link_last_session()))
     elif cmd == "mode":

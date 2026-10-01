@@ -602,6 +602,12 @@ picking one:
 | **End Now** | this minute |
 | **End After Last Entry** | the last entry, plus `TAIL_SEC` — same rule as ⌘⌥S |
 
+**Idle end.** 45s with no input (outside a meeting) ends the session at the last
+input, and a "Session ended" panel appears. It holds until input resumes, then
+stays 5s. Its **Keep tracking through now** button withdraws that end
+(`worktime-probe.py keep_tracking <HH:MM>`) and opens a work mark from that
+minute, so the stretch is counted and tracking continues.
+
 **⌘E** makes either of them from anywhere: one press opens a 5s undo panel that
 ends at this minute; a second press within `END_DOUBLE_PRESS_SEC` (1s) ends at the
 last entry, and a slower one skips the countdown and ends now. One press is End Now

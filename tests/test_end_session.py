@@ -249,6 +249,24 @@ class EndSessionCase(unittest.TestCase):
         wp.end_session()
         self.assertIsNone(wp.read_session_end_ts("2026-03-05", 16 * 60 + 40))
 
+    def test_keep_tracking_withdraws_the_idle_end_and_claims_from_it(self):
+        # The idle-end panel's button: the 16:39 end is taken back and an open
+        # mark carries the time on from that minute. Only that end is removed.
+        wp.now_local = lambda: at(15, 0, 10)
+        wp.end_session()
+        wp.now_local = lambda: at(16, 40)
+        wp.end_session(idle_sec=45)
+        self.assertEqual(wp.read_session_ends(DAY), [15 * 60, 16 * 60 + 39])
+        out = wp.keep_tracking("16:39")
+        self.assertEqual(out["from"], "16:39")
+        self.assertEqual(wp.read_session_ends(DAY), [15 * 60])
+        self.assertEqual(wp.read_session_end_ts(DAY, 15 * 60),
+                         at(15, 0, 10).timestamp())
+        kept = self.marks()[-1]
+        self.assertEqual((kept["start"], kept["end"], kept["note"]),
+                         (16 * 60 + 39, None, wp.KEEP_NOTE))
+        self.assertEqual(self.snapshots[-1], DAY)
+
 
 class SplitAtSessionEndsCase(unittest.TestCase):
     """Breaking the period where the day was declared over.

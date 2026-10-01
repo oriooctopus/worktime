@@ -95,6 +95,46 @@ enum IdleWatcherTests {
         m.tick(idle: 50)
         check(m.idleEnds == 1, "the next absence after the meeting ends it normally")
 
+        // The panel that offers to take the end back holds through the absence
+        // and is released by the first input afterwards -- once, and only for an
+        // absence that reached the end threshold.
+        let r = IdleWatcher(claimsPath: dir + "/resume.jsonl")
+        var resumed = 0
+        r.onInputResumed = { resumed += 1 }
+        r.tick(idle: IDLE_END_SEC - 1)
+        check(resumed == 0, "input without a prior absence is not a resume")
+        r.tick(idle: 50)
+        r.tick(idle: 80)
+        check(resumed == 0, "no resume while the absence continues")
+        r.tick(idle: 1)
+        check(resumed == 1, "first input after the absence is a resume")
+        r.tick(idle: 2)
+        check(resumed == 1, "continued input is not a second resume")
+
+        // The idle-end panel itself: holds with its message until released,
+        // then counts down, and the button reports the cancel.
+        var closed = 0, kept = 0
+        let p = CountdownPanel(
+            meeting: "Session ended", seconds: 2,
+            buttonTitle: "Keep tracking through now",
+            messageFor: { "closing in \($0)s" },
+            holdMessage: "Session ended at 16:39", present: false,
+            onExpire: { closed += 1 }, onCancel: { kept += 1 })
+        p.paused = true
+        check(p.messageText == "Session ended at 16:39", "held panel shows its hold message")
+        RunLoop.main.run(until: Date().addingTimeInterval(3))
+        check(closed == 0, "a held panel does not expire (closed=\(closed))")
+        p.paused = false
+        check(p.messageText == "closing in 2s", "released panel counts down, got \(p.messageText)")
+        RunLoop.main.run(until: Date().addingTimeInterval(3))
+        check(closed == 1 && kept == 0, "released panel expires once (closed=\(closed))")
+        let q = CountdownPanel(
+            meeting: "Session ended", seconds: 2, holdMessage: "held", present: false,
+            onExpire: { closed += 1 }, onCancel: { kept += 1 })
+        q.paused = true
+        q.keep.performClick(nil)
+        check(kept == 1 && closed == 1, "the button works while held (kept=\(kept))")
+
         // Nothing is recorded. A claim only exists to protect time from being
         // cut, and with the probe's IDLE_SUBTRACTS off there is no cut to
         // protect anything from -- a file here would be a record of an answer

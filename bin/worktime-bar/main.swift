@@ -76,6 +76,10 @@ let ENTRY_HOTKEY_MODS = UInt32(optionKey)
 let END_HOTKEY_CODE = UInt32(kVK_ANSI_E)
 let END_HOTKEY_MODS = UInt32(cmdKey)
 
+// How long the idle-end panel stays up once somebody is back at the machine.
+// Until then it holds, so an absence of any length still finds it waiting.
+let IDLE_END_PANEL_SEC = 5
+
 // How long the ⌘E undo panel stays on screen. The session is not actually
 // ended until this expires -- pressing Undo dismisses the panel and does
 // nothing. A second ⌘E while the panel is showing skips the countdown and
@@ -331,11 +335,7 @@ func notifyTracked(claimed: Int, asked: Int, special: Bool = false, take: Bool =
 // Naming which rule ran as well as the minute is what lets a mistaken double
 // press be recognised as one: "at 13:05 — the last entry" after a single press
 // meant for now is the only thing that would say so.
-func notifySessionEnded(at: String, atLast: Bool = false, idle: Bool = false) {
-    if idle {
-        notify("Session ended at \(at) — no input for \(Int(IDLE_END_SEC))s.")
-        return
-    }
+func notifySessionEnded(at: String, atLast: Bool = false) {
     notify(atLast ? "Session ended at \(at) — the last entry."
                   : "Session ended at \(at).")
 }
@@ -1520,6 +1520,9 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
     // When the first ⌘E opened endPanel, to tell a rapid double press from a
     // later "end now" press.
     var endPanelOpenedAt = Date()
+    // The "session ended for idle" panel. Held at its hold message until input
+    // resumes (see idleWatcher.onInputResumed), then counts IDLE_END_PANEL_SEC.
+    var idleEndPanel: CountdownPanel?
     let idleWatcher = IdleWatcher()
     // One menu for the app's lifetime, mutated in place rather than replaced.
     // Assigning a freshly built NSMenu to item.menu does nothing to a menu that
@@ -1631,6 +1634,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         }
         registerHotKey()
         idleWatcher.onIdleEnd = { [weak self] idle in self?.endSessionForIdle(idle) }
+        idleWatcher.onInputResumed = { [weak self] in self?.idleEndPanel?.paused = false }
         timer = Timer.scheduledTimer(withTimeInterval: POLL_SEC, repeats: true) { _ in
             // Sampled here and not inside refresh(): menuNeedsUpdate also calls
             // refresh(), so opening the menu would otherwise log an extra
@@ -2697,8 +2701,9 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
     // Nobody touched the machine for IDLE_END_SEC. Ends the session at the last
     // input rather than now, whatever the focus mode. Only when something is
     // actually running: ending an already-ended day would draw a second line
-    // through it at an earlier minute for nothing. A banner names the minute,
-    // since this is the one ending nobody pressed a key for.
+    // through it at an earlier minute for nothing. A panel names the minute,
+    // since this is the one ending nobody pressed a key for, and offers to
+    // take it back: it holds until input resumes, then stays IDLE_END_PANEL_SEC.
     func endSessionForIdle(_ idle: Double) {
         guard ["working", "marked", "special"].contains(status.state) else { return }
         let sec = Int(idle.rounded())
@@ -2714,8 +2719,44 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
             }
             FileHandle.standardError.write(
                 "idle \(sec)s: session ended at \(at)\n".data(using: .utf8)!)
+            DispatchQueue.main.async {
+                self.refresh()
+                self.showIdleEndPanel(at: at)
+            }
+        }
+    }
+
+    func showIdleEndPanel(at: String) {
+        idleEndPanel?.close()
+        let heading = "Session ended at \(at) — no input for \(Int(IDLE_END_SEC))s"
+        let panel = CountdownPanel(
+            meeting: "Session ended",
+            seconds: IDLE_END_PANEL_SEC,
+            buttonTitle: "Keep tracking through now",
+            messageFor: { "No input for \(Int(IDLE_END_SEC))s — closing in \($0)s" },
+            holdMessage: heading,
+            onExpire: { [weak self] in self?.idleEndPanel = nil },
+            onCancel: { [weak self] in
+                self?.idleEndPanel = nil
+                self?.keepTracking(from: at)
+            })
+        // The probe call that ended the session takes a moment; if input came
+        // back inside it, the resume edge has already passed and nothing would
+        // ever release the hold.
+        panel.paused = FocusLog.idleSeconds() >= IDLE_END_SEC
+        idleEndPanel = panel
+    }
+
+    // Take back an idle end: count from its minute through now.
+    func keepTracking(from at: String) {
+        probeQueue.async {
+            guard case .ok = runProbe(["keep_tracking", at]) else {
+                FileHandle.standardError.write(
+                    "keep tracking: probe failed for \(at)\n".data(using: .utf8)!)
+                return
+            }
             DispatchQueue.global(qos: .utility).async {
-                notifySessionEnded(at: at, idle: true)
+                notify("Kept tracking from \(at) through now.")
             }
             DispatchQueue.main.async { self.refresh() }
         }
