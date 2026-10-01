@@ -28,7 +28,7 @@ Usage:
                                           bundle id of the app hosting it
   worktime-probe.py meeting_end [HH:MM]  -- the call running now stopped, at
                                           this minute or at the one given
-  worktime-probe.py special [on|off|toggle]  -- special time: a separate bucket
+  worktime-probe.py special [on|off|toggle|resume_idle]  -- special time: a separate bucket
                                           that never counts toward main
   worktime-probe.py special_target <hours> <days> [main_pct]  -- special target,
                                           a total across <days> days from today;
@@ -1423,13 +1423,17 @@ def _special_is_on() -> bool:
     return special_open_since() is not None
 
 
-def set_special(on: bool, at_ts: float | None = None) -> dict:
+def set_special(on: bool, at_ts: float | None = None,
+                idle_end: bool = False) -> dict:
     """Turn special time on or off. Returns {"changed", "on"}.
 
     `at_ts` places the event; end_session uses it so a declared end lands on
     the minute the day was ended at. An `off` is clamped to never precede the
     span's own start, which is what makes end-of-day at the last entry safe
     when special was switched on after it.
+
+    `idle_end` tags an `off` that the bar's idle auto-end wrote, so that
+    resume_special_after_idle can tell it from one the person asked for.
     """
     if _special_is_on() == on:
         return {"changed": False, "on": on}
@@ -1438,11 +1442,38 @@ def set_special(on: bool, at_ts: float | None = None) -> dict:
     if not on:
         ts = max(ts, special_open_since())
     os.makedirs(STATE, exist_ok=True)
+    row = {"event": "on" if on else "off", "ts": ts,
+           "day": now.strftime("%Y-%m-%d"), "at": now.isoformat()}
+    if idle_end:
+        row["idle_end"] = True
     with open(SPECIAL_LOG, "a") as fh:
-        fh.write(json.dumps({"event": "on" if on else "off", "ts": ts,
-                             "day": now.strftime("%Y-%m-%d"),
-                             "at": now.isoformat()}) + "\n")
+        fh.write(json.dumps(row) + "\n")
     return {"changed": True, "on": on}
+
+
+# How long after an idle end special time still comes back by itself. Measured
+# from the last input, which is where the end was placed, to the first input
+# afterwards: a short absence (a call away, a coffee) leaves the mode as it
+# was, a long one is a new session that starts from the default.
+SPECIAL_RESUME_SEC = 15 * 60
+
+
+def resume_special_after_idle() -> dict:
+    """Turn special back on if the idle auto-end is what turned it off.
+
+    Called by the bar when input returns after an absence. Only an `off` tagged
+    idle_end, and still the newest toggle, qualifies: one the person pressed, or
+    one from the End Session menu, is a decision and stays. Returns
+    {"resumed": bool}.
+    """
+    toggles = sorted((r for r in read_special_log()
+                      if r["event"] in ("on", "off")), key=lambda r: r["ts"])
+    last = toggles[-1] if toggles else None
+    if (last is None or last["event"] != "off" or not last.get("idle_end")
+            or now_local().timestamp() - last["ts"] > SPECIAL_RESUME_SEC):
+        return {"resumed": False}
+    set_special(True)
+    return {"resumed": True}
 
 
 def convert_session(to: str, start_hhmm: str, until: str) -> dict:
@@ -1950,7 +1981,8 @@ def end_session(at_last: bool = False, idle_sec: int | None = None) -> dict:
     ends = append_session_end(when)
     # A special span left open would keep accruing after the day was declared
     # over, so the declaration ends it at the same minute as everything else.
-    set_special(False, _day_start_ts(day) + when * 60)
+    set_special(False, _day_start_ts(day) + when * 60,
+                idle_end=idle_sec is not None)
     write_vault_snapshot(day, events)
     return {
         "at": hhmm_of(when),
@@ -5865,12 +5897,18 @@ if __name__ == "__main__":
         # special on | off | toggle. Rebuilds the snapshot because the toggle
         # moves time between the buckets at once.
         arg = sys.argv[2] if len(sys.argv) > 2 else "toggle"
-        if arg not in ("on", "off", "toggle"):
-            sys.exit(f"special: {arg!r} is not on, off or toggle")
-        res = set_special(_special_is_on() is False if arg == "toggle"
-                          else arg == "on")
-        day = now_local().strftime("%Y-%m-%d")
-        write_vault_snapshot(day, events_for(day))
+        if arg not in ("on", "off", "toggle", "resume_idle"):
+            sys.exit(f"special: {arg!r} is not on, off, toggle or resume_idle")
+        if arg == "resume_idle":
+            res = resume_special_after_idle()
+            changed = res["resumed"]
+        else:
+            res = set_special(_special_is_on() is False if arg == "toggle"
+                              else arg == "on")
+            changed = True
+        if changed:
+            day = now_local().strftime("%Y-%m-%d")
+            write_vault_snapshot(day, events_for(day))
         print(json.dumps(res))
     elif cmd == "convert_session":
         # convert_session special|main <from HH:MM> <until HH:MM|now>

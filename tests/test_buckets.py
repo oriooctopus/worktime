@@ -182,6 +182,59 @@ def test_special_is_cut_out_of_main_exactly(world):
     assert snap["work_sec"] + snap["buckets"]["special"]["sec"] == base["work_sec"]
 
 
+def idle_end_at(world, h, m):
+    """The bar's idle auto-end at minute h:m, via the real end_session."""
+    world.now = at(h, m, 45)
+    wp.end_session(idle_sec=45)
+
+
+def test_idle_end_turns_special_off_and_input_within_15_min_turns_it_back_on(world):
+    world.now = at(14, 0)
+    wp.set_special(True)
+    idle_end_at(world, 14, 20)
+    assert not wp._special_is_on()
+    world.now = at(14, 34, 30)                           # 14m30s after the last input
+    assert wp.resume_special_after_idle() == {"resumed": True}
+    assert wp._special_is_on()
+    # Only once: a second input does nothing, and the span restarts at the
+    # return, so the absence itself is not special time.
+    assert wp.resume_special_after_idle() == {"resumed": False}
+    world.now = at(15, 0)
+    assert wp.special_spans_for(DAY) == [[14 * 3600, 14 * 3600 + 20 * 60],
+                                         [14 * 3600 + 34 * 60 + 30, 15 * 3600]]
+
+
+def test_idle_end_does_not_resume_special_after_more_than_15_min(world):
+    world.now = at(14, 0)
+    wp.set_special(True)
+    idle_end_at(world, 14, 20)
+    world.now = at(14, 36)
+    assert wp.resume_special_after_idle() == {"resumed": False}
+    assert not wp._special_is_on()
+
+
+def test_a_special_off_the_person_asked_for_is_never_resumed(world):
+    world.now = at(14, 0)
+    wp.set_special(True)
+    world.now = at(14, 10)
+    wp.set_special(False)                                # hotkey / menu
+    world.now = at(14, 12)
+    assert wp.resume_special_after_idle() == {"resumed": False}
+    # ...nor an End Session from the menu.
+    wp.set_special(True)
+    world.now = at(14, 20)
+    wp.end_session()
+    world.now = at(14, 21)
+    assert wp.resume_special_after_idle() == {"resumed": False}
+
+
+def test_idle_end_with_special_already_off_resumes_nothing(world):
+    world.now = at(14, 0)
+    idle_end_at(world, 14, 20)
+    world.now = at(14, 25)
+    assert wp.resume_special_after_idle() == {"resumed": False}
+
+
 def test_open_special_runs_to_now_and_end_session_closes_it(world):
     world.now = at(14, 0)
     assert wp.set_special(True)["changed"]

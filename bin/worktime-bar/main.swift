@@ -1634,7 +1634,10 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         }
         registerHotKey()
         idleWatcher.onIdleEnd = { [weak self] idle in self?.endSessionForIdle(idle) }
-        idleWatcher.onInputResumed = { [weak self] in self?.idleEndPanel?.paused = false }
+        idleWatcher.onInputResumed = { [weak self] in
+            self?.idleEndPanel?.paused = false
+            self?.resumeSpecialAfterIdle()
+        }
         timer = Timer.scheduledTimer(withTimeInterval: POLL_SEC, repeats: true) { _ in
             // Sampled here and not inside refresh(): menuNeedsUpdate also calls
             // refresh(), so opening the menu would otherwise log an extra
@@ -2745,6 +2748,21 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         // ever release the hold.
         panel.paused = FocusLog.idleSeconds() >= IDLE_END_SEC
         idleEndPanel = panel
+    }
+
+    // Input is back after an absence. If the idle end is what switched special
+    // time off and it was a short one, the probe puts it back on; otherwise it
+    // does nothing. The decision is the probe's (SPECIAL_RESUME_SEC) because it
+    // is the one that holds the log saying why special went off.
+    func resumeSpecialAfterIdle() {
+        probeQueue.async {
+            guard case .ok(let out) = runProbe(["special", "resume_idle"]),
+                  let data = out.data(using: .utf8),
+                  let r = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  r["resumed"] as? Bool == true
+            else { return }
+            DispatchQueue.main.async { self.refresh() }
+        }
     }
 
     // Take back an idle end: count from its minute through now.
