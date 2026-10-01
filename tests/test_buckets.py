@@ -51,6 +51,7 @@ class World:
                         ("MEETINGS", "meetings.jsonl"),
                         ("SPECIAL_LOG", "special.jsonl"),
                         ("SPECIAL_TARGETS", "special-targets.jsonl"),
+                        ("GOALS_FILE", "worktime-goals.json"),
                         ("SESSION_END", "session-end.json"),
                         ("MODEFILE", "mode.jsonl"),
                         ("LABELS", "labels.jsonl"),
@@ -221,6 +222,48 @@ def test_newer_target_replaces_and_does_not_resurrect_the_old_one(world):
     assert wp.special_target_for("2026-03-05")["target_sec"] == 2 * 3600
     # The week-long target would still cover Mar 6; it was replaced.
     assert wp.special_target_for("2026-03-06") is None
+
+
+def write_goals(world, goals):
+    with open(wp.GOALS_FILE, "w") as fh:
+        json.dump(goals, fh)
+
+
+def test_goal_is_four_hours_on_workdays_and_none_on_weekends(world):
+    # No goals file at all: the defaults.
+    for d in ("2026-03-02", "2026-03-04", "2026-03-06"):      # Mon, Wed, Fri
+        assert wp.goal_sec_for(d) == 4 * 3600
+    for d in ("2026-03-07", "2026-03-08"):                    # Sat, Sun
+        assert wp.goal_sec_for(d) == 0
+
+
+def test_goal_day_beats_week_beats_default(world):
+    write_goals(world, {"default_hours": 5,
+                        "weeks": {"2026-03-02": 3},          # week of Mon Mar 2
+                        "days": {"2026-03-02": 0, "2026-03-07": 2}})
+    assert wp.goal_sec_for("2026-03-02") == 0                # day off, inside a 3h week
+    assert wp.goal_sec_for("2026-03-03") == 3 * 3600         # the week's goal
+    assert wp.goal_sec_for("2026-03-06") == 3 * 3600
+    assert wp.goal_sec_for("2026-03-07") == 2 * 3600         # a Saturday goal set by day
+    assert wp.goal_sec_for("2026-03-08") == 0                # weeks never reach the weekend
+    assert wp.goal_sec_for("2026-03-09") == 5 * 3600         # next week: the default
+
+
+def test_goal_is_the_target_and_the_special_deduction_comes_off_it(world):
+    world.now = at(9, 0)
+    write_goals(world, {"weeks": {"2026-03-02": 3}})
+    assert wp.main_target_for(DAY) == 3 * 3600
+    wp.set_special_target(1, 1, main_pct=50)                 # 30m off main
+    assert wp.main_target_for(DAY) == 2 * 3600 + 30 * 60
+    main = world.snapshot()["buckets"]["main"]
+    assert main["target_sec"] == 2 * 3600 + 30 * 60
+    assert main["deduct_sec"] == 30 * 60
+
+
+def test_a_day_off_has_a_zero_target(world):
+    world.now = at(9, 0)
+    write_goals(world, {"days": {DAY: 0}})
+    assert world.snapshot()["buckets"]["main"]["target_sec"] == 0
 
 
 def test_main_pct_takes_part_of_the_special_target_off_main(world):

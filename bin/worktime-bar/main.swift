@@ -1964,20 +1964,25 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         // a target or some special time, so an ordinary day does not carry a
         // row about a bucket it never touched.
         let mainRow = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        // A day with no goal (a day off, a weekend) has nothing to divide by:
+        // no bar, no percentage.
+        let noGoal = bk.mainTargetSec == 0
         let filledSec = max(min(bk.mainCreditedSec, bk.mainTargetSec), 1)
         // The hatched tail is the meeting credit, clipped to what fits under
         // the target tick: past it the bar is simply full.
         let hatched = CGFloat(min(bk.meetingCreditedSec, filledSec)) / CGFloat(filledSec)
         mainRow.view = BucketRowView(
             width: 300, title: "Main", titleColor: .labelColor,
-            value: hm(bk.mainCreditedSec), dim: "/ \(hm(bk.mainTargetSec))",
-            fraction: CGFloat(bk.mainCreditedSec) / CGFloat(bk.mainTargetSec),
+            value: hm(bk.mainCreditedSec),
+            dim: noGoal ? "· no goal today" : "/ \(hm(bk.mainTargetSec))",
+            fraction: noGoal ? nil : CGFloat(bk.mainCreditedSec) / CGFloat(bk.mainTargetSec),
             hatchedShare: hatched, color: MAIN_GREEN,
             captionLeft: bk.meetingRawSec > 0
                 ? "meetings \(hm(bk.meetingRawSec)) → \(hm(bk.meetingCreditedSec))"
                 : "no meetings",
-            captionRight: [overBy > 0 ? "+\(hm(overBy)) over"
-                                      : "\(bk.mainCreditedSec * 100 / bk.mainTargetSec)%",
+            captionRight: [noGoal ? nil
+                           : overBy > 0 ? "+\(hm(overBy)) over"
+                                        : "\(bk.mainCreditedSec * 100 / bk.mainTargetSec)%",
                            status.focusPct.map { "\($0)% focus" }]
                 .compactMap { $0 }.joined(separator: " · "))
         m.addItem(mainRow)

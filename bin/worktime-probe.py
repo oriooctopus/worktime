@@ -1282,8 +1282,9 @@ def close_open_meetings(when: int | None = None) -> list[dict]:
 #
 # The day is counted in two buckets that never mix.
 #
-# MAIN is everything this probe has always counted. Its target is four hours a
-# day (MAIN_TARGET_SEC). Meetings are a subtype of it, credited at two thirds:
+# MAIN is everything this probe has always counted. Its target is the day's
+# goal (goal_sec_for): four hours on a workday unless the goals file says
+# otherwise. Meetings are a subtype of it, credited at two thirds:
 # a call is presence but it is not the deep work the target is about, and a
 # full-rate call made a day of meetings look like a productive one.
 #
@@ -1305,7 +1306,15 @@ def close_open_meetings(when: int | None = None) -> list[dict]:
 # derived from them on read -- a past day is re-derived by `backfill`, never
 # patched.
 # ---------------------------------------------------------------------------
-MAIN_TARGET_SEC = 4 * 3600
+DEFAULT_GOAL_HOURS = 4
+# Main's goals, edited from the dashboard widget -- which can only write inside
+# the vault, hence a vault file rather than STATE. Shape:
+#   {"default_hours": 4,
+#    "weeks": {"<monday YYYY-MM-DD>": hours},   # that week's workdays
+#    "days":  {"YYYY-MM-DD": hours}}            # that one day, any day
+# The widget resolves the same rule (goalFor in the Vault Dashboard note) so a
+# past day with no snapshot target and a fresh edit both show the right figure.
+GOALS_FILE = os.path.join(wc.dashboard_dir(), "worktime-goals.json")
 MEETING_WEIGHT = 2 / 3
 # on / off toggles and meeting routing answers, in one file so one replay sees
 # them in the order they were made.
@@ -1579,15 +1588,40 @@ def _span_days(r: dict) -> int:
             - datetime.strptime(r["start_day"], "%Y-%m-%d")).days + 1
 
 
-def main_target_for(day: str) -> int:
-    """Main's target on `day`: the standing four hours, less the share of the
-    special target in force that was set aside to come out of it. Rows written
-    before the deduction existed carry none."""
+def goal_sec_for(day: str) -> int:
+    """Main's goal on `day`, before any special-target deduction.
+
+    A per-day entry wins outright and may be set on any day. Otherwise
+    weekends have no goal, and a workday takes its week's entry (keyed by that
+    week's Monday) or else the default. No file means all defaults.
+    """
+    goals = {}
+    if os.path.exists(GOALS_FILE):
+        with open(GOALS_FILE) as fh:
+            goals = json.load(fh)
+    if day in goals.get("days", {}):
+        return int(round(goals["days"][day] * 3600))
+    weekday = datetime.strptime(day, "%Y-%m-%d").weekday()  # Mon=0
+    if weekday >= 5:
+        return 0
+    week = goals.get("weeks", {}).get(shift_day(day, -weekday))
+    hours = week if week is not None else goals.get("default_hours", DEFAULT_GOAL_HOURS)
+    return int(round(hours * 3600))
+
+
+def main_deduct_for(day: str) -> int:
+    """The share of the special target in force that was set aside to come out
+    of main's goal on `day`. Rows written before the deduction existed carry
+    none."""
     r = _target_row_for(day)
     if r is None:
-        return MAIN_TARGET_SEC
-    per_day = r.get("main_deduct_sec", 0) // _span_days(r)
-    return max(MAIN_TARGET_SEC - per_day, 0)
+        return 0
+    return r.get("main_deduct_sec", 0) // _span_days(r)
+
+
+def main_target_for(day: str) -> int:
+    """Main's target on `day`: its goal less the special-target deduction."""
+    return max(goal_sec_for(day) - main_deduct_for(day), 0)
 
 
 def special_target_for(day: str, now: datetime | None = None) -> dict | None:
@@ -4597,7 +4631,10 @@ def write_vault_snapshot(day: str, events: list[datetime],
         "buckets": {
             "main": {"raw_sec": sum(w["len_sec"] for w in worked),
                      "credited_sec": sum(w["credited_sec"] for w in worked),
-                     "target_sec": main_target_for(day)},
+                     "target_sec": main_target_for(day),
+                     # Published so a reader can rebuild the target from its
+                     # own goal resolution without knowing the special row.
+                     "deduct_sec": main_deduct_for(day)},
             "meetings": {
                 "raw_sec": sum(w["meeting_raw_sec"] for w in worked),
                 "credited_sec": sum(w["meeting_credited_sec"] for w in worked),

@@ -522,6 +522,15 @@ in special time, with a live clock, target progress and an **End special**
 button. **End Session** ends an open special span at the same minute it ends
 everything else.
 
+- **Main goal.** Four hours on a workday, none on a weekend, unless
+  `Dashboard/worktime-goals.json` says otherwise:
+  `{"default_hours": 4, "weeks": {"<monday>": h}, "days": {"<date>": h}}`. A day
+  entry wins and works on any day (`0` is a day off); a week entry covers that
+  week's workdays; the default covers the rest. The Vault Dashboard widget edits
+  the file (Week view: click the default, this week's goal, or a day's goal), and
+  the probe resolves the same rule into `buckets.main.target_sec` for the menu
+  bar. A 0h goal shows "no goal today" instead of a bar. The special target's
+  deduction (below) comes off whatever the goal is.
 - **Special target.** Defaults to none (0h). **Special target…** in the menu
   (Today / 3 days / A week / Custom…) opens a panel for hours per day × days, and
   the target is a **total** across that span — 6h over 3 days is one number, not
