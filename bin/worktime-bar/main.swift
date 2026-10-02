@@ -2741,11 +2741,11 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
             meeting: "End session",
             seconds: END_UNDO_SEC,
             buttonTitle: "Undo",
+            messageFor: { "Ending in \($0)s — ⌘E again: end now (twice fast: at last entry)" },
             // Held back for the double-press window: a fast double press ends
             // the session before the panel would show, so all it ever sees is
             // the banner naming the minute.
             presentDelay: END_DOUBLE_PRESS_SEC,
-            messageFor: { "Ending in \($0)s — ⌘E again: end now (twice fast: at last entry)" },
             onExpire: { [weak self] in
                 self?.endPanel = nil
                 self?.endSession(atLast: false)
