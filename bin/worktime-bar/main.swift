@@ -78,7 +78,7 @@ let END_HOTKEY_MODS = UInt32(cmdKey)
 
 // How long the idle-end panel stays up once somebody is back at the machine.
 // Until then it holds, so an absence of any length still finds it waiting.
-let IDLE_END_PANEL_SEC = 5
+let IDLE_END_PANEL_SEC = 3
 
 // How long the ⌘E undo panel stays on screen. The session is not actually
 // ended until this expires -- pressing Undo dismisses the panel and does
