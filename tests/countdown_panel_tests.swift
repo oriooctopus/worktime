@@ -104,6 +104,29 @@ enum CountdownPanelTests {
         check(unnamed.messageText.hasPrefix("Ended"), "an unnamed meeting still opens")
         unnamed.close()
 
+        // presentDelay holds the window back but not the clock: a fast second
+        // ⌘E closes the panel before it ever shows, and the countdown still
+        // ends the session on time when nobody presses again.
+        expired = 0; cancelled = 0
+        var delayed: CountdownPanel? = CountdownPanel(
+            meeting: "End session", seconds: 3, present: false, presentDelay: 1.0,
+            onExpire: { expired += 1 }, onCancel: { cancelled += 1 })
+        check(!delayed!.revealed, "a delayed panel is not shown at once")
+        spin(0.5)
+        check(!delayed!.revealed, "a delayed panel is still hidden at 0.5s")
+        spin(0.7)
+        check(delayed!.revealed, "a delayed panel is shown once its delay passes")
+        spin(2.0)
+        check(expired == 1, "a delayed panel still expires on the original clock (expired=\(expired))")
+        delayed = nil
+
+        let early = CountdownPanel(
+            meeting: "End session", seconds: 3, present: false, presentDelay: 1.0,
+            onExpire: {}, onCancel: {})
+        early.close()
+        spin(1.4)
+        check(!early.revealed, "a panel closed inside its delay is never shown")
+
         // ⌘E: a second press within a second is the double press (last entry);
         // a slower one is "end now".
         let t0 = Date()

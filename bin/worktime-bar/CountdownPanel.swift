@@ -67,12 +67,14 @@ final class CountdownPanel {
          },
          holdMessage: String = "Mic is back — holding",
          present: Bool = true,
+         presentDelay: TimeInterval = 0,
          onExpire: @escaping () -> Void, onCancel: @escaping () -> Void) {
         self.remaining = seconds
         self.messageFor = messageFor
         self.holdMessage = holdMessage
         self.onExpire = onExpire
         self.onCancel = onCancel
+        self.present = present
 
         panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 340, height: 112),
                         styleMask: [.titled, .nonactivatingPanel, .fullSizeContentView],
@@ -123,11 +125,14 @@ final class CountdownPanel {
 
         redraw()
         place()
-        if present {
-            // Regardless, not makeKeyAndOrderFront: the app is an accessory
-            // and must not steal the keyboard from whatever the meeting was
-            // about.
-            panel.orderFrontRegardless()
+        if presentDelay > 0 {
+            let r = Timer(timeInterval: presentDelay, repeats: false) { [weak self] _ in
+                self?.reveal()
+            }
+            RunLoop.main.add(r, forMode: .common)
+            revealTimer = r
+        } else {
+            reveal()
         }
 
         let t = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
@@ -139,6 +144,24 @@ final class CountdownPanel {
         // the dropdown is open would sit at "3s" and never act.
         RunLoop.main.add(t, forMode: .common)
         timer = t
+    }
+
+    private let present: Bool
+    private var revealTimer: Timer?
+
+    /// False while the panel is still waiting out `presentDelay`. The countdown
+    /// runs from construction either way; only the window is late.
+    private(set) var revealed = false
+
+    private func reveal() {
+        revealTimer = nil
+        revealed = true
+        if present {
+            // Regardless, not makeKeyAndOrderFront: the app is an accessory
+            // and must not steal the keyboard from whatever the meeting was
+            // about.
+            panel.orderFrontRegardless()
+        }
     }
 
     /// The button and the line of text, for a test to press and read. Held
@@ -186,6 +209,8 @@ final class CountdownPanel {
     func close() {
         timer?.invalidate()
         timer = nil
+        revealTimer?.invalidate()
+        revealTimer = nil
         panel.orderOut(nil)
     }
 }

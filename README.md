@@ -608,7 +608,7 @@ stays 5s. Its **Keep tracking through now** button withdraws that end
 (`worktime-probe.py keep_tracking <HH:MM>`) and opens a work mark from that
 minute, so the stretch is counted and tracking continues.
 
-**⌘E** makes either of them from anywhere: one press opens a 5s undo panel that
+**⌘E** makes either of them from anywhere: one press starts a 5s undo countdown (its panel only appears after `END_DOUBLE_PRESS_SEC`, so a fast double press shows just the banner) that
 ends at this minute; a second press within `END_DOUBLE_PRESS_SEC` (1s) ends at the
 last entry, and a slower one skips the countdown and ends now. One press is End Now
 because that is the common case — the ending you mean most of the time is the
