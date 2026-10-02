@@ -356,7 +356,7 @@ class MergesTheGapCase(unittest.TestCase):
             t, end = datetime(2026, 3, 4, *a), datetime(2026, 3, 4, *b)
             while t <= end:
                 out.append(t)
-                t += timedelta(minutes=1)
+                t += timedelta(seconds=20)
         self.patch("events_for", lambda day: out)
         return out
 
@@ -378,7 +378,7 @@ class MergesTheGapCase(unittest.TestCase):
         # Prompting right now, so the newest period is the current session and
         # the link reaches past it. The morning and the present are one stretch
         # afterwards, which is the whole point of the row.
-        events = self.prompts(((9, 0), (10, 30)), ((12, 10), (12, 13)))
+        events = self.prompts(((9, 0), (10, 30)), ((12, 10), (12, 14)))
         wp.write_vault_snapshot(DAY, events)
         before = self.periods()
         self.assertEqual(len(before), 2)

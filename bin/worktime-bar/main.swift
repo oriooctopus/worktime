@@ -1835,7 +1835,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
             return
         }
         // A minute of warning on a five-minute period is a warning; a minute of
-        // warning on the one-minute cutoff an unfocused bout opens with is a dot
+        // warning on the 30-second cutoff an unfocused bout opens with is a dot
         // that blinks for its entire life and never signals anything. Capped at
         // a third of the cutoff so the warning stays proportional to whatever
         // the current run has actually earned.
@@ -1887,10 +1887,10 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         // In focused mode the cutoff is always five minutes, so "2m since last
         // activity" already tells you how much silence the run has left. In
         // unfocused mode it does not: the cutoff is whatever the bout has
-        // earned on the ramp so far, anywhere between one and five minutes, and
+        // earned on the ramp so far, anywhere between 30 seconds and five minutes, and
         // nothing on screen said which. That is exactly the reading that looked
         // wrong -- a bout switched to unfocused mid-run carries the width it
-        // already earned, so it goes on counting through silences that the "1m,
+        // already earned, so it goes on counting through silences that the "30s,
         // widening to 5m" label implies would have ended it. Naming both halves
         // -- what is left, and of what -- makes the rule in force visible while
         // it is still in force.
@@ -1901,9 +1901,16 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
             // rather than dropping to a 0m that never corresponds to anything:
             // the moment it truly reaches zero the state is no longer working
             // and this line is gone.
-            let left = Int(ceil(Double(cutoff - quiet) / 60))
-            if left > 0 {
-                why += "  ·  \(left)m left of \(Int((Double(cutoff) / 60).rounded()))m"
+            // Under a minute of cutoff the bout has only just opened, so say
+            // seconds -- "1m left of 1m" would claim twice what a 30s cutoff has.
+            if cutoff < 60 {
+                let leftSec = cutoff - quiet
+                if leftSec > 0 { why += "  ·  \(leftSec)s left of \(cutoff)s" }
+            } else {
+                let left = Int(ceil(Double(cutoff - quiet) / 60))
+                if left > 0 {
+                    why += "  ·  \(left)m left of \(Int((Double(cutoff) / 60).rounded()))m"
+                }
             }
         }
 
@@ -2273,7 +2280,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         modes.isEnabled = false
         m.addItem(modes)
         for (title, name) in [("Focused — 5m cutoff", "focused"),
-                              ("Unfocused — 1m, widening to 5m", "unfocused")] {
+                              ("Unfocused — 30s, widening to 5m", "unfocused")] {
             let mi = NSMenuItem(title: title, action: #selector(pickMode(_:)),
                                 keyEquivalent: "")
             mi.representedObject = name

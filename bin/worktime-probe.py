@@ -188,7 +188,7 @@ MIN_PERIOD_SEC = 30
 # every few minutes in between. Under the focused rule those prompts are four
 # minutes apart, chain into one span, and an hour of half-attention publishes as
 # an hour of work. Unfocused mode declines to assume and makes the session earn
-# it: a bout opens with a one-minute cutoff and widens toward GAP_AFTER as it
+# it: a bout opens with a 30-second cutoff and widens toward GAP_AFTER as it
 # runs, reaching the full five after UNFOCUSED_RAMP_MIN of continuous work.
 #
 # The ramp is driven by the bout's own elapsed length, not by a count of
@@ -199,7 +199,7 @@ MODES = ("focused", "unfocused")
 MODEFILE = os.path.join(STATE, "mode.jsonl")
 SESSION_END = os.path.join(STATE, "session-end.json")
 SHORT_FOCUS_FILE = os.path.join(STATE, "short-focus.json")
-UNFOCUSED_GAP_START = 1
+UNFOCUSED_GAP_START = 0.5
 UNFOCUSED_RAMP_MIN = 10
 
 # A window with prompts is working, full stop -- no need to ask. A window with
@@ -2136,7 +2136,7 @@ def link_last_session() -> dict:
                     if m["open"] and m["start"] <= now_m <= m["end"]), None)
 
     start = link_anchor(worked, now_m,
-                        live_cutoff(day, [m * 60 for m in ev_stamps]),
+                        live_cutoff(day, ev_stamps),
                         running["start"] if running else None)
     if start is None:
         return {"linked": False, "why": "nothing to link to"}
@@ -5392,7 +5392,7 @@ MIN_RECOMPUTE_SEC = 10
 # versioning is a .get() default on every read -- which would quietly serve an
 # empty activity list as though the day had none. A version mismatch is simply
 # a miss, handled by the path that already exists for a stale day.
-STATUS_CACHE_V = 7
+STATUS_CACHE_V = 8
 
 
 # One file, overwritten by bin/worktime-prompt-mark.py on every prompt in every
@@ -5597,7 +5597,10 @@ def live_activity(day: str) -> tuple[datetime | None, list[int], list[int],
     # own, and the ramp went on quoting the width an hour-old prompt run had
     # earned. check() has always chained the full event list here; this is
     # status() being brought into line with it.
-    ev_stamps = sorted({t.hour * 60 + t.minute for t in events})
+    # Seconds, not minutes: a 30s unfocused opening cutoff can never chain
+    # stamps rounded to the minute, so the dot would quote 30s for a run the
+    # day arithmetic has long since widened.
+    ev_stamps = sorted({t.hour * 3600 + t.minute * 60 + t.second for t in events})
     last = events[-1] if events else None
     acts = activity_rows(day)
     # Per-pid, because this is now written by whichever process polls first and
@@ -5695,9 +5698,9 @@ def status() -> dict:
         # Into the event stamps, not the mark-closing ones: this moved `last`,
         # so it has to move the bout the cutoff is measured over, but a Slack
         # send is not one of the two signals marks_for() closes an open mark on.
-        t_m = touched.hour * 60 + touched.minute
-        if t_m not in ev_stamps:
-            ev_stamps = sorted(ev_stamps + [t_m])
+        t_s = touched.hour * 3600 + touched.minute * 60 + touched.second
+        if t_s not in ev_stamps:
+            ev_stamps = sorted(ev_stamps + [t_s])
 
     quiet_sec = (now - last).total_seconds() if last else None
     quiet = quiet_sec / 60 if quiet_sec is not None else None
@@ -5705,7 +5708,7 @@ def status() -> dict:
     # What the run in progress has earned, not the flat GAP_AFTER: in unfocused
     # mode a lone prompt lapses after a minute and only a session that has been
     # going a while holds the dot green for the full five.
-    cutoff_sec = live_cutoff(day, [m * 60 for m in ev_stamps])
+    cutoff_sec = live_cutoff(day, ev_stamps)
 
     pending_sec = pending_glance_sec(day, now, cutoff_sec)
 

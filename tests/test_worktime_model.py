@@ -138,7 +138,7 @@ class FocusModes(unittest.TestCase):
         for elapsed in (0, 60, 600, 36000):
             self.assertEqual(wp.gap_sec_for("focused", elapsed), wp.GAP_AFTER * 60)
 
-    def test_unfocused_opens_at_one_minute(self):
+    def test_unfocused_opens_at_thirty_seconds(self):
         self.assertEqual(wp.gap_sec_for("unfocused", 0), wp.UNFOCUSED_GAP_START * 60)
 
     def test_unfocused_reaches_gap_after_at_the_ramp(self):
@@ -180,10 +180,10 @@ class FocusModes(unittest.TestCase):
         self.assertLess(wp.LEAD_SEC + wp.TAIL_SEC, wp.MIN_PERIOD_SEC)
 
     def test_a_sustained_unfocused_session_widens_to_the_full_cutoff(self):
-        # Ten minutes of prompting every 45s earns the ramp, after which a
+        # Ten minutes of prompting every 25s earns the ramp, after which a
         # four-minute silence chains exactly as it would when focused.
-        warmup = [HH(10, 0) + i * 45 for i in range(15)]
-        mins, _, _ = build(warmup + [HH(10, 0) + 14 * 45 + 240], mode="unfocused")
+        warmup = [HH(10, 0) + i * 25 for i in range(25)]
+        mins, _, _ = build(warmup + [HH(10, 0) + 24 * 25 + 240], mode="unfocused")
         self.assertEqual(len(mins), 1)
 
     def test_unfocused_credits_less_than_focused_for_the_same_day(self):
@@ -1646,18 +1646,19 @@ class LiveCutoffMeasuresTheSameRunAsTheSilence(unittest.TestCase):
     not the other: it refreshes the silence clock, cannot open a bout of its
     own, and the ramp goes on quoting the five minutes an hour-old prompt run
     earned. On screen that reads "4m since last activity - 2m left of 5m" at
-    the start of a session that should be holding a one-minute cutoff.
+    the start of a session that should be holding a 30-second cutoff.
     """
 
     def _live(self, browse_at):
-        from datetime import datetime
+        from datetime import datetime, timedelta
         base = datetime.strptime(DAY, "%Y-%m-%d").replace(tzinfo=wp.LOCAL)
 
         def at(h, m):
             return base.replace(hour=h, minute=m)
 
         # 22:09-22:47 of prompting: enough to earn the full five minutes.
-        prompts = [at(22, 9 + i) for i in range(39)]
+        # Every 20s: a 30s opening cutoff only chains prompts closer than that.
+        prompts = [at(22, 9) + timedelta(seconds=20 * i) for i in range(117)]
         browse = [at(*browse_at)] if browse_at else []
         d = tempfile.mkdtemp()
         saved = {n: getattr(wp, n) for n in
@@ -1676,12 +1677,12 @@ class LiveCutoffMeasuresTheSameRunAsTheSilence(unittest.TestCase):
             wp.mode_now = lambda: "unfocused"
             wp.mode_timeline = lambda _d: [(0, "unfocused")]
             last, stamps, ev_stamps, _ = wp.live_activity(DAY)
-            return last, stamps, wp.live_cutoff(DAY, [m * 60 for m in ev_stamps])
+            return last, stamps, wp.live_cutoff(DAY, ev_stamps)
         finally:
             for n, f in saved.items():
                 setattr(wp, n, f)
 
-    def test_a_browse_after_the_run_ends_starts_a_fresh_one_minute_cutoff(self):
+    def test_a_browse_after_the_run_ends_starts_a_fresh_thirty_second_cutoff(self):
         # 22:55 is eight minutes past the last prompt -- past any cutoff, so
         # the earned run is over and the browse opens a bout of its own.
         last, stamps, cutoff = self._live((22, 55))

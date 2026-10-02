@@ -50,7 +50,7 @@ seconds after a message was typed into Slack.
 and it credits the span BETWEEN two samples, so the newest sample is always
 uncredited until the next heartbeat closes it. Together that is up to ~90s of
 invented silence -- invisible against a five-minute cutoff, fatal against the
-one-minute unfocused one.
+30-second unfocused one.
 
 `last_focus_input()` answers "when was somebody last here". A sample's `idle`
 is measured backwards from it, so a row at 09:05:00 reading 45 is the complete
@@ -324,7 +324,7 @@ A prompt run chains prompts closer together than `GAP_AFTER` (5 minutes in
 focused mode) into one work period. The period starts 20 seconds before its
 first prompt and ends 20 seconds after its last one, floored at one minute
 total. In unfocused mode the gap
-threshold ramps from 1 minute up to 5 over the first 10 minutes of the bout,
+threshold ramps from 30 seconds up to 5 over the first 10 minutes of the bout,
 so a sparse stream of prompts between meetings doesn't inflate the day.
 
 **Idle time is measured but currently NOT taken back out** (`IDLE_SUBTRACTS =
