@@ -105,7 +105,7 @@ let SPECIAL_REMIND_SEC = 300.0
 let MEETING_APP_BUNDLES = ["us.zoom.xos", "com.tinyspeck.slackmacgap"]
 
 // ⌘⌥M opens the menu bar dropdown from anywhere, so the usage info is one chord
-// away instead of a trip to the corner of the screen. Esc closes it.
+// away instead of a trip to the corner of the screen. Pressing it again closes it.
 let MENU_HOTKEY_CODE = UInt32(kVK_ANSI_M)
 let MENU_HOTKEY_MODS = UInt32(cmdKey | optionKey)
 
@@ -1609,7 +1609,9 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
                 case HOTKEY_ID_END:   if !bar.menuIsOpen { bar.endHotKey() }
                 // Guarded for the same reason: the menu row carries ⌃⌥⌘P.
                 case HOTKEY_ID_SPECIAL: if !bar.menuIsOpen { bar.toggleSpecial() }
-                case HOTKEY_ID_MENU:    if !bar.menuIsOpen { bar.item.button?.performClick(nil) }
+                case HOTKEY_ID_MENU:
+                    if bar.menuIsOpen { bar.menu.cancelTracking() }
+                    else { bar.item.button?.performClick(nil) }
                 default:              if !bar.menuIsOpen { bar.toggleShift() }
                 }
             }
