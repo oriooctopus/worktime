@@ -104,12 +104,18 @@ let SPECIAL_REMIND_SEC = 300.0
 // is assumed to be Zoom -- it is the one that is open for a reason.
 let MEETING_APP_BUNDLES = ["us.zoom.xos", "com.tinyspeck.slackmacgap"]
 
+// ⌘⌥M opens the menu bar dropdown from anywhere, so the usage info is one chord
+// away instead of a trip to the corner of the screen. Esc closes it.
+let MENU_HOTKEY_CODE = UInt32(kVK_ANSI_M)
+let MENU_HOTKEY_MODS = UInt32(cmdKey | optionKey)
+
 // Which hot key fired. The Carbon handler is installed once and shared, so it
 // has to tell them apart by id rather than by which registration it came from.
 let HOTKEY_ID_SHIFT = UInt32(1)
 let HOTKEY_ID_ENTRY = UInt32(2)
 let HOTKEY_ID_END = UInt32(3)
 let HOTKEY_ID_SPECIAL = UInt32(4)
+let HOTKEY_ID_MENU = UInt32(5)
 
 // Absolute, not `/usr/bin/env python3`. launchd hands this process a PATH of
 // /usr/bin:/bin:/usr/sbin:/sbin, so `env` resolves to Apple's /usr/bin/python3
@@ -1480,6 +1486,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
     var entryHotKeyRef: EventHotKeyRef?
     var endHotKeyRef: EventHotKeyRef?
     var specialHotKeyRef: EventHotKeyRef?
+    var menuHotKeyRef: EventHotKeyRef?
     // The repeating "you are in special time" reminder, and the panel it
     // raised. Held so turning special off can stop one and withdraw the other.
     var specialReminderTimer: Timer?
@@ -1602,6 +1609,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
                 case HOTKEY_ID_END:   if !bar.menuIsOpen { bar.endHotKey() }
                 // Guarded for the same reason: the menu row carries ⌃⌥⌘P.
                 case HOTKEY_ID_SPECIAL: if !bar.menuIsOpen { bar.toggleSpecial() }
+                case HOTKEY_ID_MENU:    if !bar.menuIsOpen { bar.item.button?.performClick(nil) }
                 default:              if !bar.menuIsOpen { bar.toggleShift() }
                 }
             }
@@ -1630,6 +1638,11 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
                                                            id: HOTKEY_ID_SPECIAL),
                                              GetApplicationEventTarget(), 0, &specialHotKeyRef)
         FileHandle.standardError.write("hotkey ctrl+opt+cmd+P register -> \(specialErr)\n".data(using: .utf8)!)
+        let menuErr = RegisterEventHotKey(MENU_HOTKEY_CODE, MENU_HOTKEY_MODS,
+                                          EventHotKeyID(signature: OSType(0x574B_5453),
+                                                        id: HOTKEY_ID_MENU),
+                                          GetApplicationEventTarget(), 0, &menuHotKeyRef)
+        FileHandle.standardError.write("hotkey cmd+opt+M register -> \(menuErr)\n".data(using: .utf8)!)
     }
 
     func applicationDidFinishLaunching(_: Notification) {
