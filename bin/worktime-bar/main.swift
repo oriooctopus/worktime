@@ -1609,9 +1609,8 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
                 case HOTKEY_ID_END:   if !bar.menuIsOpen { bar.endHotKey() }
                 // Guarded for the same reason: the menu row carries ⌃⌥⌘P.
                 case HOTKEY_ID_SPECIAL: if !bar.menuIsOpen { bar.toggleSpecial() }
-                // Guarded like the others: with the menu open the Close menu row
-                // owns the chord, since the Carbon hot key is not delivered
-                // while the menu is tracking.
+                // Unregistered while the menu is open (see menuWillOpen), so this
+                // only ever opens it; the Close menu row closes it.
                 case HOTKEY_ID_MENU:    if !bar.menuIsOpen { bar.item.button?.performClick(nil) }
                 default:              if !bar.menuIsOpen { bar.toggleShift() }
                 }
@@ -2344,7 +2343,13 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
 
     @objc func closeMenu() {}
 
-    func menuWillOpen(_: NSMenu) { menuIsOpen = true }
+    // Carbon holds the menu hot key's events until tracking ends, so a second
+    // press never reaches the Close menu row's key equivalent. Unregistered while
+    // the menu is up so the chord falls through to the menu itself.
+    func menuWillOpen(_: NSMenu) {
+        menuIsOpen = true
+        if let ref = menuHotKeyRef { UnregisterEventHotKey(ref); menuHotKeyRef = nil }
+    }
 
     // The panel is a window of our own, so nothing takes it away when the menu
     // goes: without this it would be left floating over the desktop, beside a
@@ -2353,6 +2358,9 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
     // delivers one.
     func menuDidClose(_: NSMenu) {
         menuIsOpen = false
+        RegisterEventHotKey(MENU_HOTKEY_CODE, MENU_HOTKEY_MODS,
+                            EventHotKeyID(signature: OSType(0x574B_5453), id: HOTKEY_ID_MENU),
+                            GetApplicationEventTarget(), 0, &menuHotKeyRef)
         hover?.enter(nil)
     }
 
