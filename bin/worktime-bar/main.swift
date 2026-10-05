@@ -1609,9 +1609,10 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
                 case HOTKEY_ID_END:   if !bar.menuIsOpen { bar.endHotKey() }
                 // Guarded for the same reason: the menu row carries ⌃⌥⌘P.
                 case HOTKEY_ID_SPECIAL: if !bar.menuIsOpen { bar.toggleSpecial() }
-                case HOTKEY_ID_MENU:
-                    if bar.menuIsOpen { bar.menu.cancelTracking() }
-                    else { bar.item.button?.performClick(nil) }
+                // Guarded like the others: with the menu open the Close menu row
+                // owns the chord, since the Carbon hot key is not delivered
+                // while the menu is tracking.
+                case HOTKEY_ID_MENU:    if !bar.menuIsOpen { bar.item.button?.performClick(nil) }
                 default:              if !bar.menuIsOpen { bar.toggleShift() }
                 }
             }
@@ -2285,6 +2286,12 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         m.addItem(trackItem)
         m.addItem(NSMenuItem(title: "Refresh now",
                              action: #selector(refreshNow), keyEquivalent: "r"))
+        // Choosing any row dismisses the menu, so the action has nothing to do;
+        // the row exists so ⌘⌥M closes the menu it opened.
+        let closeItem = NSMenuItem(title: "Close menu",
+                                   action: #selector(closeMenu), keyEquivalent: "m")
+        closeItem.keyEquivalentModifierMask = [.command, .option]
+        m.addItem(closeItem)
         m.addItem(.separator())
 
         // Two checked rows rather than one "Unfocused ✓" toggle. The mode
@@ -2334,6 +2341,8 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         build()
         refresh()
     }
+
+    @objc func closeMenu() {}
 
     func menuWillOpen(_: NSMenu) { menuIsOpen = true }
 
