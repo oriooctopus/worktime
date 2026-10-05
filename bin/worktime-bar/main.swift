@@ -87,12 +87,13 @@ let IDLE_END_PANEL_SEC = 3
 // catch an accidental press without making a deliberate one feel stalled.
 let END_UNDO_SEC = 5
 
-// ⌘⌥P starts or stops special time, from anywhere. The same chord family as the
+// ⌃⌥⌘P starts or stops special time, from anywhere. Control is added to the
+// shift toggle's ⌘⌥ pair so a stray ⌘⌥P cannot flip it. Same chord family as the
 // shift toggle because it is the same kind of decision -- a statement about how
 // the day is being spent, not a cheap mid-thought press like ⌥W -- and P for
 // the purple it turns the dot. Free of the other three chords in this file.
 let SPECIAL_HOTKEY_CODE = UInt32(kVK_ANSI_P)
-let SPECIAL_HOTKEY_MODS = UInt32(cmdKey | optionKey)
+let SPECIAL_HOTKEY_MODS = UInt32(controlKey | cmdKey | optionKey)
 
 // How often the "you are in special time" panel comes back while it is on.
 let SPECIAL_REMIND_SEC = 300.0
@@ -1599,7 +1600,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
                 // End Now row carries ⌘E as its key equivalent, so with the
                 // menu open both that row and this would fire.
                 case HOTKEY_ID_END:   if !bar.menuIsOpen { bar.endHotKey() }
-                // Guarded for the same reason: the menu row carries ⌘⌥P.
+                // Guarded for the same reason: the menu row carries ⌃⌥⌘P.
                 case HOTKEY_ID_SPECIAL: if !bar.menuIsOpen { bar.toggleSpecial() }
                 default:              if !bar.menuIsOpen { bar.toggleShift() }
                 }
@@ -1628,7 +1629,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
                                              EventHotKeyID(signature: OSType(0x574B_5453),
                                                            id: HOTKEY_ID_SPECIAL),
                                              GetApplicationEventTarget(), 0, &specialHotKeyRef)
-        FileHandle.standardError.write("hotkey cmd+opt+P register -> \(specialErr)\n".data(using: .utf8)!)
+        FileHandle.standardError.write("hotkey ctrl+opt+cmd+P register -> \(specialErr)\n".data(using: .utf8)!)
     }
 
     func applicationDidFinishLaunching(_: Notification) {
@@ -2040,7 +2041,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         m.addItem(.separator())
         let spToggle = NSMenuItem(title: spk.on ? "Stop special time" : "Start special time",
                                   action: #selector(toggleSpecial), keyEquivalent: "p")
-        spToggle.keyEquivalentModifierMask = [.command, .option]
+        spToggle.keyEquivalentModifierMask = [.control, .command, .option]
         m.addItem(spToggle)
         let targetHost = NSMenuItem(
             title: spk.target.map { "Special target…  \(hm($0.targetSec)) · \($0.days)d" }
@@ -2548,7 +2549,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         build()
     }
 
-    // ⌘⌥P and the row that names it. The probe decides what on and off mean;
+    // ⌃⌥⌘P and the row that names it. The probe decides what on and off mean;
     // this only flips it, reading the state on main first so the decision and
     // the menu's rendering of it cannot disagree.
     @objc func toggleSpecial() {

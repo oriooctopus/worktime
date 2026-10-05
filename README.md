@@ -513,7 +513,7 @@ says "meetings 1h44m → 1h16m". Past days are recomputed with the weighting the
 next time `backfill` rebuilds their snapshot; nothing is patched in place.
 
 **Special** is a separate bucket for time that is deliberately not main. It is a
-manual toggle — **⌘⌥P** or the menu row **Start special time** — and while it is
+manual toggle — **⌃⌥⌘P** or the menu row **Start special time** — and while it is
 on, *every* wall-clock second between on and off is special. That time is cut out
 of main (not merely labelled), so the two totals add without double counting;
 special never contributes to main. The dot turns purple, and every five minutes a
