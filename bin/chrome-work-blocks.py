@@ -72,6 +72,7 @@ def load_config(path=CONFIG_PATH):
     # profile default reach classify() as the same thing.
     cfg["work_localhost_ports"] = {int(p) for p in cfg.get(
         "work_localhost_ports", wc.work_localhost_ports(profile))}
+    cfg.setdefault("work_file_prefixes", wc.work_file_prefixes(profile))
     return cfg
 
 
@@ -94,7 +95,7 @@ def classify(url, cfg):
     if any(s.lower() in u for s in cfg["work"]):
         return "work"
     if wc.is_work_url(u, cfg["work_url_keywords"], cfg["google_work_account"],
-                      cfg["work_localhost_ports"]):
+                      cfg["work_localhost_ports"], cfg["work_file_prefixes"]):
         return "work"
     return "neutral"
 

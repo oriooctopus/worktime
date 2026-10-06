@@ -22,7 +22,7 @@ spec.loader.exec_module(cwb)
 # would let a real caller silently classify with rules nobody configured.
 CFG = {"work": ["github.com/scaledata", "rubrik.com"], "ignore": ["instagram.com"],
        "work_url_keywords": [], "google_work_account": None,
-       "work_localhost_ports": [3000]}
+       "work_localhost_ports": [3000], "work_file_prefixes": []}
 D = date(2026, 8, 31)
 
 

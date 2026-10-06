@@ -188,6 +188,13 @@ enumerate one at a time:
   `localhost:3000/dashboard` says so: no company name, no account, so the port
   is the only evidence. Ports rather than all of `localhost`, because a
   personal side project served from its own port is not the job.
+- **`work_file_prefixes`** (default none) — local directories whose pages are
+  work, as `file://` URLs (`file:///Users/me/code/eval-viewer/`). A trailing
+  `/` is implied, so a sibling directory sharing the name's start is not
+  claimed. The menu bar app adds to this and to `work_localhost_ports`: the
+  first time Chrome is in front of a localhost port or a local directory it
+  has not seen, it asks whether to track it, and a No is remembered in
+  `dismissed_local_sources`.
 - **`google_work_account`** (default unset) — the account number in Google
   URLs (`drive.google.com/drive/u/1/home` is account `1`). Set it when there is
   a separate work Google account: Gmail, Calendar and Drive under that number

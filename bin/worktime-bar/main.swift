@@ -502,6 +502,8 @@ func ghosttyActiveTab() -> String? {
 }
 
 
+let workSourcePrompter = WorkSourcePrompter()
+
 final class FocusLog {
     // Where the osascript round trip and both file writes happen. Serial, so
     // the log stays in sampled order and the state below needs no lock.
@@ -613,6 +615,7 @@ final class FocusLog {
         if bundle == CHROME_BUNDLE, let tab = chromeActiveTab(pid: pid) {
             row["tab"] = tab.title
             row["url"] = tab.url
+            workSourcePrompter.consider(url: tab.url)
         }
         if bundle == GHOSTTY_BUNDLE, let tab = ghosttyActiveTab() {
             row["tab"] = tab
