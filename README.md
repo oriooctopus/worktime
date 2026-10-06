@@ -536,6 +536,17 @@ everything else.
   4 weeks counted from the week viewed (or the rest of the current week), lists
   carries in and out with Undo each, and both weeks say so above the rows. A 0h goal shows "no goal today" instead of a bar. The special target's
   deduction (below) comes off whatever the goal is.
+- **Goal changes.** `"changes": [{"id", "mode": "add"|"set", "delta_sec" |
+  "hours", "from", "to"}]` in the same file re-baseline the goal over a date
+  range (`to: null` = open-ended, the new default from `from` on). They apply in
+  the order made — `set` replaces, `add` stacks — and skip weekends and days off.
+  Unlike a carry they never draw on banked surplus: days are simply measured
+  against the new baseline, so backdating one shifts those past weeks' surplus
+  (a settled week's tally can go negative) while existing carries stay as they
+  were. The widget's "Change goal…" panel (⚙ in Week view, the goal figure in
+  Day view, a link in Ledger view) is hidden until toggled and edits them, each
+  with its own undo. Past snapshots keep the target they were written with until
+  `backfill` rebuilds them; the widget always shows the live figure.
 - **Special target.** Defaults to none (0h). **Special target…** in the menu
   (Today / 3 days / A week / Custom…) opens a panel for hours per day × days, and
   the target is a **total** across that span — 6h over 3 days is one number, not

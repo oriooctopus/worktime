@@ -326,6 +326,38 @@ def test_carries_spread_stack_and_floor_at_zero(world):
     assert wp.goal_sec_for("2026-03-09") == 4 * 3600        # outside every carry
 
 
+def test_goal_changes_add_set_and_skip_days_off(world):
+    write_goals(world, {"days": {"2026-03-04": 0}, "changes": [
+        {"mode": "add", "delta_sec": 1800, "from": "2026-03-02", "to": "2026-03-03"},
+        {"mode": "set", "hours": 6, "from": "2026-03-05", "to": "2026-03-05"}]})
+    assert wp.goal_sec_for("2026-03-02") == 4 * 3600 + 1800   # +30m, range start
+    assert wp.goal_sec_for("2026-03-03") == 4 * 3600 + 1800   # range end inclusive
+    assert wp.goal_sec_for("2026-03-04") == 0                 # day off stays off
+    assert wp.goal_sec_for("2026-03-05") == 6 * 3600          # set replaces
+    assert wp.goal_sec_for("2026-03-06") == 4 * 3600          # outside every range
+    assert wp.goal_sec_for("2026-03-07") == 0                 # weekend skipped
+
+
+def test_open_ended_change_is_the_new_default_and_stacks_in_order(world):
+    write_goals(world, {"changes": [
+        {"mode": "add", "delta_sec": 3600, "from": "2026-03-09", "to": None},
+        {"mode": "add", "delta_sec": 1800, "from": "2026-03-10", "to": "2026-03-10"},
+        {"mode": "set", "hours": 3, "from": "2026-03-11", "to": "2026-03-11"},
+        {"mode": "add", "delta_sec": 1800, "from": "2026-03-11", "to": None}]})
+    assert wp.goal_sec_for("2026-03-06") == 4 * 3600          # before the change
+    assert wp.goal_sec_for("2026-03-09") == 5 * 3600          # +1h open-ended
+    assert wp.goal_sec_for("2026-03-10") == 5 * 3600 + 1800   # relative stacks
+    assert wp.goal_sec_for("2026-03-11") == 3 * 3600 + 1800   # later add stacks on the set
+    assert wp.goal_sec_for("2026-03-16") == 5 * 3600 + 1800   # still open-ended
+
+
+def test_goal_change_goes_under_carries_and_the_floor(world):
+    write_goals(world, {"changes": [
+        {"mode": "add", "delta_sec": 3600, "from": "2026-03-02", "to": "2026-03-02"}],
+        "carries": [{"from_week": "2026-02-23", "delta_sec": 3600, "days": ["2026-03-02"]}]})
+    assert wp.goal_sec_for("2026-03-02") == 4 * 3600          # +1h change, -1h carry
+
+
 def test_goal_is_the_target_and_the_special_deduction_comes_off_it(world):
     world.now = at(9, 0)
     write_goals(world, {"weeks": {"2026-03-02": 3}})

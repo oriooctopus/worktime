@@ -1334,7 +1334,12 @@ DEFAULT_GOAL_HOURS = 4
 #   {"default_hours": 4,
 #    "weeks": {"<monday YYYY-MM-DD>": hours},   # that week's workdays
 #    "days":  {"YYYY-MM-DD": hours},            # that one day, any day
+#    "changes": [{"id", "mode": "add"|"set", "delta_sec": n | "hours": h,
+#                 "from": "YYYY-MM-DD", "to": "YYYY-MM-DD"|null}],
 #    "carries": [{"from_week": "<monday>", "delta_sec": n, "days": [...]}]}
+# `changes` re-baseline the goal over a date range (null `to` = new default
+# from `from` on); unlike carries they never draw on banked surplus -- the
+# surplus is simply measured against the new baseline, backdated or not.
 # `carries` is a ledger of one week's surplus (+) or deficit (-) spread evenly
 # over `days`: a surplus lowers each day's goal by delta_sec / len(days). They
 # are kept apart from the goals themselves so they stack and undo one at a time.
@@ -1674,17 +1679,31 @@ def _base_goal_sec(goals: dict, day: str) -> int:
     return int(round(hours * 3600))
 
 
+def _changed_goal_sec(goals: dict, day: str) -> int:
+    """The base goal after goal changes, before carries. A change covers
+    `from`..`to` inclusive (`to` null = open-ended, i.e. the new default) and
+    skips weekends and days off, which have a zero base. They apply in the
+    order they were made: "set" replaces the day's goal, "add" stacks on it."""
+    sec = _base_goal_sec(goals, day)
+    if sec == 0:
+        return 0
+    for c in goals.get("changes", []):
+        if c["from"] <= day and (c["to"] is None or day <= c["to"]):
+            sec = int(round(c["hours"] * 3600)) if c["mode"] == "set" else sec + c["delta_sec"]
+    return max(sec, 0)
+
+
 def goal_sec_for(day: str) -> int:
     """Main's goal on `day`, before any special-target deduction: the goal as
-    set, less every carry landing on the day, floored at zero. No file means
-    all defaults."""
+    set, after goal changes, less every carry landing on the day, floored at
+    zero. No file means all defaults."""
     goals = {}
     if os.path.exists(GOALS_FILE):
         with open(GOALS_FILE) as fh:
             goals = json.load(fh)
     carried = sum(c["delta_sec"] / len(c["days"])
                   for c in goals.get("carries", []) if day in c["days"])
-    return max(int(round(_base_goal_sec(goals, day) - carried)), 0)
+    return max(int(round(_changed_goal_sec(goals, day) - carried)), 0)
 
 
 def main_deduct_for(day: str) -> int:
