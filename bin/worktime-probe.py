@@ -28,6 +28,8 @@ Usage:
                                           bundle id of the app hosting it
   worktime-probe.py meeting_end [HH:MM]  -- the call running now stopped, at
                                           this minute or at the one given
+  worktime-probe.py meeting_discard  -- delete today's latest meeting record
+                                          (a call the detector heard that was not one)
   worktime-probe.py special [on|off|toggle|resume_idle]  -- special time: a separate bucket
                                           that never counts toward main
   worktime-probe.py special_target <hours> <days> [main_pct]  -- special target,
@@ -1261,6 +1263,29 @@ def start_meeting(title: str, at: int | None = None,
     with open(MEETINGS, "a") as fh:
         fh.write(json.dumps(rec) + "\n")
     return rec
+
+
+def discard_last_meeting() -> dict | None:
+    """Delete today's most recent meeting record, open or closed.
+
+    For a call the detector heard that was not one -- a Zoom join page left
+    open holding the microphone. Closing it would still credit the minutes
+    it covered.
+    """
+    if not os.path.exists(MEETINGS):
+        return None
+    day = now_local().strftime("%Y-%m-%d")
+    rows = [json.loads(l) for l in open(MEETINGS) if l.strip()]
+    todays = [i for i, r in enumerate(rows) if r.get("day") == day]
+    if not todays:
+        return None
+    gone = rows.pop(max(todays, key=lambda i: rows[i]["start"]))
+    tmp = f"{MEETINGS}.{os.getpid()}.tmp"
+    with open(tmp, "w") as fh:
+        for r in rows:
+            fh.write(json.dumps(r) + "\n")
+    os.replace(tmp, MEETINGS)
+    return gone
 
 
 def close_open_meetings(when: int | None = None) -> list[dict]:
@@ -6134,6 +6159,14 @@ if __name__ == "__main__":
                         "title": r.get("title")} for r in closed],
             "at": now_local().strftime("%H:%M"),
         }))
+    elif cmd == "meeting_discard":
+        gone = discard_last_meeting()
+        day = now_local().strftime("%Y-%m-%d")
+        write_vault_snapshot(day, events_for(day))
+        print(json.dumps({"discarded": {
+            "start": hhmm_of(gone["start"]),
+            "end": hhmm_of(gone["end"]) if gone.get("end") is not None else None,
+        } if gone else None}))
     elif cmd == "missed_call":
         # missed_call yes <block_start> <block_end> <start> <end>
         # missed_call no <block_start> <block_end>

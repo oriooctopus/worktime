@@ -2273,9 +2273,14 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         // "early" no longer means anything -- there is no schedule to be early
         // against. The row is the manual way to close a call the microphone is
         // still hearing, e.g. a Zoom window left open in an empty room.
+        // The other half of the toggle: the microphone can miss a call (a phone,
+        // or a browser tab it never heard), so one can be opened by hand.
         if status.inMeeting {
             m.addItem(NSMenuItem(title: "Meeting ended",
                                  action: #selector(endMeeting), keyEquivalent: ""))
+        } else {
+            m.addItem(NSMenuItem(title: "In a meeting",
+                                 action: #selector(startMeeting), keyEquivalent: ""))
         }
         // Here as well as on ⌥W, because a shortcut nothing in the interface
         // mentions is a shortcut that is forgotten by the week after it ships.
@@ -3124,6 +3129,14 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
     }
 
     @objc func endMeeting() { closeMeeting(at: nil) }
+
+    @objc func startMeeting() {
+        meetingOpenedHere = true
+        probeQueue.async {
+            _ = runProbe(["meeting_start"])
+            DispatchQueue.main.async { self.refresh() }
+        }
+    }
 
     // `at` is HH:MM the call actually went quiet; nil means now. The countdown
     // passes it because the call ended SETTLE_SEC plus the countdown ago.
