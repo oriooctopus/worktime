@@ -1360,11 +1360,15 @@ DEFAULT_GOAL_HOURS = 4
 #    "weeks": {"<monday YYYY-MM-DD>": hours},   # that week's workdays
 #    "days":  {"YYYY-MM-DD": hours},            # that one day, any day
 #    "changes": [{"id", "mode": "add"|"set", "delta_sec": n | "hours": h,
-#                 "from": "YYYY-MM-DD", "to": "YYYY-MM-DD"|null}],
+#                 "from": "YYYY-MM-DD", "to": "YYYY-MM-DD"|null,
+#                 "counts": false}],   # omitted = counts toward surplus
 #    "carries": [{"from_week": "<monday>", "delta_sec": n, "days": [...]}]}
 # `changes` re-baseline the goal over a date range (null `to` = new default
-# from `from` on); unlike carries they never draw on banked surplus -- the
-# surplus is simply measured against the new baseline, backdated or not.
+# from `from` on); unlike carries they never draw on banked surplus -- by
+# default the surplus is simply measured against the new baseline, backdated or
+# not. `counts: false` moves only the bar: the widget mirrors the change back
+# into the surplus so the balance is as if the old goal still applied. The
+# probe's goals are identical either way; surplus lives only in the widget.
 # `carries` is a ledger of one week's surplus (+) or deficit (-) spread evenly
 # over `days`: a surplus lowers each day's goal by delta_sec / len(days). They
 # are kept apart from the goals themselves so they stack and undo one at a time.

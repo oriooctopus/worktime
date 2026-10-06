@@ -543,7 +543,10 @@ everything else.
   Unlike a carry they never draw on banked surplus: days are simply measured
   against the new baseline, so backdating one shifts those past weeks' surplus
   (a settled week's tally can go negative) while existing carries stay as they
-  were. The widget's "Change goal…" panel (⚙ in Week view, the goal figure in
+  were. Each change can instead be marked `"counts": false` ("surplus
+  unchanged" in the panel): the bar still moves, but the same number is
+  mirrored into the surplus so the balance is unaffected — the same effect as
+  applying a surplus or deficit to a day. The widget's "Change goal…" panel (⚙ in Week view, the goal figure in
   Day view, a link in Ledger view) is hidden until toggled and edits them, each
   with its own undo. Past snapshots keep the target they were written with until
   `backfill` rebuilds them; the widget always shows the live figure.
