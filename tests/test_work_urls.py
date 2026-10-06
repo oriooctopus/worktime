@@ -229,3 +229,36 @@ def test_an_empty_keyword_list_is_honoured_not_replaced():
     # Somebody who wants only the listed sites must be able to say so; falling
     # back to the default here would keep classifying pages they turned off.
     assert wc.work_url_keywords({"work_url_keywords": []}) == []
+
+
+# --- local files under a work directory ---
+
+PREFIXES = ["file:///users/oliver/documents/coding/ruby-memory-eval/"]
+
+
+def is_work_file(url, prefixes=PREFIXES):
+    return wc.is_work_url(url, KEYWORDS, WORK_ACCOUNT, set(), prefixes)
+
+
+def test_file_under_work_directory_is_work():
+    assert is_work_file(
+        "file:///Users/oliver/Documents/coding/ruby-memory-eval/viewer.html")
+
+
+def test_sibling_directory_sharing_a_prefix_is_not_work():
+    assert not is_work_file(
+        "file:///Users/oliver/Documents/coding/ruby-memory-eval-old/viewer.html")
+
+
+def test_file_elsewhere_is_not_work():
+    assert not is_work_file("file:///Users/oliver/Documents/coding/other/a.html")
+
+
+def test_prefix_never_matches_a_web_address():
+    assert not is_work_file("https://example.com/users/oliver/documents/coding/ruby-memory-eval/")
+
+
+def test_profile_prefixes_are_lowercased_and_slash_terminated():
+    got = wc.work_file_prefixes(
+        {"work_file_prefixes": ["file:///Users/Oliver/Coding/Eval"]})
+    assert got == ["file:///users/oliver/coding/eval/"]

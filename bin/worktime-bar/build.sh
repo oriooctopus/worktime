@@ -11,7 +11,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 APP="WorktimeBar.app/Contents/MacOS/WorktimeBar"
 
-swiftc -O main.swift ProbeRun.swift SingleFlight.swift ChromeTab.swift ActivitySession.swift CallDetector.swift CountdownPanel.swift MeetingPromptPanel.swift MissedCallPanel.swift TrackPanel.swift IdleWatcher.swift Buckets.swift -framework ScriptingBridge -o "$APP"
+swiftc -O main.swift ProbeRun.swift SingleFlight.swift ChromeTab.swift ActivitySession.swift CallDetector.swift CountdownPanel.swift MeetingPromptPanel.swift WorkSources.swift WorkSourcePanel.swift MissedCallPanel.swift TrackPanel.swift IdleWatcher.swift Buckets.swift -framework ScriptingBridge -o "$APP"
 
 # Ad-hoc signature. The bundle carries a _CodeSignature from the previous build
 # and an unsigned replacement inside a signed bundle is refused at launch.

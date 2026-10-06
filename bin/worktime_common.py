@@ -292,6 +292,15 @@ def work_localhost_ports(profile=None):
     return {int(p) for p in configured}
 
 
+def work_file_prefixes(profile=None):
+    """Local directories whose pages are work, as lowercased `file://` prefixes
+    that each end in "/" -- so `.../ruby-memory-eval/` never claims a sibling
+    named `ruby-memory-eval-old`."""
+    profile = load_profile() if profile is None else profile
+    return [p.lower().rstrip("/") + "/"
+            for p in profile.get("work_file_prefixes") or []]
+
+
 def focus_extra_apps(profile=None):
     """Bundle ids this person counts as work, beyond the built-in allow list.
 
@@ -422,10 +431,11 @@ def google_account_index(url):
     return int(match.group(1)) if match else None
 
 
-def is_work_url(url, keywords=None, work_account=None, localhost_ports=None):
+def is_work_url(url, keywords=None, work_account=None, localhost_ports=None,
+                file_prefixes=None):
     """True if `url` is work on its own: it sits on a host that is work for
     everyone, it names a work keyword, it is a dev server on one of the work
-    app's localhost ports, or it is a Google page signed in as the work
+    app's localhost ports, it is a local file under a work directory, or it is a Google page signed in as the work
     account -- with Docs, where no index is served to read, counted whenever a
     work account exists at all.
 
@@ -450,6 +460,9 @@ def is_work_url(url, keywords=None, work_account=None, localhost_ports=None):
         return True
     ports = work_localhost_ports() if localhost_ports is None else localhost_ports
     if any(int(m) in ports for m in LOCALHOST_PORT.findall(address)):
+        return True
+    prefixes = work_file_prefixes() if file_prefixes is None else file_prefixes
+    if address.startswith("file://") and any(address.startswith(p) for p in prefixes):
         return True
     if work_account is None:
         return False
