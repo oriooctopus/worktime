@@ -2322,8 +2322,8 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         // event, at the cutoff itself, or halfway between the two.
         let tailSub = NSMenu()
         for (title, name) in [("Last activity", "last"),
-                              ("Midpoint", "middle"),
-                              ("End", "cutoff")] {
+                              ("End", "cutoff"),
+                              ("Split the difference", "middle")] {
             let mi = NSMenuItem(title: title, action: #selector(pickTailMode(_:)),
                                 keyEquivalent: "")
             mi.representedObject = name
