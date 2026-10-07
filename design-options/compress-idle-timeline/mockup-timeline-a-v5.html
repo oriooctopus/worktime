@@ -1,0 +1,95 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Option A &middot; v5 Skyline rail (my pick)</title><style>
+*{box-sizing:border-box}
+body{margin:0;background:#fff;color:#1a1a1a;font:14px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif}
+.banner{background:#f3effd;border-bottom:1px solid #e0d8f7;padding:8px 24px;font-size:13px;color:#4b3a8f}
+.banner b{font-size:14px}
+.wrap{max-width:780px;margin:0 auto;padding:18px 24px 48px}
+.nav{display:flex;gap:8px;align-items:center;margin-bottom:10px}
+.btn{border:1px solid #d1d5db;border-radius:4px;padding:2px 9px;font-size:12px;background:#fff}
+.btn.on{border-color:#111}
+.date{font-weight:600;margin-left:6px}
+.stats{display:flex;gap:28px;align-items:flex-end;margin-bottom:12px}
+.stat .v{font-size:22px;font-weight:600}.stat .l{font-size:10px;letter-spacing:.06em;color:#6b7280;text-transform:uppercase}
+.green{color:#1f9d6b}.orange{color:#8b8579}.grey{color:#555}
+.stats .right{margin-left:auto;font-size:11px;color:#8b8579}
+.main{font-size:13px;margin:6px 0 8px}.main u{text-decoration:underline dotted}
+.barzone{position:relative;margin-bottom:6px}
+.hint{font-size:11px;color:#6b7280;margin:4px 0 14px}
+.hint kbd{font:inherit;background:#f3f4f6;border:1px solid #e5e7eb;border-radius:3px;padding:0 4px}
+.seg{cursor:pointer;transition:filter .08s}
+.seg.hl,.seg.sel{outline:2px solid #111;outline-offset:1px;z-index:5;position:relative}
+.axis{position:relative;height:18px;margin-top:4px;font-size:11px;color:#555}
+.axis span{position:absolute;top:0;transform:translateX(-50%);white-space:nowrap}
+.axis span:before{content:"";position:absolute;left:50%;top:-5px;width:1px;height:4px;background:#999}
+.tabs{display:flex;gap:22px;border-bottom:1px solid #e5e7eb;margin-top:22px;font-size:13px}
+.tabs div{padding:7px 2px;cursor:pointer;color:#555}.tabs div.on{color:#111;border-bottom:2px solid #1f9d6b;font-weight:500}
+.row{display:flex;gap:12px;align-items:center;padding:6px 8px;font-size:13px;border-radius:4px;cursor:pointer;border-left:3px solid transparent}
+.row .dot{width:9px;height:9px;border-radius:2px;flex:none}
+.row .t{width:100px;font-variant-numeric:tabular-nums}.row .d{width:48px;text-align:right;color:#444}.row .a{color:#222}
+.row.hl{background:#f0faf5;border-left-color:#1f9d6b}.row.gap.hl{background:#f4f4f2;border-left-color:#aaa79f}
+.row.sel{background:#e2f5ec}
+#tip{position:fixed;pointer-events:none;background:#111;color:#fff;font-size:12px;padding:5px 8px;border-radius:5px;display:none;z-index:99;white-space:nowrap}
+.note{margin-top:20px;border:1px dashed #cbd5e1;border-radius:6px;padding:10px 12px;font-size:12px;color:#475569;background:#f8fafc}
+.note b{color:#111}
+.bar{display:flex;height:34px}.axis{margin-top:6px}.axis span.dur{top:16px;font-style:italic;color:#8b8579;font-size:10.5px}.axis span.dur:before{display:none}.thr{display:none}.bar{align-items:flex-end}.w{background:#1f9d6b;border-radius:5px 5px 2px 2px;align-self:stretch}
+.g{height:2px;background:#d3d7de;border-radius:1px}
+.brk{flex:0 0 66px;align-self:stretch;position:relative;cursor:default}
+.brk .lab{position:absolute;left:0;right:0;top:3px;text-align:center;font-size:11px;color:#6b7280;line-height:1.2}
+.brk .lab small{display:block;font-size:9.5px;color:#a0a5ae;letter-spacing:.06em;text-transform:uppercase}
+.brk .r1,.brk .r2{position:absolute;bottom:0;height:2px;background:#d3d7de;border-radius:1px}
+.brk .r1{left:0;width:calc(50% - 9px)}.brk .r2{right:0;width:calc(50% - 9px)}
+.brk .sl{position:absolute;bottom:-5px;left:calc(50% - 7px);width:14px;height:12px;font-size:13px;line-height:12px;color:#a0a5ae;text-align:center;font-weight:600;letter-spacing:-2px}
+.brk:hover .r1,.brk:hover .r2{background:#9aa1ab}.brk:hover .lab{color:#222}.barzone{margin-bottom:10px}</style></head><body><div class="banner"><b>Option A &middot; v5 Skyline rail (my pick)</b> &nbsp;Work stands up as blocks; idle is negative space — a thin rail with a // gap and the duration floating above.</div><div class="wrap"><div class="nav"><span class="btn on">Day</span><span class="btn">Week</span><span class="btn">Ledger</span><span class="btn">&lsaquo;</span><span class="date">Wed, Oct 7 &middot; today</span></div>
+<div class="stats"><div class="stat"><div class="v green">1h 13m</div><div class="l">Main</div></div><div class="stat"><div class="v orange">10h</div><div class="l">Gaps</div></div><div class="stat"><div class="v">11%</div><div class="l">Focus</div></div><div class="stat"><div class="v grey">00:00&ndash;11:14</div><div class="l">Day</div></div><div class="right">11:14 &middot; no calendar</div></div>
+<div class="main"><b>main</b> 1h 13m / <u>5h</u> 25%</div>
+<div class="barzone"><div id="bar" class="bar"></div><div class="axis" id="axis"></div></div><div class="hint">Hover a segment for time range + apps &middot; hover a break for the idle range &middot; click a block to jump to its row below</div><div class="tabs"><div class="on" data-t="Worked">Worked (13)</div><div data-t="Gaps">Gaps (12)</div><div data-t="All">All</div><div data-t="Checks">Checks (0)</div></div>
+<div id="list"></div>
+</div><div id="tip"></div><script>const T=674;
+const W=[[0,2,'Data Protection | Rubrik, Mac, Slack'],[9,9.8,'Mac'],[252,254,'Mac, Terminal'],[550,552,'Slack, Mac'],[588,590,'Mac, Chrome'],[592,593,'Slack'],[597,599,'Rubrik, Mac'],[602,614,'Rubrik, Cursor, Terminal'],[617,633,'Rubrik, Cursor, Chrome'],[636,650,'Cursor, Terminal, Slack'],[652,664,'Rubrik, Cursor'],[666,671,'Rubrik, Chrome'],[672,674,'Cursor, Terminal']];
+const pad=n=>String(n).padStart(2,'0');
+const fmt=m=>{m=Math.round(m);return pad(Math.floor(m/60))+':'+pad(m%60)};
+const dur=m=>m<1?Math.round(m*60)+'s':m<60?Math.round(m)+'m':Math.floor(m/60)+'h '+pad(Math.round(m%60))+'m';
+const G=[];for(let i=0;i<W.length-1;i++)G.push([W[i][1],W[i+1][0],i]);
+const tip=document.getElementById('tip');
+function tipText(el){
+  if(el.dataset.i!==undefined){const w=W[+el.dataset.i];return fmt(w[0])+'\u2013'+fmt(w[1])+'  \u00b7  '+dur(w[1]-w[0])+'  \u00b7  '+w[2]}
+  if(el.dataset.gap)return el.dataset.gap;return null}
+function hl(i,on){document.querySelectorAll('[data-i="'+i+'"]').forEach(e=>e.classList.toggle('hl',on))}
+let sel=null;
+function select(i){document.querySelectorAll('.sel').forEach(e=>e.classList.remove('sel'));if(sel===i){sel=null;return}sel=i;
+  document.querySelectorAll('[data-i="'+i+'"]').forEach(e=>e.classList.add('sel'));
+  const r=document.querySelector('.row[data-i="'+i+'"]');if(r)r.scrollIntoView({block:'nearest',behavior:'smooth'})}
+document.addEventListener('mouseover',e=>{const el=e.target.closest('[data-i],[data-gap]');if(!el)return;
+  if(el.dataset.i!==undefined)hl(el.dataset.i,true);
+  if(!el.classList.contains('row')){const t=tipText(el);if(t){tip.textContent=t;tip.style.display='block'}}});
+document.addEventListener('mouseout',e=>{const el=e.target.closest('[data-i],[data-gap]');if(!el)return;
+  if(el.dataset.i!==undefined)hl(el.dataset.i,false);tip.style.display='none'});
+document.addEventListener('mousemove',e=>{tip.style.left=Math.min(e.clientX+12,innerWidth-tip.offsetWidth-8)+'px';tip.style.top=(e.clientY-34)+'px'});
+document.addEventListener('click',e=>{const el=e.target.closest('[data-i]');if(el)select(el.dataset.i)});
+let tab='Worked';
+function rows(){const L=document.getElementById('list');let h='';
+  const worked=W.map((w,i)=>'<div class="row" data-i="'+i+'"><span class="dot" style="background:#1f9d6b"></span><span class="t">'+fmt(w[0])+'\u2013'+fmt(w[1])+'</span><span class="d">'+dur(w[1]-w[0])+'</span><span class="a">'+w[2]+'</span></div>');
+  const gaps=G.map(g=>'<div class="row gap"><span class="dot" style="background:#c07a1e"></span><span class="t">'+fmt(g[0])+'\u2013'+fmt(g[1])+'</span><span class="d">'+dur(g[1]-g[0])+'</span><span class="a" style="color:#888">idle</span></div>');
+  if(tab==='Worked')h=worked.join('');else if(tab==='Gaps')h=gaps.join('');else{const a=[];W.forEach((w,i)=>{a.push(worked[i]);if(gaps[i])a.push(gaps[i])});h=a.join('')}
+  L.innerHTML=h;if(sel!==null){const s=sel;sel=null;select(String(s))}}
+document.querySelectorAll('.tabs div').forEach(t=>t.onclick=()=>{if(t.dataset.t==='Checks')return;tab=t.dataset.t;document.querySelectorAll('.tabs div').forEach(x=>x.classList.toggle('on',x===t));rows()});
+rows();
+
+
+
+const TH=30;const bar=document.getElementById('bar'),axis=document.getElementById('axis');
+const items=[];W.forEach((w,i)=>{items.push({k:'w',i,a:w[0],b:w[1]});if(G[i]){const g=G[i];items.push({k:g[1]-g[0]>TH?'b':'g',a:g[0],b:g[1]})}});
+const BRK=it=>'<span class="lab"><b style="font-weight:600">'+dur(it.b-it.a)+'</b><small>idle</small></span><i class="r1"></i><i class="r2"></i><span class="sl">//</span>';
+items.forEach(it=>{const d=document.createElement('div');d.dataset.a=it.a;d.dataset.b=it.b;
+ if(it.k==='w'){d.className='seg w';d.dataset.i=it.i;d.style.cssText='flex:'+(it.b-it.a)+' 1 0;min-width:5px'}
+ else if(it.k==='g'){d.className='g';d.dataset.gap='idle '+fmt(it.a)+'\u2013'+fmt(it.b)+' ('+dur(it.b-it.a)+')';d.style.cssText='flex:'+(it.b-it.a)+' 1 0'}
+ else{d.className='brk';d.dataset.gap='idle '+fmt(it.a)+'\u2013'+fmt(it.b)+' ('+dur(it.b-it.a)+') collapsed';d.innerHTML=BRK(it)}
+ bar.appendChild(d)});
+function xAt(m){const br=bar.getBoundingClientRect();for(const d of bar.children){const a=+d.dataset.a,b=+d.dataset.b;if(m>=a&&m<=b){const r=d.getBoundingClientRect();return r.left-br.left+(b>a?(m-a)/(b-a):0)*r.width}}return null}
+function ticks(){axis.innerHTML='';let lastR=-99;const ts=[[0,'00:00'],[252,'04:12'],[550,'09:10'],[588,'09:48'],[600,'10:00'],[630,'10:30'],[660,'11:00'],[674,'now 11:14']];
+ ts.forEach(t=>{const x=xAt(t[0]);if(x===null)return;const s=document.createElement('span');s.textContent=t[1];axis.appendChild(s);
+  const w=s.offsetWidth;let l=Math.min(Math.max(x,w/2),bar.clientWidth-w/2);s.style.left=l+'px';
+  if(l-w/2<lastR+4){s.remove();return}lastR=l+w/2});
+ }
+ticks();addEventListener('resize',ticks);
+</script></body></html>

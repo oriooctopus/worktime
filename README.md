@@ -278,6 +278,18 @@ the `worktime-web` systemd unit and bound to 0.0.0.0 for the tailnet.
 It imports `indicator-dot.py` rather than reimplementing the rule, so the page,
 the `dot` command and the skill cannot drift apart.
 
+## The Day-view bar in the Vault Dashboard
+
+The Work tab's bar (the `Today — away` dataviewjs block in `Dashboard/Vault
+Dashboard.md`, which lives in the vault, not this repo) is a broken axis: an
+idle stretch of 60 minutes or more collapses to a fixed-width chip labelled
+with its length, with its start and end times on the axis below. Everything
+else shares one linear scale, so hover and drag-to-zoom still map to real
+minutes. Blips are left off the bar (still counted in tiles and lists): any
+single period under 60 seconds, and any period in an hour with under 2 minutes
+of work. The list under the bar runs newest to oldest. Mockups of the options
+considered are in `design-options/compress-idle-timeline/`.
+
 ## The probe (`bin/worktime-probe.py`)
 
 The probe owns the working/not-working decision. The menu bar app

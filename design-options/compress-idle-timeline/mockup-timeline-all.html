@@ -1,0 +1,12 @@
+<!doctype html><html><head><meta charset=utf-8><title>Compress idle timeline - all options</title><style>
+body{margin:0;font:14px -apple-system,Helvetica,Arial,sans-serif;background:#fff;color:#1a1a1a}
+.bar{position:sticky;top:0;background:#fff;border-bottom:1px solid #e5e7eb;padding:8px 16px;z-index:9}
+.t{display:inline-block;padding:6px 12px;border:1px solid #d1d5db;border-radius:6px;margin-right:6px;cursor:pointer;font-size:13px}
+.t.on{background:#1f9d6b;color:#fff;border-color:#1f9d6b}#one{font-size:12px;color:#555;margin-top:6px}
+iframe{width:100%;height:calc(100vh - 78px);border:0;display:block}</style></head><body>
+<div class=bar><div class="t" data-k="a">A &middot; Broken axis</div><div class="t" data-k="b">B &middot; Square-root scale</div><div class="t" data-k="c">C &middot; Two zones + zoom</div><div class="t" data-k="d">D &middot; Work blocks only</div><div id=one></div></div><iframe id=f></iframe>
+<script>const D={"a":"Keeps true clock axis and obvious idle markers; hard 30m threshold, ticks jump across breaks.","b":"One continuous axis, no thresholds; early blips still near-invisible and gaps still dominate.","c":"Best for the active window and keeps whole-day context; uses two bars, more vertical space.","d":"Most readable for what-was-done; loses proportional sense of time of day."},K=['a','b','c','d'];
+function go(k){if(!D[k])k='a';document.querySelectorAll('.t').forEach(t=>t.classList.toggle('on',t.dataset.k===k));document.getElementById('one').textContent=D[k];document.getElementById('f').src='mockup-timeline-option-'+k+'.html';location.hash=k}
+document.querySelectorAll('.t').forEach(t=>t.onclick=()=>go(t.dataset.k));
+addEventListener('keydown',e=>{const c=location.hash.slice(1)||'a',i=K.indexOf(c);if(e.key==='ArrowRight')go(K[Math.min(i+1,3)]);else if(e.key==='ArrowLeft')go(K[Math.max(i-1,0)]);else if('1234'.includes(e.key))go(K[+e.key-1])});
+go(location.hash.slice(1)||'a')</script></body></html>
