@@ -82,9 +82,9 @@ class PeriodModel(unittest.TestCase):
         self.assertEqual(len(mins), 2, "a >5m silence must split the period")
         self.assertEqual(len(gaps), 1)
 
-    def test_five_minute_silence_chains(self):
-        mins, gaps, _sec = build([HH(10, 0), HH(10, 5)])
-        self.assertEqual(len(mins), 1, "a <=5m silence must not split")
+    def test_two_minute_silence_chains(self):
+        mins, gaps, _sec = build([HH(10, 0), HH(10, 2)])
+        self.assertEqual(len(mins), 1, "a <=2m silence must not split")
         self.assertEqual(gaps, [])
 
     def test_lead_never_produces_a_sub_threshold_gap(self):
@@ -141,9 +141,11 @@ class FocusModes(unittest.TestCase):
     def test_unfocused_opens_at_thirty_seconds(self):
         self.assertEqual(wp.gap_sec_for("unfocused", 0), wp.UNFOCUSED_GAP_START * 60)
 
-    def test_unfocused_reaches_gap_after_at_the_ramp(self):
-        self.assertEqual(wp.gap_sec_for("unfocused", wp.UNFOCUSED_RAMP_MIN * 60),
-                         wp.GAP_AFTER * 60)
+    def test_unfocused_reaches_its_max_at_the_ramp_and_stays_there(self):
+        for elapsed in (wp.UNFOCUSED_RAMP_MIN * 60, 36000):
+            self.assertEqual(wp.gap_sec_for("unfocused", elapsed),
+                             wp.UNFOCUSED_GAP_MAX * 60)
+        self.assertEqual(wp.UNFOCUSED_GAP_MAX, 2)
 
     def test_unfocused_never_exceeds_focused(self):
         for elapsed in range(0, 3600, 30):
@@ -160,7 +162,7 @@ class FocusModes(unittest.TestCase):
     def test_prompts_every_four_minutes_chain_when_focused(self):
         # The behaviour unfocused mode exists to change: half an hour of
         # occasional prompting reads as one unbroken half hour of work.
-        stamps = [HH(10, 0) + i * 240 for i in range(8)]
+        stamps = [HH(10, 0) + i * 100 for i in range(8)]
         mins, gaps, _ = build(stamps, mode="focused")
         self.assertEqual(len(mins), 1)
         self.assertEqual(gaps, [])
@@ -179,15 +181,18 @@ class FocusModes(unittest.TestCase):
         self.assertEqual(foc[0][1] - foc[0][0], wp.MIN_PERIOD_SEC)
         self.assertLess(wp.LEAD_SEC + wp.TAIL_SEC, wp.MIN_PERIOD_SEC)
 
-    def test_a_sustained_unfocused_session_widens_to_the_full_cutoff(self):
-        # Ten minutes of prompting every 25s earns the ramp, after which a
-        # four-minute silence chains exactly as it would when focused.
+    def test_a_sustained_unfocused_session_widens_to_two_minutes_only(self):
+        # Ten minutes of prompting every 25s earns the ramp: a ninety-second
+        # silence chains, a four-minute one (which focused would chain) does not.
         warmup = [HH(10, 0) + i * 25 for i in range(25)]
-        mins, _, _ = build(warmup + [HH(10, 0) + 24 * 25 + 240], mode="unfocused")
+        end = HH(10, 0) + 24 * 25
+        mins, _, _ = build(warmup + [end + 90], mode="unfocused")
         self.assertEqual(len(mins), 1)
+        mins, _, _ = build(warmup + [end + 240], mode="unfocused")
+        self.assertEqual(len(mins), 2)
 
     def test_unfocused_credits_less_than_focused_for_the_same_day(self):
-        stamps = [HH(9, 0) + i * 210 for i in range(20)]
+        stamps = [HH(9, 0) + i * 100 for i in range(20)]
         _, _, foc = build(stamps, mode="focused")
         _, _, unf = build(stamps, mode="unfocused")
         self.assertLess(sum(e - s for s, e in unf),
@@ -229,8 +234,8 @@ class FocusModes(unittest.TestCase):
     def test_a_midday_switch_leaves_the_morning_intact(self):
         # The reason the mode is a log and not a setting: flipping at noon must
         # not retroactively shred work that happened under the other rule.
-        morning = [HH(9, 0) + i * 240 for i in range(6)]
-        afternoon = [HH(15, 0) + i * 240 for i in range(6)]
+        morning = [HH(9, 0) + i * 100 for i in range(6)]
+        afternoon = [HH(15, 0) + i * 100 for i in range(6)]
         tl = [(0, "focused"), (HH(12, 0), "unfocused")]
         merged = wp.merge_spans(wp.build_bouts(morning + afternoon, tl), tl)
         before = [p for p in merged if p[0] < HH(12, 0)]
@@ -443,13 +448,13 @@ class DesktopPromptHoles(unittest.TestCase):
         self.assertEqual(holes, [[HH(10, 0), HH(10, 0) + 20]])
 
     def test_hole_starts_at_last_mac_event_not_last_prompt(self):
-        # Mac prompt 10:00, Chrome work visit 10:03, desktop prompt 10:05,
-        # Mac prompt 10:10: only 10:03-10:05 went to the desktop.
-        prompt, chrome, desk, back = HH(10, 0), HH(10, 3), HH(10, 5), HH(10, 10)
+        # Mac prompt 10:00, Chrome work visit 10:01, desktop prompt 10:02,
+        # Mac prompt 10:03: only 10:01-10:02 went to the desktop.
+        prompt, chrome, desk, back = HH(10, 0), HH(10, 1), HH(10, 2), HH(10, 3)
         events = [prompt, chrome, back]
         self.assertEqual(wp.desktop_prompt_holes([desk], events), [[chrome, desk]])
         _, spans = build_desk_prompt(events, [desk])
-        # 10:00-10:03 stays credited; only the Chrome-to-desktop stretch is cut.
+        # 10:00-10:01 stays credited; only the Chrome-to-desktop stretch is cut.
         self.assertTrue(any(s <= prompt and e == chrome for s, e in spans))
 
     def test_hole_end_is_the_desktop_stamp_not_a_minute_wide(self):
@@ -580,7 +585,7 @@ class IdleExclusion(unittest.TestCase):
                     "idle": idle}) + "\n")
         return d
 
-    def _with(self, samples, claims=(), fn=None, subtracts=True):
+    def _with(self, samples, claims=(), fn=None, subtracts=True, idle_sec=None):
         """`subtracts` forces IDLE_SUBTRACTS, so the tests of the RULE keep
         testing the rule whichever way the shipped switch is set. What the
         switch itself does is tested separately, against the real constant.
@@ -591,13 +596,19 @@ class IdleExclusion(unittest.TestCase):
             for lo, hi in claims:
                 fh.write(json.dumps({"day": self.DAY, "from": lo,
                                      "until": hi}) + "\n")
-        old = (wp.FOCUS_DIR, wp.IDLE_CLAIMS, wp.IDLE_SUBTRACTS)
+        old = (wp.FOCUS_DIR, wp.IDLE_CLAIMS, wp.IDLE_SUBTRACTS, wp.FOCUS_IDLE_SEC)
         try:
             wp.FOCUS_DIR, wp.IDLE_CLAIMS = d, claim_path
             wp.IDLE_SUBTRACTS = subtracts
+            # The detection threshold equals the two-minute cutoff, so a stretch
+            # shorter than the cutoff -- the case bridging exists for -- needs a
+            # lower threshold to be seen at all.
+            if idle_sec is not None:
+                wp.FOCUS_IDLE_SEC = idle_sec
             return fn()
         finally:
-            wp.FOCUS_DIR, wp.IDLE_CLAIMS, wp.IDLE_SUBTRACTS = old
+            (wp.FOCUS_DIR, wp.IDLE_CLAIMS, wp.IDLE_SUBTRACTS,
+             wp.FOCUS_IDLE_SEC) = old
 
     # --- recovering the stretch from the samples ---
 
@@ -626,20 +637,20 @@ class IdleExclusion(unittest.TestCase):
     # --- what it does to the period ---
 
     def test_an_absence_between_two_prompts_stops_being_counted(self):
-        # The whole point. Prompts at 10:00 and 10:04 form one period; the
+        # The whole point. Prompts at 10:00 and 10:02 form one period; the
         # machine was untouched for the middle of it.
-        stamps = [HH(10, 0), HH(10, 4)]
+        stamps = [HH(10, 0), HH(10, 2)]
         tl = [(0, "focused")]
         merged = wp.merge_spans(wp.build_bouts(stamps, tl), tl)
         before = sum(e - s for s, e in merged)
         # The absence sits strictly inside, so both remnants survive and the
         # only thing removed is the silence itself -- no interaction with the
         # separate rule that drops a remnant too short to publish a minute.
-        holes = self._with([(10, 3, 0, 150)],
+        holes = self._with([(10, 1, 30, 60)], idle_sec=30,
                            fn=lambda: wp.idle_stretches(self.DAY))
         after = sum(e - s for s, e in wp.subtract_spans(merged, holes))
         self.assertLess(after, before)
-        self.assertEqual(before - after, 150)
+        self.assertEqual(before - after, 60)
 
     def test_a_claim_protects_the_silence_it_answered(self):
         stamps = [HH(10, 0), HH(10, 4)]
@@ -684,11 +695,11 @@ class IdleExclusion(unittest.TestCase):
     # --- which ones are worth showing ---
 
     def test_a_bridged_absence_is_an_activity(self):
-        # Three minutes away, then input again: the period survived and its
+        # Ninety seconds away, then input again: the period survived and its
         # arithmetic changed, so there is something to see.
-        got = self._with([(10, 4, 0, 190), (10, 5, 0, 10)],
+        got = self._with([(10, 1, 30, 90), (10, 2, 0, 10)], idle_sec=30,
                          fn=lambda: wp.bridged_idle(self.DAY, [(0, "focused")]))
-        self.assertEqual(got, [[HH(10, 0) + 50, HH(10, 4)]])
+        self.assertEqual(got, [[HH(10, 0), HH(10, 1, 30)]])
 
     def test_an_absence_that_ended_the_period_is_not_an_activity(self):
         # Six minutes is past the cutoff, so the period ended on its own. The
@@ -700,7 +711,7 @@ class IdleExclusion(unittest.TestCase):
     def test_an_absence_still_running_is_not_yet_an_activity(self):
         # Nothing has closed it, so reporting it as a completed event would
         # announce it while it was still happening.
-        got = self._with([(10, 4, 0, 190)],
+        got = self._with([(10, 1, 30, 90)], idle_sec=30,
                          fn=lambda: wp.bridged_idle(self.DAY, [(0, "focused")]))
         self.assertEqual(got, [])
 
@@ -1694,9 +1705,9 @@ class LiveCutoffMeasuresTheSameRunAsTheSilence(unittest.TestCase):
 
     def test_the_earned_width_still_stands_while_the_run_is_live(self):
         # Same day without the stray browse: the 38-minute run is the last
-        # bout, and it has earned the full cutoff.
+        # bout, and it has earned the unfocused maximum.
         _, _, cutoff = self._live(None)
-        self.assertEqual(cutoff, wp.GAP_AFTER * 60)
+        self.assertEqual(cutoff, wp.UNFOCUSED_GAP_MAX * 60)
 
 
 class StatusCacheVersion(unittest.TestCase):
