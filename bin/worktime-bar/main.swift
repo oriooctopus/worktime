@@ -2321,16 +2321,16 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         // Where a period ends once the cutoff has lapsed: at the last tracked
         // event, at the cutoff itself, or halfway between the two.
         let tailSub = NSMenu()
-        for (title, name) in [("Last tracked event", "last"),
-                              ("Halfway to the cutoff", "middle"),
-                              ("The cutoff", "cutoff")] {
+        for (title, name) in [("Last thing you did", "last"),
+                              ("Halfway to when it timed out", "middle"),
+                              ("When it timed out", "cutoff")] {
             let mi = NSMenuItem(title: title, action: #selector(pickTailMode(_:)),
                                 keyEquivalent: "")
             mi.representedObject = name
             mi.state = status.tailMode == name ? .on : .off
             tailSub.addItem(mi)
         }
-        let tailHost = NSMenuItem(title: "Period ends at", action: nil, keyEquivalent: "")
+        let tailHost = NSMenuItem(title: "When you step away, count work until…", action: nil, keyEquivalent: "")
         tailHost.submenu = tailSub
         m.addItem(tailHost)
         let sfSec = status.shortFocusMinSec ?? 7
