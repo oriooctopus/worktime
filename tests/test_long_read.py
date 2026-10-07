@@ -45,7 +45,7 @@ CHROME = "com.google.Chrome"
 
 # Four minutes between events, five before a stay stops being read. The
 # defaults; named here so a test that depends on one says which.
-STRIDE = 240
+STRIDE = 90
 MAX_IDLE = 300
 
 
@@ -136,14 +136,12 @@ class TestOffByDefault(LongReadCase):
 class TestReadingEarns(LongReadCase):
     def test_a_stay_earns_one_event_per_stride(self):
         # Twenty minutes of reading with input throughout. The activation at
-        # 09:00 plus an event every four minutes after it -- enough to keep a
-        # five-minute cutoff from closing the bout, which is the entire point.
+        # 09:00 plus an event every ninety seconds after it -- enough to keep a
+        # two-minute cutoff from closing the bout, which is the entire point.
         self.enable()
         self.write(self.stay(9 * 3600, 41))  # 09:00:00 -> 09:20:00
         self.assertEqual(
-            self.secs(),
-            [9 * 3600, 9 * 3600 + 240, 9 * 3600 + 480,
-             9 * 3600 + 720, 9 * 3600 + 960, 9 * 3600 + 1200])
+            self.secs(), [9 * 3600 + 90 * i for i in range(14)])
 
     def test_events_never_fall_further_apart_than_the_probe_can_chain(self):
         # The invariant that makes the feature work at all rather than merely

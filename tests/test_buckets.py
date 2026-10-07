@@ -571,7 +571,7 @@ def test_uncounted_runs_have_nothing_to_convert():
 
 
 def test_converting_a_finished_session_moves_it_between_buckets(world):
-    world.prompts[DAY] = [at(9, 0), at(9, 4), at(9, 8), at(9, 12)]
+    world.prompts[DAY] = [at(9, 0), at(9, 1), at(9, 2), at(9, 3)]
     world.now = at(12, 0)
     before = world.snapshot()
     assert before["buckets"]["special"]["sec"] == 0

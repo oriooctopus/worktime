@@ -144,7 +144,7 @@ PROMPT_ROOTS = wc.PROJECT_ROOTS
 # still had to be read; that inflated the day and made every gap render as
 # (true silence - 5), so a nine-minute silence displayed as a four-minute gap
 # and contradicted this very rule on the face of the dashboard.
-GAP_AFTER = 5
+GAP_AFTER = 2
 
 # What a period gets on top of its last prompt, and the least it can measure.
 # Sending a prompt is not an instantaneous act and a period that ends the
@@ -181,7 +181,7 @@ LEAD_SEC = 10
 # the day would lose it.
 MIN_PERIOD_SEC = 30
 
-# GAP_AFTER above is the focused rule: five minutes of silence ends a period,
+# GAP_AFTER above is the focused rule: two minutes of silence ends a period,
 # applied uniformly, on the assumption that a prompt means hands on the keyboard
 # and eyes on the answer.
 #
