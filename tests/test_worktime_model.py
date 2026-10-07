@@ -1751,3 +1751,46 @@ class StatusCacheVersion(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TailModeTests(unittest.TestCase):
+    """Where a bout ends once the cutoff has lapsed: last event, cutoff, or between."""
+
+    FOCUSED = [(0, "focused")]
+    # Five minutes of prompts, then a long silence, then a later bout.
+    STAMPS = [HH(10, 0), HH(10, 1), HH(10, 2), HH(10, 3), HH(10, 4), HH(10, 5),
+              HH(11, 0)]
+
+    def _first_end(self, frac):
+        return wp.build_bouts(self.STAMPS, self.FOCUSED, frac)[0][1]
+
+    def test_last_stops_at_last_event_plus_tail(self):
+        self.assertEqual(self._first_end(wp.TAIL_MODES["last"]),
+                         HH(10, 5) + wp.TAIL_SEC)
+
+    def test_cutoff_runs_to_the_cutoff(self):
+        self.assertEqual(self._first_end(wp.TAIL_MODES["cutoff"]),
+                         HH(10, 5) + wp.GAP_AFTER * 60)
+
+    def test_middle_splits_the_difference(self):
+        last = HH(10, 5) + wp.TAIL_SEC
+        cutoff = HH(10, 5) + wp.GAP_AFTER * 60
+        self.assertEqual(self._first_end(wp.TAIL_MODES["middle"]),
+                         last + (cutoff - last) // 2)
+
+    def test_tail_never_reaches_the_next_bout(self):
+        stamps = [HH(10, 0), HH(10, 0) + wp.GAP_AFTER * 60 + 5]
+        bouts = wp.build_bouts(stamps, self.FOCUSED, 1.0)
+        self.assertEqual(len(bouts), 2)
+        self.assertLess(bouts[0][1], bouts[1][0])
+
+    def test_live_bout_is_not_credited_past_now(self):
+        now = HH(10, 5) + 30
+        bouts = wp.build_bouts([HH(10, 0), HH(10, 5)], self.FOCUSED, 1.0, now)
+        self.assertEqual(bouts[-1][1], now)
+
+    def test_unfocused_ends_at_its_own_earned_cutoff(self):
+        tl = [(0, "unfocused")]
+        stamps = [HH(10, 0), HH(11, 0)]
+        end = wp.build_bouts(stamps, tl, 1.0)[0][1]
+        self.assertEqual(end, HH(10, 0) + int(wp.UNFOCUSED_GAP_START * 60))

@@ -205,6 +205,16 @@ UNFOCUSED_GAP_START = 0.5
 UNFOCUSED_GAP_MAX = 2
 UNFOCUSED_RAMP_MIN = 10
 
+# Where a bout ends once the silence after it has outlasted the cutoff. "last"
+# stops at the last tracked event plus TAIL_SEC -- work for five minutes, step
+# away, and the period ends at minute five. "cutoff" runs on to the moment the
+# cutoff lapsed, so the same five minutes and a two-minute cutoff end at seven.
+# "middle" splits the difference. The value is the fraction of the way from the
+# TAIL_SEC end to the cutoff end.
+TAIL_MODES = {"last": 0.0, "middle": 0.5, "cutoff": 1.0}
+TAIL_MODE_FILE = os.path.join(STATE, "tail-mode.json")
+DEFAULT_TAIL_MODE = "cutoff"
+
 # A window with prompts is working, full stop -- no need to ask. A window with
 # none is the interesting case. Between those, ask.
 #
@@ -240,6 +250,22 @@ def set_mode(mode: str) -> str:
     os.makedirs(STATE, exist_ok=True)
     with open(MODEFILE, "a") as fh:
         fh.write(json.dumps({"t": now_local().isoformat(), "mode": mode}) + "\n")
+    return mode
+
+
+def tail_mode() -> str:
+    if not os.path.exists(TAIL_MODE_FILE):
+        return DEFAULT_TAIL_MODE
+    with open(TAIL_MODE_FILE) as fh:
+        return json.load(fh)["mode"]
+
+
+def set_tail_mode(mode: str) -> str:
+    if mode not in TAIL_MODES:
+        raise SystemExit(f"tail mode must be one of: {', '.join(TAIL_MODES)}")
+    os.makedirs(STATE, exist_ok=True)
+    with open(TAIL_MODE_FILE, "w") as fh:
+        json.dump({"mode": mode}, fh)
     return mode
 
 
@@ -367,7 +393,9 @@ def chain_bouts(stamps: list[int],
 
 
 def build_bouts(stamps: list[int],
-                timeline: list[tuple[int, str]]) -> list[list[int]]:
+                timeline: list[tuple[int, str]],
+                tail_frac: float = 0.0,
+                now_s: int | None = None) -> list[list[int]]:
     """Sorted second-of-day stamps to padded work spans. Pure -- no I/O.
 
     Split out of write_vault_snapshot so the tests can exercise this arithmetic
@@ -392,12 +420,28 @@ def build_bouts(stamps: list[int],
     instead (the first attempt) shoved the period past its own prompt and
     published 0m periods. So each pair of adjacent bouts gets exactly the slack
     its silence affords, split tail-first, and neither rule bends.
+
+    `tail_frac` (see TAIL_MODES) is the one deliberate exception: it stretches a
+    bout's end from last + TAIL_SEC toward last + the cutoff that ended it, so
+    the gap after it is shown shorter than the cutoff. It still stops one
+    second short of the next bout. `now_s` keeps the last bout, whose cutoff
+    may not have lapsed yet, from being credited with time not yet happened.
     """
     present, split_at = chain_bouts(stamps, timeline)
     raw = [list(p) for p in present]
     lead_used = [0] * len(raw)
-    tail_used = [TAIL_SEC] * len(raw)
     budgets = [0] * len(raw)
+
+    def tail_want(i: int) -> int:
+        cutoff = (split_at[i + 1] if i + 1 < len(raw)
+                  else gap_sec_for(mode_at(timeline, raw[i][1]),
+                                   raw[i][1] - raw[i][0]))
+        want = TAIL_SEC + int(tail_frac * max(0, cutoff - TAIL_SEC))
+        if i + 1 == len(raw) and now_s is not None:
+            want = min(want, max(TAIL_SEC, now_s - raw[i][1]))
+        return want
+
+    tail_used = [tail_want(i) if tail_frac else TAIL_SEC for i in range(len(raw))]
     for i in range(len(raw)):
         want = LEAD_SEC
         # In unfocused mode the lead is earned on the same ramp as the cutoff.
@@ -415,8 +459,9 @@ def build_bouts(stamps: list[int],
         # One second more than the threshold that split this pair, so the union
         # later -- which chains anything within that threshold -- cannot swallow
         # the gap it just preserved.
-        budgets[i] = max(0, raw[i][0] - raw[i - 1][1] - (split_at[i] + 1))
-        tail_used[i - 1] = min(TAIL_SEC, budgets[i])
+        budgets[i] = max(0, raw[i][0] - raw[i - 1][1]
+                         - (1 if tail_frac else split_at[i] + 1))
+        tail_used[i - 1] = min(tail_used[i - 1], budgets[i])
         lead_used[i] = min(want, budgets[i] - tail_used[i - 1])
 
     # Whatever the pair did not spend on tail and lead is left over, and
@@ -4645,7 +4690,7 @@ def write_vault_snapshot(day: str, events: list[datetime],
                            for t in prompts_for(day))
 
     tl = mode_timeline(day)
-    present = build_bouts(stamps, tl)
+    present = build_bouts(stamps, tl, TAIL_MODES[tail_mode()], now_s)
 
     # Manual marks are presence, unioned in the same way meetings are. They
     # carry no tail or lead: a mark has declared bounds and needs neither.
@@ -5961,6 +6006,7 @@ def status() -> dict:
             # minutes it may never be granted.
             "gap_after_sec": cutoff_sec,
             "mode": mode_now(),
+            "tail_mode": tail_mode(),
             "short_focus_min_sec": short_focus_state() or wc.short_focus_min_sec(),
             # Set only while the dot is green on a glance that is still inside
             # the filter's window; the bar draws it half-filled until then.
@@ -6081,6 +6127,14 @@ if __name__ == "__main__":
             day = now_local().strftime("%Y-%m-%d")
             write_vault_snapshot(day, events_for(day))
         print(json.dumps({"mode": mode_now()}))
+    elif cmd == "tail_mode":
+        # Bare `tail_mode` reads, `tail_mode <last|middle|cutoff>` sets and
+        # rebuilds the snapshot, same as `mode`.
+        if len(sys.argv) > 2:
+            set_tail_mode(sys.argv[2])
+            day = now_local().strftime("%Y-%m-%d")
+            write_vault_snapshot(day, events_for(day))
+        print(json.dumps({"tail_mode": tail_mode()}))
     elif cmd == "short_focus":
         # `short_focus on` enables, `short_focus off` disables. Rebuilds the
         # snapshot immediately so the menu reflects the change on the next poll.

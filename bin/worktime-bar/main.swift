@@ -216,6 +216,7 @@ struct Status {
     var quietSec: Int?
     var gapAfterSec: Int?
     var mode = "focused"
+    var tailMode = "cutoff"
     var shortFocusMinSec: Int?
     // Seconds until the glance that lit the dot has earned its credit, or nil
     // when nothing about the green is in doubt. Draws the dot half-filled.
@@ -2317,6 +2318,21 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
             mi.state = status.mode == name ? .on : .off
             m.addItem(mi)
         }
+        // Where a period ends once the cutoff has lapsed: at the last tracked
+        // event, at the cutoff itself, or halfway between the two.
+        let tailSub = NSMenu()
+        for (title, name) in [("Last tracked event", "last"),
+                              ("Halfway to the cutoff", "middle"),
+                              ("The cutoff", "cutoff")] {
+            let mi = NSMenuItem(title: title, action: #selector(pickTailMode(_:)),
+                                keyEquivalent: "")
+            mi.representedObject = name
+            mi.state = status.tailMode == name ? .on : .off
+            tailSub.addItem(mi)
+        }
+        let tailHost = NSMenuItem(title: "Period ends at", action: nil, keyEquivalent: "")
+        tailHost.submenu = tailSub
+        m.addItem(tailHost)
         let sfSec = status.shortFocusMinSec ?? 7
         let sfItem = NSMenuItem(
             title: "Ignore glances < \(sfSec)s",
@@ -2470,6 +2486,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
             s.quietSec = j["quiet_sec"] as? Int
             s.gapAfterSec = j["gap_after_sec"] as? Int
             s.mode = j["mode"] as? String ?? "focused"
+            s.tailMode = j["tail_mode"] as? String ?? "cutoff"
             s.shortFocusMinSec = j["short_focus_min_sec"] as? Int
             s.pendingSec = j["pending_sec"] as? Double
             s.focusPct = j["focus_pct"] as? Int
@@ -2742,6 +2759,14 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         guard let name = sender.representedObject as? String else { return }
         probeQueue.async {
             _ = runProbe(["mode", name])
+            DispatchQueue.main.async { self.refresh() }
+        }
+    }
+
+    @objc func pickTailMode(_ sender: NSMenuItem) {
+        guard let name = sender.representedObject as? String else { return }
+        probeQueue.async {
+            _ = runProbe(["tail_mode", name])
             DispatchQueue.main.async { self.refresh() }
         }
     }
