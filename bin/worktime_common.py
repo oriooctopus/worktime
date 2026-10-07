@@ -331,9 +331,9 @@ def focus_extra_apps(profile=None):
 # only exists for people whose work IS reading.
 DEFAULT_LONG_READ_IDLE_SEC = 300
 # How often a continuing stay emits another event. Must stay under the probe's
-# own five-minute silence cutoff or the events it produces will not chain, and
+# own two-minute silence cutoff or the events it produces will not chain, and
 # a long read would come back as a string of disconnected minutes.
-DEFAULT_LONG_READ_STRIDE_SEC = 240
+DEFAULT_LONG_READ_STRIDE_SEC = 90
 
 
 def long_read(profile=None):
