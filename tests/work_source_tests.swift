@@ -23,6 +23,25 @@ enum WorkSourceTests {
         check(dir == LocalSource(kind: .directory, value: "file:///Users/o/coding/ruby-memory-eval/"),
               "file maps to its directory, got \(String(describing: dir))")
 
+        let tree = NSTemporaryDirectory() + "worksource-tree-\(getpid())/"
+        let fm = FileManager.default
+        let checkout = tree + "repo/"
+        let worktree = tree + "repo-worktrees/slug/"
+        for d in [checkout + "docs/a", worktree + "design/b", tree + "loose"] {
+            try! fm.createDirectory(atPath: d, withIntermediateDirectories: true)
+        }
+        try! fm.createDirectory(atPath: checkout + ".git", withIntermediateDirectories: true)
+        fm.createFile(atPath: worktree + ".git", contents: Data("gitdir: x".utf8))
+        let root = URL(fileURLWithPath: tree).standardizedFileURL.path
+        check(localSource(url: "file://\(root)/repo/docs/a/x.html")?.value == "file://\(root)/repo/",
+              "page in a checkout asks about the checkout")
+        check(localSource(url: "file://\(root)/repo-worktrees/slug/design/b/x.html")?.value
+              == "file://\(root)/repo-worktrees/",
+              "page in a worktree asks about the -worktrees folder")
+        check(localSource(url: "file://\(root)/loose/x.html")?.value == "file://\(root)/loose/",
+              "page outside any checkout asks about its own folder")
+        try? fm.removeItem(atPath: tree)
+
         let path = NSTemporaryDirectory() + "worksource-\(getpid()).json"
         try! #"{"_comment": "keep me", "work_url_keywords": ["rubrik"]}"#
             .write(toFile: path, atomically: true, encoding: .utf8)

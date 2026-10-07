@@ -36,11 +36,28 @@ func localSource(url: String) -> LocalSource? {
         return LocalSource(kind: .port, value: String(url[r]))
     }
     if url.lowercased().hasPrefix("file://"), let u = URL(string: url) {
-        var dir = u.deletingLastPathComponent().absoluteString
-        if !dir.hasSuffix("/") { dir += "/" }
-        return LocalSource(kind: .directory, value: dir)
+        let dir = workRoot(of: u.deletingLastPathComponent())
+        var value = dir.absoluteString
+        if !value.hasSuffix("/") { value += "/" }
+        return LocalSource(kind: .directory, value: value)
     }
     return nil
+}
+
+/// The folder worth asking about for a page in `dir`: the enclosing git
+/// checkout, widened to the `<repo>-worktrees` folder when that checkout is
+/// one of its worktrees, so one answer covers every sibling worktree. A page
+/// outside any checkout is asked about as-is.
+func workRoot(of dir: URL) -> URL {
+    var cur = dir.standardizedFileURL
+    while cur.path != "/" {
+        if FileManager.default.fileExists(atPath: cur.appendingPathComponent(".git").path) {
+            let parent = cur.deletingLastPathComponent()
+            return parent.lastPathComponent.hasSuffix("-worktrees") ? parent : cur
+        }
+        cur = cur.deletingLastPathComponent()
+    }
+    return dir
 }
 
 /// Reads and writes the profile's local-source keys. Re-read on every call:
