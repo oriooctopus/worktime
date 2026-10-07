@@ -1906,7 +1906,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         // In focused mode the cutoff is always five minutes, so "2m since last
         // activity" already tells you how much silence the run has left. In
         // unfocused mode it does not: the cutoff is whatever the bout has
-        // earned on the ramp so far, anywhere between 30 seconds and five minutes, and
+        // earned on the ramp so far, anywhere between 30 seconds and two minutes, and
         // nothing on screen said which. That is exactly the reading that looked
         // wrong -- a bout switched to unfocused mid-run carries the width it
         // already earned, so it goes on counting through silences that the "30s,
@@ -2310,7 +2310,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         modes.isEnabled = false
         m.addItem(modes)
         for (title, name) in [("Focused — 5m cutoff", "focused"),
-                              ("Unfocused — 30s, widening to 5m", "unfocused")] {
+                              ("Unfocused — 30s, widening to 2m", "unfocused")] {
             let mi = NSMenuItem(title: title, action: #selector(pickMode(_:)),
                                 keyEquivalent: "")
             mi.representedObject = name

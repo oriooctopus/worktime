@@ -190,8 +190,8 @@ MIN_PERIOD_SEC = 30
 # every few minutes in between. Under the focused rule those prompts are four
 # minutes apart, chain into one span, and an hour of half-attention publishes as
 # an hour of work. Unfocused mode declines to assume and makes the session earn
-# it: a bout opens with a 30-second cutoff and widens toward GAP_AFTER as it
-# runs, reaching the full five after UNFOCUSED_RAMP_MIN of continuous work.
+# it: a bout opens with a 30-second cutoff and widens toward UNFOCUSED_GAP_MAX (two
+# minutes, never the full GAP_AFTER) as it runs, reaching it after UNFOCUSED_RAMP_MIN of continuous work.
 #
 # The ramp is driven by the bout's own elapsed length, not by a count of
 # prompts. Ten prompts inside a minute is one thought typed quickly, not ten
@@ -202,6 +202,7 @@ MODEFILE = os.path.join(STATE, "mode.jsonl")
 SESSION_END = os.path.join(STATE, "session-end.json")
 SHORT_FOCUS_FILE = os.path.join(STATE, "short-focus.json")
 UNFOCUSED_GAP_START = 0.5
+UNFOCUSED_GAP_MAX = 2
 UNFOCUSED_RAMP_MIN = 10
 
 # A window with prompts is working, full stop -- no need to ask. A window with
@@ -333,13 +334,13 @@ def gap_sec_for(mode: str, elapsed_sec: float) -> int:
     """How long a bout this long is allowed to go quiet before it has ended.
 
     Constant in focused mode. In unfocused mode it opens at
-    UNFOCUSED_GAP_START and grows linearly to GAP_AFTER across
+    UNFOCUSED_GAP_START and grows linearly to UNFOCUSED_GAP_MAX across
     UNFOCUSED_RAMP_MIN of continuous bout.
     """
     if mode != "unfocused":
         return GAP_AFTER * 60
     ramp = min(1.0, max(0.0, elapsed_sec / (UNFOCUSED_RAMP_MIN * 60)))
-    return int((UNFOCUSED_GAP_START + (GAP_AFTER - UNFOCUSED_GAP_START) * ramp) * 60)
+    return int((UNFOCUSED_GAP_START + (UNFOCUSED_GAP_MAX - UNFOCUSED_GAP_START) * ramp) * 60)
 
 
 def chain_bouts(stamps: list[int],
@@ -470,7 +471,7 @@ def merge_spans(spans: list[list[int]],
         and it always overturned it the same way. The old threshold was
         measured over the accumulated merged run rather than over the bout
         that earned it, so it grew as it merged: a run past UNFOCUSED_RAMP_MIN
-        pinned the cutoff at the full GAP_AFTER and then swallowed every later
+        pinned the cutoff at its maximum and then swallowed every later
         bout within five minutes of it. An unfocused afternoon whose dot went
         out four separate times published as one unbroken period, which is
         exactly the inflation unfocused mode exists to stop -- and it left the
@@ -5756,7 +5757,7 @@ def status() -> dict:
 
     # What the run in progress has earned, not the flat GAP_AFTER: in unfocused
     # mode a lone prompt lapses after a minute and only a session that has been
-    # going a while holds the dot green for the full five.
+    # going a while holds the dot green for the full two minutes.
     cutoff_sec = live_cutoff(day, ev_stamps)
 
     pending_sec = pending_glance_sec(day, now, cutoff_sec)

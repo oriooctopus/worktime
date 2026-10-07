@@ -141,9 +141,11 @@ class FocusModes(unittest.TestCase):
     def test_unfocused_opens_at_thirty_seconds(self):
         self.assertEqual(wp.gap_sec_for("unfocused", 0), wp.UNFOCUSED_GAP_START * 60)
 
-    def test_unfocused_reaches_gap_after_at_the_ramp(self):
-        self.assertEqual(wp.gap_sec_for("unfocused", wp.UNFOCUSED_RAMP_MIN * 60),
-                         wp.GAP_AFTER * 60)
+    def test_unfocused_reaches_its_max_at_the_ramp_and_stays_there(self):
+        for elapsed in (wp.UNFOCUSED_RAMP_MIN * 60, 36000):
+            self.assertEqual(wp.gap_sec_for("unfocused", elapsed),
+                             wp.UNFOCUSED_GAP_MAX * 60)
+        self.assertEqual(wp.UNFOCUSED_GAP_MAX, 2)
 
     def test_unfocused_never_exceeds_focused(self):
         for elapsed in range(0, 3600, 30):
@@ -179,12 +181,15 @@ class FocusModes(unittest.TestCase):
         self.assertEqual(foc[0][1] - foc[0][0], wp.MIN_PERIOD_SEC)
         self.assertLess(wp.LEAD_SEC + wp.TAIL_SEC, wp.MIN_PERIOD_SEC)
 
-    def test_a_sustained_unfocused_session_widens_to_the_full_cutoff(self):
-        # Ten minutes of prompting every 25s earns the ramp, after which a
-        # four-minute silence chains exactly as it would when focused.
+    def test_a_sustained_unfocused_session_widens_to_two_minutes_only(self):
+        # Ten minutes of prompting every 25s earns the ramp: a ninety-second
+        # silence chains, a four-minute one (which focused would chain) does not.
         warmup = [HH(10, 0) + i * 25 for i in range(25)]
-        mins, _, _ = build(warmup + [HH(10, 0) + 24 * 25 + 240], mode="unfocused")
+        end = HH(10, 0) + 24 * 25
+        mins, _, _ = build(warmup + [end + 90], mode="unfocused")
         self.assertEqual(len(mins), 1)
+        mins, _, _ = build(warmup + [end + 240], mode="unfocused")
+        self.assertEqual(len(mins), 2)
 
     def test_unfocused_credits_less_than_focused_for_the_same_day(self):
         stamps = [HH(9, 0) + i * 210 for i in range(20)]
@@ -1694,9 +1699,9 @@ class LiveCutoffMeasuresTheSameRunAsTheSilence(unittest.TestCase):
 
     def test_the_earned_width_still_stands_while_the_run_is_live(self):
         # Same day without the stray browse: the 38-minute run is the last
-        # bout, and it has earned the full cutoff.
+        # bout, and it has earned the unfocused maximum.
         _, _, cutoff = self._live(None)
-        self.assertEqual(cutoff, wp.GAP_AFTER * 60)
+        self.assertEqual(cutoff, wp.UNFOCUSED_GAP_MAX * 60)
 
 
 class StatusCacheVersion(unittest.TestCase):
