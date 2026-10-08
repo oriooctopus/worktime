@@ -83,9 +83,9 @@ let IDLE_END_PANEL_SEC = 3
 // How long the ⌘E undo panel stays on screen. The session is not actually
 // ended until this expires -- pressing Undo dismisses the panel and does
 // nothing. A second ⌘E while the panel is showing skips the countdown and
-// commits immediately at the current minute. 5 seconds is long enough to
+// commits immediately at the current minute. 3 seconds is long enough to
 // catch an accidental press without making a deliberate one feel stalled.
-let END_UNDO_SEC = 5
+let END_UNDO_SEC = 3
 
 // ⌃⌥⌘P starts or stops special time, from anywhere. Control is added to the
 // shift toggle's ⌘⌥ pair so a stray ⌘⌥P cannot flip it. Same chord family as the
