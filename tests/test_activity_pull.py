@@ -46,6 +46,7 @@ def rig(tmp_path, monkeypatch):
     class Rig:
         launches = launched
         stamp = tmp_path / "stamp"
+        vault = tmp_path / "vault"
     return Rig
 
 
@@ -56,9 +57,9 @@ def age_stamp(rig, when):
     os.utime(rig.stamp, (when.timestamp(), when.timestamp()))
 
 
-def test_a_first_pull_launches_all_three_rsyncs(rig):
+def test_a_first_pull_launches_all_four_rsyncs(rig):
     assert wp.pull_mac_activity_if_stale(NOW) is True
-    assert len(rig.launches) == 3
+    assert len(rig.launches) == 4
 
 
 def test_a_recent_attempt_stops_a_second_one(rig):
@@ -67,14 +68,14 @@ def test_a_recent_attempt_stops_a_second_one(rig):
     assert wp.pull_mac_activity_if_stale(NOW) is True
     age_stamp(rig, NOW)
     assert wp.pull_mac_activity_if_stale(NOW + timedelta(minutes=5)) is False
-    assert len(rig.launches) == 3
+    assert len(rig.launches) == 4
 
 
 def test_the_floor_lifts_once_it_has_passed(rig):
     wp.pull_mac_activity_if_stale(NOW)
     age_stamp(rig, NOW)
     assert wp.pull_mac_activity_if_stale(NOW + timedelta(minutes=11)) is True
-    assert len(rig.launches) == 6
+    assert len(rig.launches) == 8
 
 
 def test_the_attempt_is_stamped_before_it_is_launched(rig):
@@ -113,6 +114,7 @@ def test_the_pull_outlives_the_probe_run_that_started_it(rig):
     assert rig.launches[0][1]["start_new_session"] is True
     assert rig.launches[1][1]["start_new_session"] is True
     assert rig.launches[2][1]["start_new_session"] is True
+    assert rig.launches[3][1]["start_new_session"] is True
 
 
 def test_activity_and_usage_are_mirrored_destructively_calendar_is_not(rig):
@@ -131,12 +133,20 @@ def test_activity_and_usage_are_mirrored_destructively_calendar_is_not(rig):
     assert any(a.endswith("calendar-today.md") for a in calendar_argv)
 
 
-def test_worktime_snapshots_are_never_pulled(rig):
-    """Dashboard/worktime/*.json is written BY the Mac locally -- pulling it
-    from the WSL box would clobber the Mac's own local state with nothing."""
+def test_worktime_snapshots_are_pushed_to_wsl_not_pulled(rig):
+    """Dashboard/worktime/ is Mac-authored (write_vault_snapshot) and read on
+    the WSL box, so it goes Mac -> WSL: source is the local dir, destination
+    the remote one, both with trailing slashes, and never --delete (the WSL
+    copy is a read-only consumer). The first three launches stay pulls."""
     wp.pull_mac_activity_if_stale(NOW)
-    for argv, _ in rig.launches:
-        assert not any("worktime" in a for a in argv)
+    for argv, _ in rig.launches[:3]:
+        assert not any(a.rstrip("/").endswith("worktime") for a in argv[0])
+    push_argv = rig.launches[3][0][0]
+    assert push_argv[0] == "rsync" and "--delete" not in push_argv
+    assert push_argv[-2] == str(rig.vault) + "/worktime/"
+    assert push_argv[-1] == (
+        "esme@100.103.237.24:/mnt/c/Users/Esme\\ Louise\\ Robinson/Documents/"
+        "obsidian-vault/Dashboard/worktime/")
 
 
 def test_the_remote_path_carries_the_real_spaces(rig):

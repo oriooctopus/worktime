@@ -4341,9 +4341,13 @@ def pull_mac_activity_if_stale(now: datetime | None = None) -> bool:
     --delete only on activity/ and usage/, not on the single calendar file,
     and only because activity/ and usage/ are exclusively WSL-authored:
     nothing on the Mac writes into either, so mirroring them destructively
-    can only prune files the source itself no longer has. Dashboard/worktime/
-    (the Mac's own local JSON snapshots) is deliberately never touched by
-    this function.
+    can only prune files the source itself no longer has.
+
+    Dashboard/worktime/ (the Mac-authored snapshots from write_vault_snapshot)
+    goes the OTHER way: a fourth rsync PUSHES it to the WSL box, which reads
+    it for /tracker and /dashboard. It replaces Obsidian Sync for the same
+    version-history reason. No --delete: the WSL copy is a read-only consumer
+    and is never pruned.
 
     Returns whether an attempt was launched, for the tests and for the
     caller. False is the ordinary answer between the retry floor's attempts.
@@ -4377,7 +4381,7 @@ def pull_mac_activity_if_stale(now: datetime | None = None) -> bool:
         log = open(ACTIVITY_PULL_LOG, "w")
         log.write(f"{now.isoformat()} pull launched\n")
         log.flush()
-        # Three separate rsyncs, not one covering all paths: calendar-today.md
+        # Separate rsyncs (three pulls, one push), not one covering all paths: calendar-today.md
         # sits next to activity/ and usage/ in the same remote directory but
         # is a single file, not a tree, and --delete has no meaning for it.
         subprocess.Popen(
@@ -4398,6 +4402,14 @@ def pull_mac_activity_if_stale(now: datetime | None = None) -> bool:
             ["rsync", "-a", "-e", ssh_cmd,
              f"{WSL_ACTIVITY_HOST}:{WSL_VAULT_DASHBOARD_ESC}/calendar-today.md",
              os.path.join(dash, "calendar-today.md")],
+            stdout=log, stderr=subprocess.STDOUT,
+            start_new_session=True)
+        # Push, not pull: worktime/ is Mac-authored. Trailing slashes on both
+        # sides sync directory contents; no --delete (see docstring).
+        subprocess.Popen(
+            ["rsync", "-a", "-e", ssh_cmd,
+             os.path.join(dash, "worktime") + os.sep,
+             f"{WSL_ACTIVITY_HOST}:{WSL_VAULT_DASHBOARD_ESC}/worktime/"],
             stdout=log, stderr=subprocess.STDOUT,
             start_new_session=True)
     except OSError:
