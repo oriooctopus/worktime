@@ -58,25 +58,29 @@ def test_extra_adds_special_without_touching_main(world):
     assert snap["work_sec"] == base["work_sec"]
 
 
-def test_extra_stops_at_main_work_and_reports_the_shortfall(world):
+def test_extra_steps_over_main_work_into_the_free_minutes_before_it(world):
     world.now = at(12, 15)
     worked_prompts(world, 13, 14)           # main work reaching almost to now
     snap = world.snapshot()
-    end = max(w["end"] for w in snap["worked"])
+    counted = [(w["start"], w["end"]) for w in snap["worked"]]
 
     out = wp.track_special(10, "special_extra")
 
-    assert out["claimed"] == out["asked"] - out["unplaced"] < 10
+    assert out["claimed"] == 10 and out["unplaced"] == 0
+    assert wp.special_sec_for(DAY) == 600
     # Nothing placed on top of a counted minute.
-    assert all(wp.to_min(s["start"]) >= end for s in out["spans"])
+    for s in out["spans"]:
+        a, b = wp.to_min(s["start"]), wp.to_min(s["end"])
+        assert all(b <= ws or a >= we for ws, we in counted)
 
 
 def test_extra_never_overlaps_existing_special(world):
     world.now = at(12, 15)
     wp.track_special(5, "special_extra")                 # 12:10-12:15
-    out = wp.track_special(5, "special_extra")          # blocked right behind now
-    assert out["claimed"] == 0
-    assert wp.special_sec_for(DAY) == 300
+    out = wp.track_special(5, "special_extra")          # lands in front of it
+    assert out["claimed"] == 5
+    assert [(s["start"], s["end"]) for s in out["spans"]] == [("12:05", "12:10")]
+    assert wp.special_sec_for(DAY) == 600
 
 
 def test_take_stops_at_midnight(world):

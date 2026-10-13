@@ -2442,8 +2442,10 @@ def track_special(minutes: int, mode: str) -> dict:
 
     `special_take` converts the last `minutes` outright, which is the only
     mode that can reduce main. `special_extra` places the minutes only where
-    nothing is counted yet (main periods and existing special both block it),
-    and reports the shortfall rather than overlapping.
+    nothing is counted yet (main periods and existing special both block it).
+    It steps over counted stretches and fills the free minutes in front of
+    them, so a live period at "now" does not stop it; a shortfall is reported
+    only when the day runs out of free minutes.
     """
     if mode not in SPECIAL_TRACK_MODES:
         return {"tracked": False, "why": f"unknown mode {mode!r}"}
@@ -2473,7 +2475,7 @@ def track_special(minutes: int, mode: str) -> dict:
         # still blocks the minute it touches.
         counted = worked + [{"start": int(s // 60), "end": -(-int(e) // 60)}
                             for s, e in special_spans_for(day, now)]
-        placed, _ = claim_spans(counted, now_m, minutes, False)
+        placed, _ = claim_spans(counted, now_m, minutes, True)
         spans_sec = [[lo + a * 60, lo + b * 60] for a, b in placed]
 
     os.makedirs(STATE, exist_ok=True)

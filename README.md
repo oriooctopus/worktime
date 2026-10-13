@@ -750,7 +750,7 @@ already counted inside them:
 |---|---|
 | **Main — stop at the last tracked session** | only the minutes between that session and now |
 | **Main — split the rest before it** | those, plus the remainder in the free minutes before it |
-| **Special — extra, only untracked minutes** | free minutes only; main is untouched, so the day gets longer |
+| **Special — extra, only untracked minutes** | free minutes only, stepping over counted time into the gaps before it; main is untouched, so the day gets longer |
 | **Special — take the minutes out of main** | the last N minutes outright; main time inside them becomes special |
 
 Five minutes asked for with a Slack message sent two minutes ago banks two
