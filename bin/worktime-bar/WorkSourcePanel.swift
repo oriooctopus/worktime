@@ -20,10 +20,17 @@ final class WorkSourcePanel {
          onYes: @escaping () -> Void, onNo: @escaping () -> Void) {
         self.onYes = onYes
         self.onNo = onNo
-        titleText = "Track \(source.kind == .port ? source.label : "this folder") as work?"
-        messageText = source.kind == .port
-            ? "Chrome is on a localhost port Worktime has not seen."
-            : source.label
+        switch source.kind {
+        case .port:
+            titleText = "Track \(source.label) as work?"
+            messageText = "Chrome is on a localhost port Worktime has not seen."
+        case .directory:
+            titleText = "Track this folder as work?"
+            messageText = source.label
+        case .slides:
+            titleText = "Track this Google Slides deck as work?"
+            messageText = source.label
+        }
 
         panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 400, height: 112),
                         styleMask: [.titled, .nonactivatingPanel, .fullSizeContentView],

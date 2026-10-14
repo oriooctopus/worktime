@@ -3341,6 +3341,7 @@ WORK_URL_KEYWORDS = wc.work_url_keywords()
 GOOGLE_WORK_ACCOUNT = wc.google_work_account()
 WORK_LOCALHOST_PORTS = wc.work_localhost_ports()
 WORK_FILE_PREFIXES = wc.work_file_prefixes()
+WORK_SLIDE_IDS = wc.work_slide_ids()
 
 # The exporter truncates the detail column at 80 characters, and a GitHub page
 # puts its title before the URL. A real PR title -- "Add Plugins section to
@@ -3387,7 +3388,7 @@ def _work_site_hit(text: str) -> bool:
     if WORKDAY_TITLE.search(text):
         return True
     return wc.is_work_url(text, WORK_URL_KEYWORDS, GOOGLE_WORK_ACCOUNT,
-                          WORK_LOCALHOST_PORTS, WORK_FILE_PREFIXES)
+                          WORK_LOCALHOST_PORTS, WORK_FILE_PREFIXES, WORK_SLIDE_IDS)
 
 
 # Chrome's own History DB, this machine's live counterpart to the activity

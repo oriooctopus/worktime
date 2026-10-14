@@ -243,6 +243,13 @@ GOOGLE_ACCOUNT_IN_QUERY = re.compile(r"\.google\.com/[^?#]*[?&]authuser=(\d+)")
 # keeps its index and is still judged by it.
 DOCS_HOST = "docs.google.com"
 
+# Slides is the exception to the exception: a deck is as often a talk, a
+# course or a family album as it is the job, and it serves no account index to
+# tell them apart. So a presentation counts only once somebody has said that
+# specific deck is work (`work_slide_ids` in the profile, written by the menu
+# bar app's "Track as work?" panel), the same way a localhost port does.
+SLIDES_ID = re.compile(r"docs\.google\.com/presentation/(?:u/\d+/)?d/([^/?#]+)")
+
 # A results page is never work, whoever is signed in. Searching the employer's
 # name is the thing a keyword rule gets wrong most often, and it arrives in two
 # shapes: the raw URL, where the name sits in ?q= and the address rule already
@@ -290,6 +297,12 @@ def work_localhost_ports(profile=None):
     if configured is None:
         return set(DEFAULT_WORK_LOCALHOST_PORTS)
     return {int(p) for p in configured}
+
+
+def work_slide_ids(profile=None):
+    """Google Slides document ids confirmed as work, as a set of strings."""
+    profile = load_profile() if profile is None else profile
+    return {str(i) for i in profile.get("work_slide_ids") or []}
 
 
 def work_file_prefixes(profile=None):
@@ -432,7 +445,7 @@ def google_account_index(url):
 
 
 def is_work_url(url, keywords=None, work_account=None, localhost_ports=None,
-                file_prefixes=None):
+                file_prefixes=None, slide_ids=None):
     """True if `url` is work on its own: it sits on a host that is work for
     everyone, it names a work keyword, it is a dev server on one of the work
     app's localhost ports, it is a local file under a work directory, or it is a Google page signed in as the work
@@ -464,6 +477,10 @@ def is_work_url(url, keywords=None, work_account=None, localhost_ports=None,
     prefixes = work_file_prefixes() if file_prefixes is None else file_prefixes
     if address.startswith("file://") and any(address.startswith(p) for p in prefixes):
         return True
+    slide = SLIDES_ID.search(address)
+    if slide:
+        ids = work_slide_ids() if slide_ids is None else slide_ids
+        return slide.group(1) in ids
     if work_account is None:
         return False
     if DOCS_HOST in address:

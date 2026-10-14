@@ -13,24 +13,45 @@ import AppKit
 let DEFAULT_WORK_PORTS = [3000, 3001, 3002, 3003, 3004, 3005]
 
 struct LocalSource: Equatable {
-    enum Kind { case port, directory }
+    enum Kind { case port, directory, slides }
     let kind: Kind
-    /// The port number, or the directory as a `file://` URL ending in "/".
+    /// The port number, the directory as a `file://` URL ending in "/", or the
+    /// Google Slides document id.
     let value: String
 
-    var label: String { kind == .port ? "localhost:\(value)" : value }
+    var label: String {
+        switch kind {
+        case .port: return "localhost:\(value)"
+        case .directory: return value
+        case .slides: return "docs.google.com/presentation/d/\(value)"
+        }
+    }
     /// What is remembered in `dismissed_local_sources`.
-    var dismissKey: String { (kind == .port ? "port:" : "dir:") + value.lowercased() }
+    var dismissKey: String {
+        switch kind {
+        case .port: return "port:" + value.lowercased()
+        case .directory: return "dir:" + value.lowercased()
+        case .slides: return "slides:" + value
+        }
+    }
 }
 
 private let localhostPattern = try! NSRegularExpression(
     pattern: "^https?://(?:localhost|127\\.0\\.0\\.1|\\[::1\\]):(\\d{1,5})(?:[/?#]|$)",
     options: .caseInsensitive)
 
-/// The localhost port or local directory a page belongs to, or nil for any
-/// other address.
+private let slidesPattern = try! NSRegularExpression(
+    pattern: "^https://docs\\.google\\.com/presentation/(?:u/\\d+/)?d/([^/?#]+)",
+    options: .caseInsensitive)
+
+/// The localhost port, local directory or Google Slides deck a page belongs
+/// to, or nil for any other address.
 func localSource(url: String) -> LocalSource? {
     let range = NSRange(url.startIndex..., in: url)
+    if let m = slidesPattern.firstMatch(in: url, range: range),
+       let r = Range(m.range(at: 1), in: url) {
+        return LocalSource(kind: .slides, value: String(url[r]))
+    }
     if let m = localhostPattern.firstMatch(in: url, range: range),
        let r = Range(m.range(at: 1), in: url) {
         return LocalSource(kind: .port, value: String(url[r]))
@@ -98,6 +119,8 @@ struct WorkSourceStore {
         switch source.kind {
         case .port:
             return ports(p).contains(Int(source.value)!)
+        case .slides:
+            return strings(p, "work_slide_ids").contains(source.value)
         case .directory:
             let dir = source.value.lowercased()
             return strings(p, "work_file_prefixes").contains {
@@ -111,6 +134,8 @@ struct WorkSourceStore {
         switch source.kind {
         case .port:
             p["work_localhost_ports"] = ports(p) + [Int(source.value)!]
+        case .slides:
+            p["work_slide_ids"] = strings(p, "work_slide_ids") + [source.value]
         case .directory:
             p["work_file_prefixes"] = strings(p, "work_file_prefixes") + [source.value]
         }

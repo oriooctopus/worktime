@@ -180,8 +180,16 @@ def test_a_doc_with_no_account_index_is_work():
 
 def test_the_other_editors_on_the_host_are_work_too():
     assert is_work("https://docs.google.com/spreadsheets/d/abc/edit")
-    assert is_work("https://docs.google.com/presentation/d/abc/edit")
     assert is_work("https://docs.google.com/forms/d/abc/viewform")
+
+
+def test_a_slide_deck_is_not_work_until_confirmed():
+    url = "https://docs.google.com/presentation/d/abc/edit"
+    assert not is_work(url)
+    assert not wc.is_work_url(url, KEYWORDS, WORK_ACCOUNT, set(), [], {"other"})
+    assert wc.is_work_url(url, KEYWORDS, WORK_ACCOUNT, set(), [], {"abc"})
+    assert wc.is_work_url("https://docs.google.com/presentation/u/0/d/abc/edit?slide=1",
+                          KEYWORDS, WORK_ACCOUNT, set(), [], {"abc"})
 
 
 def test_a_doc_under_the_personal_account_is_still_work():
