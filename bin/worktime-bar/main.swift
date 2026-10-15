@@ -1697,9 +1697,13 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
             // measure of how often the dropdown was opened.
             self.focusLog.sample()
             self.idleWatcher.tick(idle: FocusLog.idleSeconds(),
+                                  // Special time is often thinking, which is no input
+                                  // at all: it is exempt from the idle end the way a
+                                  // call is.
                                   inMeeting: self.status.inMeeting
                                       || self.meetingOpenedHere
-                                      || anythingIsCapturing())
+                                      || anythingIsCapturing()
+                                      || self.status.state == "special")
             self.refreshOnTimer()
         }
         blinkTimer = Timer.scheduledTimer(withTimeInterval: BLINK_INTERVAL, repeats: true) { _ in
