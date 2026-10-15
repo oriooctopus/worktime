@@ -92,6 +92,15 @@ have_note() {
   (( ${#hits} ))
 }
 
+# Weekends only get a note when Claude Code prompts were typed that day, so an
+# idle Saturday does not bill a /done run. Weekdays always run.
+worked_on() {
+  local total
+  total=$(python3 "$HOME/.claude/hooks/prompt-count.py" --day "$1" 2>/dev/null \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["total"])')
+  [[ -n "$total" && "$total" -gt 0 ]]
+}
+
 run_done() {
   local day=$1 arg=$2
   if [[ -n "${DONE_DRY_RUN:-}" ]]; then
@@ -117,8 +126,8 @@ run_done() {
 for i in {1..$LOOKBACK}; do
   d=$(date -v-${i}d +%Y-%m-%d)
   dow=$(date -j -f %Y-%m-%d $d +%u)
-  [[ "$dow" -gt 5 ]] && continue          # weekend: covered by Friday's note
   have_note "$d" && continue
+  [[ "$dow" -gt 5 ]] && ! worked_on "$d" && continue   # idle weekend: no note
   if exhausted "$d"; then
     log "GIVING UP on $d - $MAX_ATTEMPTS attempts made, still no note. Run /done $d by hand, or clear $STATE/$d.attempts to retry."
     continue
@@ -131,9 +140,9 @@ STAMP=$(date +%Y-%m-%d)
 HOUR=$(date +%-H)
 DOW=$(date +%u)
 
-[[ "$DOW" -gt 5 ]] && exit 0                        # Friday's run covers Fri-Sun
 [[ "$HOUR" -lt ${DONE_MIN_HOUR:-18} ]] && exit 0    # only after end of day
 have_note "$STAMP" && exit 0                        # makes the 30-min tick idempotent
+[[ "$DOW" -gt 5 ]] && ! worked_on "$STAMP" && exit 0   # idle weekend: no note
 
 if exhausted "$STAMP"; then
   log "GIVING UP on $STAMP - $MAX_ATTEMPTS attempts made, still no note. Run /done today by hand, or clear $STATE/$STAMP.attempts to retry."
