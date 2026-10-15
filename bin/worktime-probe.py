@@ -201,6 +201,8 @@ MODES = ("focused", "unfocused")
 MODEFILE = os.path.join(STATE, "mode.jsonl")
 SESSION_END = os.path.join(STATE, "session-end.json")
 SHORT_FOCUS_FILE = os.path.join(STATE, "short-focus.json")
+SHORT_FOCUS_RECENT_FILE = os.path.join(STATE, "short-focus-recent.json")
+SHORT_FOCUS_RECENT_MAX = 5
 UNFOCUSED_GAP_START = 0.5
 UNFOCUSED_GAP_MAX = 2
 UNFOCUSED_RAMP_MIN = 10
@@ -303,17 +305,37 @@ def short_focus_enabled_at() -> datetime | None:
         return None
 
 
-def set_short_focus(on: bool) -> int | None:
+def short_focus_recent() -> list[int]:
+    """Thresholds the bar's menu offers as quick picks, most recent first."""
+    if not os.path.exists(SHORT_FOCUS_RECENT_FILE):
+        return []
+    with open(SHORT_FOCUS_RECENT_FILE) as fh:
+        return [int(v) for v in json.load(fh)]
+
+
+def _remember_short_focus(min_sec: int) -> None:
+    recent = [min_sec] + [v for v in short_focus_recent() if v != min_sec]
+    with open(SHORT_FOCUS_RECENT_FILE, "w") as fh:
+        json.dump(recent[:SHORT_FOCUS_RECENT_MAX], fh)
+
+
+def set_short_focus(on: bool, min_sec: int | None = None) -> int | None:
     """Enable or disable the short-focus filter via the state file.
 
-    When enabling, uses the profile.json threshold or falls back to 7.
+    When enabling, uses `min_sec` if given, else the profile.json threshold,
+    else 7. An explicit `min_sec` is remembered as a recent pick.
     Stamps enabled_at so focus_for() can apply the filter only to activations
     after the toggle — glances before enabling are not retroactively dropped.
     Returns the active min_sec (or None when disabling).
     """
     os.makedirs(STATE, exist_ok=True)
     if on:
-        min_sec = wc.short_focus_min_sec() or 7
+        if min_sec is not None and min_sec <= 0:
+            raise SystemExit("short_focus threshold must be a positive integer")
+        if min_sec is None:
+            min_sec = wc.short_focus_min_sec() or 7
+        else:
+            _remember_short_focus(min_sec)
         with open(SHORT_FOCUS_FILE, "w") as fh:
             json.dump({"min_sec": min_sec,
                        "enabled_at": datetime.now(tz=LOCAL).isoformat()}, fh)
@@ -6025,6 +6047,7 @@ def status() -> dict:
             "mode": mode_now(),
             "tail_mode": tail_mode(),
             "short_focus_min_sec": short_focus_state() or wc.short_focus_min_sec(),
+            "short_focus_recent": short_focus_recent(),
             # Set only while the dot is green on a glance that is still inside
             # the filter's window; the bar draws it half-filled until then.
             "pending_sec": (pending_sec if state == "working" and not in_meeting
@@ -6157,7 +6180,8 @@ if __name__ == "__main__":
         # snapshot immediately so the menu reflects the change on the next poll.
         if len(sys.argv) > 2:
             on = sys.argv[2] == "on"
-            min_sec = set_short_focus(on)
+            arg = int(sys.argv[3]) if on and len(sys.argv) > 3 else None
+            min_sec = set_short_focus(on, arg)
             day = now_local().strftime("%Y-%m-%d")
             write_vault_snapshot(day, events_for(day))
             print(json.dumps({"short_focus_min_sec": min_sec}))

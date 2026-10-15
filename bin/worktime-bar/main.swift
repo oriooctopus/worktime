@@ -218,6 +218,7 @@ struct Status {
     var mode = "focused"
     var tailMode = "cutoff"
     var shortFocusMinSec: Int?
+    var shortFocusRecent: [Int] = []
     // Seconds until the glance that lit the dot has earned its credit, or nil
     // when nothing about the green is in doubt. Draws the dot half-filled.
     var pendingSec: Double?
@@ -2337,13 +2338,34 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         let tailHost = NSMenuItem(title: "Stop tracking at", action: nil, keyEquivalent: "")
         tailHost.submenu = tailSub
         m.addItem(tailHost)
-        let sfSec = status.shortFocusMinSec ?? 7
-        let sfItem = NSMenuItem(
-            title: "Ignore glances < \(sfSec)s",
-            action: #selector(toggleShortFocus),
-            keyEquivalent: "")
-        sfItem.state = status.shortFocusMinSec != nil ? .on : .off
-        m.addItem(sfItem)
+        let sfSub = NSMenu()
+        let sfOff = NSMenuItem(title: "Off", action: #selector(pickShortFocus(_:)),
+                               keyEquivalent: "")
+        sfOff.representedObject = 0
+        sfOff.state = status.shortFocusMinSec == nil ? .on : .off
+        sfSub.addItem(sfOff)
+        // The active value is always listed so it can be seen as checked, even
+        // when it came from profile.json and was never picked from this menu.
+        var sfChoices = status.shortFocusRecent
+        if let cur = status.shortFocusMinSec, !sfChoices.contains(cur) {
+            sfChoices.insert(cur, at: 0)
+        }
+        for v in sfChoices {
+            let mi = NSMenuItem(title: "\(v)s", action: #selector(pickShortFocus(_:)),
+                                keyEquivalent: "")
+            mi.representedObject = v
+            mi.state = status.shortFocusMinSec == v ? .on : .off
+            sfSub.addItem(mi)
+        }
+        sfSub.addItem(.separator())
+        sfSub.addItem(NSMenuItem(title: "Custom\u{2026}",
+                                 action: #selector(customShortFocus),
+                                 keyEquivalent: ""))
+        let sfTitle = status.shortFocusMinSec.map { "Ignore glances < \($0)s" }
+            ?? "Ignore glances: off"
+        let sfHost = NSMenuItem(title: sfTitle, action: nil, keyEquivalent: "")
+        sfHost.submenu = sfSub
+        m.addItem(sfHost)
         m.addItem(.separator())
 
         if !periods.isEmpty {
@@ -2492,6 +2514,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
             s.mode = j["mode"] as? String ?? "focused"
             s.tailMode = j["tail_mode"] as? String ?? "cutoff"
             s.shortFocusMinSec = j["short_focus_min_sec"] as? Int
+            s.shortFocusRecent = j["short_focus_recent"] as? [Int] ?? []
             s.pendingSec = j["pending_sec"] as? Double
             s.focusPct = j["focus_pct"] as? Int
             s.linkFrom = j["link_from"] as? String
@@ -2775,10 +2798,33 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         }
     }
 
-    @objc func toggleShortFocus() {
-        let cmd = status.shortFocusMinSec != nil ? "off" : "on"
+    @objc func pickShortFocus(_ sender: NSMenuItem) {
+        guard let sec = sender.representedObject as? Int else { return }
+        setShortFocus(sec)
+    }
+
+    @objc func customShortFocus() {
+        let alert = NSAlert()
+        alert.messageText = "Ignore glances shorter than (seconds)"
+        alert.addButton(withTitle: "Set")
+        alert.addButton(withTitle: "Cancel")
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 120, height: 24))
+        field.stringValue = String(status.shortFocusMinSec ?? 7)
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn,
+              let sec = Int(field.stringValue.trimmingCharacters(in: .whitespaces)),
+              sec > 0 else { return }
+        setShortFocus(sec)
+    }
+
+    // 0 turns the filter off; anything else enables it at that many seconds.
+    private func setShortFocus(_ sec: Int) {
+        let args = sec == 0 ? ["short_focus", "off"]
+                            : ["short_focus", "on", String(sec)]
         probeQueue.async {
-            _ = runProbe(["short_focus", cmd])
+            _ = runProbe(args)
             DispatchQueue.main.async { self.refresh() }
         }
     }
