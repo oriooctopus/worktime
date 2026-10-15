@@ -75,6 +75,8 @@ def load_config(path=CONFIG_PATH):
     cfg.setdefault("work_file_prefixes", wc.work_file_prefixes(profile))
     cfg["work_slide_ids"] = {str(i) for i in cfg.get(
         "work_slide_ids", wc.work_slide_ids(profile))}
+    cfg["not_work_doc_ids"] = {str(i) for i in cfg.get(
+        "not_work_doc_ids", wc.not_work_doc_ids(profile))}
     return cfg
 
 
@@ -98,7 +100,7 @@ def classify(url, cfg):
         return "work"
     if wc.is_work_url(u, cfg["work_url_keywords"], cfg["google_work_account"],
                       cfg["work_localhost_ports"], cfg["work_file_prefixes"],
-                      cfg["work_slide_ids"]):
+                      cfg["work_slide_ids"], cfg["not_work_doc_ids"]):
         return "work"
     return "neutral"
 

@@ -192,6 +192,13 @@ def test_a_slide_deck_is_not_work_until_confirmed():
                           KEYWORDS, WORK_ACCOUNT, set(), [], {"abc"})
 
 
+def test_a_doc_ruled_out_by_hand_is_not_work():
+    url = "https://docs.google.com/spreadsheets/d/abc/edit?gid=0#gid=0"
+    assert is_work(url)
+    assert not wc.is_work_url(url, KEYWORDS, WORK_ACCOUNT, set(), [], set(), {"abc"})
+    assert wc.is_work_url(url, KEYWORDS, WORK_ACCOUNT, set(), [], set(), {"other"})
+
+
 def test_a_doc_under_the_personal_account_is_still_work():
     # A shared link opens under whichever account the sharer had in mind, and
     # on this host that is not evidence of whose work it is.

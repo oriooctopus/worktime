@@ -248,6 +248,10 @@ DOCS_HOST = "docs.google.com"
 # tell them apart. So a presentation counts only once somebody has said that
 # specific deck is work (`work_slide_ids` in the profile, written by the menu
 # bar app's "Track as work?" panel), the same way a localhost port does.
+# Any single document can also be ruled out by hand (`not_work_doc_ids`),
+# which wins over the work account: a shared sheet for a social event lives on
+# the same host and account as the job's docs.
+DOC_ID = re.compile(r"docs\.google\.com/[a-z]+/(?:u/\d+/)?d/([^/?#]+)")
 SLIDES_ID = re.compile(r"docs\.google\.com/presentation/(?:u/\d+/)?d/([^/?#]+)")
 
 # A results page is never work, whoever is signed in. Searching the employer's
@@ -303,6 +307,12 @@ def work_slide_ids(profile=None):
     """Google Slides document ids confirmed as work, as a set of strings."""
     profile = load_profile() if profile is None else profile
     return {str(i) for i in profile.get("work_slide_ids") or []}
+
+
+def not_work_doc_ids(profile=None):
+    """Google document ids ruled out as work by hand, as a set of strings."""
+    profile = load_profile() if profile is None else profile
+    return {str(i) for i in profile.get("not_work_doc_ids") or []}
 
 
 def work_file_prefixes(profile=None):
@@ -445,7 +455,7 @@ def google_account_index(url):
 
 
 def is_work_url(url, keywords=None, work_account=None, localhost_ports=None,
-                file_prefixes=None, slide_ids=None):
+                file_prefixes=None, slide_ids=None, not_work_ids=None):
     """True if `url` is work on its own: it sits on a host that is work for
     everyone, it names a work keyword, it is a dev server on one of the work
     app's localhost ports, it is a local file under a work directory, or it is a Google page signed in as the work
@@ -477,6 +487,11 @@ def is_work_url(url, keywords=None, work_account=None, localhost_ports=None,
     prefixes = work_file_prefixes() if file_prefixes is None else file_prefixes
     if address.startswith("file://") and any(address.startswith(p) for p in prefixes):
         return True
+    doc = DOC_ID.search(address)
+    if doc:
+        excluded = not_work_doc_ids() if not_work_ids is None else not_work_ids
+        if doc.group(1) in excluded:
+            return False
     slide = SLIDES_ID.search(address)
     if slide:
         ids = work_slide_ids() if slide_ids is None else slide_ids
