@@ -196,6 +196,11 @@ def test_a_doc_ruled_out_by_hand_is_not_work():
     url = "https://docs.google.com/spreadsheets/d/abc/edit?gid=0#gid=0"
     assert is_work(url)
     assert not wc.is_work_url(url, KEYWORDS, WORK_ACCOUNT, set(), [], set(), {"abc"})
+    # Ids are case-sensitive in Google's URLs; the address is lowercased here.
+    mixed = "https://docs.google.com/spreadsheets/d/AbC_dE/edit"
+    assert not wc.is_work_url(mixed, KEYWORDS, WORK_ACCOUNT, set(), [], set(), {"AbC_dE"})
+    assert wc.is_work_url("https://docs.google.com/presentation/d/AbC_dE/edit",
+                          KEYWORDS, WORK_ACCOUNT, set(), [], {"AbC_dE"})
     assert wc.is_work_url(url, KEYWORDS, WORK_ACCOUNT, set(), [], set(), {"other"})
 
 

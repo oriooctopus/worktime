@@ -306,13 +306,13 @@ def work_localhost_ports(profile=None):
 def work_slide_ids(profile=None):
     """Google Slides document ids confirmed as work, as a set of strings."""
     profile = load_profile() if profile is None else profile
-    return {str(i) for i in profile.get("work_slide_ids") or []}
+    return {str(i).lower() for i in profile.get("work_slide_ids") or []}
 
 
 def not_work_doc_ids(profile=None):
     """Google document ids ruled out as work by hand, as a set of strings."""
     profile = load_profile() if profile is None else profile
-    return {str(i) for i in profile.get("not_work_doc_ids") or []}
+    return {str(i).lower() for i in profile.get("not_work_doc_ids") or []}
 
 
 def work_file_prefixes(profile=None):
@@ -490,12 +490,12 @@ def is_work_url(url, keywords=None, work_account=None, localhost_ports=None,
     doc = DOC_ID.search(address)
     if doc:
         excluded = not_work_doc_ids() if not_work_ids is None else not_work_ids
-        if doc.group(1) in excluded:
+        if doc.group(1) in {i.lower() for i in excluded}:
             return False
     slide = SLIDES_ID.search(address)
     if slide:
         ids = work_slide_ids() if slide_ids is None else slide_ids
-        return slide.group(1) in ids
+        return slide.group(1) in {i.lower() for i in ids}
     if work_account is None:
         return False
     if DOCS_HOST in address:
