@@ -219,6 +219,8 @@ struct Status {
     var tailMode = "cutoff"
     var shortFocusMinSec: Int?
     var shortFocusRecent: [Int] = []
+    var minPeriodSec = 30
+    var minPeriodRecent: [Int] = []
     // Seconds until the glance that lit the dot has earned its credit, or nil
     // when nothing about the green is in doubt. Draws the dot half-filled.
     var pendingSec: Double?
@@ -2339,6 +2341,15 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         tailHost.submenu = tailSub
         m.addItem(tailHost)
         let sfSub = NSMenu()
+        func sectionHeader(_ t: String) {
+            let h = NSMenuItem(title: t, action: nil, keyEquivalent: "")
+            h.isEnabled = false
+            sfSub.addItem(h)
+        }
+        // Two separate settings. The glance threshold decides whether a
+        // focus activation can start a session at all; the minimum length is
+        // the shortest a session can measure once one has started.
+        sectionHeader("Glance needed to start a session")
         let sfOff = NSMenuItem(title: "Off", action: #selector(pickShortFocus(_:)),
                                keyEquivalent: "")
         sfOff.representedObject = 0
@@ -2357,12 +2368,28 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
             mi.state = status.shortFocusMinSec == v ? .on : .off
             sfSub.addItem(mi)
         }
-        sfSub.addItem(.separator())
         sfSub.addItem(NSMenuItem(title: "Custom\u{2026}",
                                  action: #selector(customShortFocus),
                                  keyEquivalent: ""))
-        let sfTitle = status.shortFocusMinSec.map { "Ignore glances < \($0)s" }
-            ?? "Ignore glances: off"
+        sfSub.addItem(.separator())
+        sectionHeader("Minimum session length")
+        var mpChoices = status.minPeriodRecent
+        if !mpChoices.contains(status.minPeriodSec) {
+            mpChoices.insert(status.minPeriodSec, at: 0)
+        }
+        for v in mpChoices {
+            let mi = NSMenuItem(title: "\(v)s", action: #selector(pickMinPeriod(_:)),
+                                keyEquivalent: "")
+            mi.representedObject = v
+            mi.state = status.minPeriodSec == v ? .on : .off
+            sfSub.addItem(mi)
+        }
+        sfSub.addItem(NSMenuItem(title: "Custom\u{2026}",
+                                 action: #selector(customMinPeriod),
+                                 keyEquivalent: ""))
+        let sfTitle = "Glances \u{2265} "
+            + (status.shortFocusMinSec.map { "\($0)s" } ?? "off")
+            + " \u{B7} sessions \u{2265} \(status.minPeriodSec)s"
         let sfHost = NSMenuItem(title: sfTitle, action: nil, keyEquivalent: "")
         sfHost.submenu = sfSub
         m.addItem(sfHost)
@@ -2515,6 +2542,8 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
             s.tailMode = j["tail_mode"] as? String ?? "cutoff"
             s.shortFocusMinSec = j["short_focus_min_sec"] as? Int
             s.shortFocusRecent = j["short_focus_recent"] as? [Int] ?? []
+            s.minPeriodSec = j["min_period_sec"] as? Int ?? 30
+            s.minPeriodRecent = j["min_period_recent"] as? [Int] ?? []
             s.pendingSec = j["pending_sec"] as? Double
             s.focusPct = j["focus_pct"] as? Int
             s.linkFrom = j["link_from"] as? String
@@ -2804,19 +2833,43 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
     }
 
     @objc func customShortFocus() {
+        guard let sec = promptSeconds("Glance needed to start a session (seconds)",
+                                      initial: status.shortFocusMinSec ?? 7) else { return }
+        setShortFocus(sec)
+    }
+
+    @objc func pickMinPeriod(_ sender: NSMenuItem) {
+        guard let sec = sender.representedObject as? Int else { return }
+        setMinPeriod(sec)
+    }
+
+    @objc func customMinPeriod() {
+        guard let sec = promptSeconds("Minimum session length (seconds)",
+                                      initial: status.minPeriodSec) else { return }
+        setMinPeriod(sec)
+    }
+
+    private func promptSeconds(_ message: String, initial: Int) -> Int? {
         let alert = NSAlert()
-        alert.messageText = "Ignore glances shorter than (seconds)"
+        alert.messageText = message
         alert.addButton(withTitle: "Set")
         alert.addButton(withTitle: "Cancel")
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 120, height: 24))
-        field.stringValue = String(status.shortFocusMinSec ?? 7)
+        field.stringValue = String(initial)
         alert.accessoryView = field
         alert.window.initialFirstResponder = field
         NSApp.activate(ignoringOtherApps: true)
         guard alert.runModal() == .alertFirstButtonReturn,
               let sec = Int(field.stringValue.trimmingCharacters(in: .whitespaces)),
-              sec > 0 else { return }
-        setShortFocus(sec)
+              sec > 0 else { return nil }
+        return sec
+    }
+
+    private func setMinPeriod(_ sec: Int) {
+        probeQueue.async {
+            _ = runProbe(["min_period", String(sec)])
+            DispatchQueue.main.async { self.refresh() }
+        }
     }
 
     // 0 turns the filter off; anything else enables it at that many seconds.
