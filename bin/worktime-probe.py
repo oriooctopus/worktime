@@ -179,7 +179,20 @@ LEAD_SEC = 10
 # are published in seconds (len_sec, work_sec) because of it -- the minute-of-day
 # boundaries alone floor a thirty-second span to one minute at both ends, and
 # the day would lose it.
-MIN_PERIOD_SEC = 30
+MIN_PERIOD_FILE = os.path.join(STATE, "min-period.json")
+MIN_PERIOD_RECENT_FILE = os.path.join(STATE, "min-period-recent.json")
+DEFAULT_MIN_PERIOD_SEC = 30
+
+
+def min_period_state() -> int:
+    """The minimum session length in seconds: the bar's pick, else 30."""
+    if not os.path.exists(MIN_PERIOD_FILE):
+        return DEFAULT_MIN_PERIOD_SEC
+    with open(MIN_PERIOD_FILE) as fh:
+        return int(json.load(fh)["sec"])
+
+
+MIN_PERIOD_SEC = min_period_state()
 
 # GAP_AFTER above is the focused rule: two minutes of silence ends a period,
 # applied uniformly, on the assumption that a prompt means hands on the keyboard
@@ -202,7 +215,7 @@ MODEFILE = os.path.join(STATE, "mode.jsonl")
 SESSION_END = os.path.join(STATE, "session-end.json")
 SHORT_FOCUS_FILE = os.path.join(STATE, "short-focus.json")
 SHORT_FOCUS_RECENT_FILE = os.path.join(STATE, "short-focus-recent.json")
-SHORT_FOCUS_RECENT_MAX = 5
+RECENT_MAX = 5
 UNFOCUSED_GAP_START = 0.5
 UNFOCUSED_GAP_MAX = 2
 UNFOCUSED_RAMP_MIN = 10
@@ -305,18 +318,32 @@ def short_focus_enabled_at() -> datetime | None:
         return None
 
 
-def short_focus_recent() -> list[int]:
-    """Thresholds the bar's menu offers as quick picks, most recent first."""
-    if not os.path.exists(SHORT_FOCUS_RECENT_FILE):
+def _recent(path: str) -> list[int]:
+    if not os.path.exists(path):
         return []
-    with open(SHORT_FOCUS_RECENT_FILE) as fh:
+    with open(path) as fh:
         return [int(v) for v in json.load(fh)]
 
 
-def _remember_short_focus(min_sec: int) -> None:
-    recent = [min_sec] + [v for v in short_focus_recent() if v != min_sec]
-    with open(SHORT_FOCUS_RECENT_FILE, "w") as fh:
-        json.dump(recent[:SHORT_FOCUS_RECENT_MAX], fh)
+def _remember(path: str, value: int) -> None:
+    recent = [value] + [v for v in _recent(path) if v != value]
+    with open(path, "w") as fh:
+        json.dump(recent[:RECENT_MAX], fh)
+
+
+def short_focus_recent() -> list[int]:
+    """Thresholds the bar's menu offers as quick picks, most recent first."""
+    return _recent(SHORT_FOCUS_RECENT_FILE)
+
+
+def set_min_period(sec: int) -> int:
+    if sec <= 0:
+        raise SystemExit("min_period must be a positive integer")
+    os.makedirs(STATE, exist_ok=True)
+    with open(MIN_PERIOD_FILE, "w") as fh:
+        json.dump({"sec": sec}, fh)
+    _remember(MIN_PERIOD_RECENT_FILE, sec)
+    return sec
 
 
 def set_short_focus(on: bool, min_sec: int | None = None) -> int | None:
@@ -335,7 +362,7 @@ def set_short_focus(on: bool, min_sec: int | None = None) -> int | None:
         if min_sec is None:
             min_sec = wc.short_focus_min_sec() or 7
         else:
-            _remember_short_focus(min_sec)
+            _remember(SHORT_FOCUS_RECENT_FILE, min_sec)
         with open(SHORT_FOCUS_FILE, "w") as fh:
             json.dump({"min_sec": min_sec,
                        "enabled_at": datetime.now(tz=LOCAL).isoformat()}, fh)
@@ -6048,6 +6075,8 @@ def status() -> dict:
             "tail_mode": tail_mode(),
             "short_focus_min_sec": short_focus_state() or wc.short_focus_min_sec(),
             "short_focus_recent": short_focus_recent(),
+            "min_period_sec": MIN_PERIOD_SEC,
+            "min_period_recent": _recent(MIN_PERIOD_RECENT_FILE),
             # Set only while the dot is green on a glance that is still inside
             # the filter's window; the bar draws it half-filled until then.
             "pending_sec": (pending_sec if state == "working" and not in_meeting
@@ -6175,6 +6204,13 @@ if __name__ == "__main__":
             day = now_local().strftime("%Y-%m-%d")
             write_vault_snapshot(day, events_for(day))
         print(json.dumps({"tail_mode": tail_mode()}))
+    elif cmd == "min_period":
+        # `min_period <seconds>` sets the shortest a session can measure.
+        if len(sys.argv) > 2:
+            set_min_period(int(sys.argv[2]))
+            day = now_local().strftime("%Y-%m-%d")
+            write_vault_snapshot(day, events_for(day))
+        print(json.dumps({"min_period_sec": min_period_state()}))
     elif cmd == "short_focus":
         # `short_focus on` enables, `short_focus off` disables. Rebuilds the
         # snapshot immediately so the menu reflects the change on the next poll.
