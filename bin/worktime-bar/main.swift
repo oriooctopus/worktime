@@ -2387,10 +2387,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         sfSub.addItem(NSMenuItem(title: "Custom\u{2026}",
                                  action: #selector(customMinPeriod),
                                  keyEquivalent: ""))
-        let sfTitle = "Glances \u{2265} "
-            + (status.shortFocusMinSec.map { "\($0)s" } ?? "off")
-            + " \u{B7} sessions \u{2265} \(status.minPeriodSec)s"
-        let sfHost = NSMenuItem(title: sfTitle, action: nil, keyEquivalent: "")
+        let sfHost = NSMenuItem(title: "Session thresholds", action: nil, keyEquivalent: "")
         sfHost.submenu = sfSub
         m.addItem(sfHost)
         m.addItem(.separator())
