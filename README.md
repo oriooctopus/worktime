@@ -641,7 +641,7 @@ stays 5s. Its **Keep tracking through now** button withdraws that end
 (`worktime-probe.py keep_tracking <HH:MM>`) and opens a work mark from that
 minute, so the stretch is counted and tracking continues.
 
-**⌘E** makes either of them from anywhere: one press starts a 5s undo countdown (its panel only appears after `END_DOUBLE_PRESS_SEC`, so a fast double press shows just the banner) that
+**⌥⌘E** makes either of them from anywhere: one press starts a 5s undo countdown (its panel only appears after `END_DOUBLE_PRESS_SEC`, so a fast double press shows just the banner) that
 ends at this minute; a second press within `END_DOUBLE_PRESS_SEC` (1s) ends at the
 last entry, and a slower one skips the countdown and ends now. One press is End Now
 because that is the common case — the ending you mean most of the time is the
@@ -668,8 +668,8 @@ entry" resolved to.
 The menu carries the chord on **End Now**, because that is what one press does;
 the other row names the double press in its title, as a menu cannot express one
 — a menu cannot express a double press. Being a
-Carbon hot key, ⌘E is consumed before the frontmost app sees it — Finder's Eject
-and "Use Selection for Find" lose it while the bar is running.
+Carbon hot key, ⌥⌘E is consumed before the frontmost app sees it; ⌥ keeps it clear of
+Finder's Eject and "Use Selection for Find" (⌘E).
 
 Either closes an open mark and any open meeting, at that minute, in one step.
 Closing when neither is running is inert, so the item does not have to ask

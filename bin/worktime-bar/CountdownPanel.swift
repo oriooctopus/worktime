@@ -1,8 +1,8 @@
 import AppKit
 
-// MARK: - ⌘E double press
+// MARK: - ⌥⌘E double press
 
-// A second ⌘E within this many seconds of the first is a deliberate double
+// A second ⌥⌘E within this many seconds of the first is a deliberate double
 // press: end at the last entry. Slower than that it is the "skip the
 // countdown" press on a panel somebody has been looking at: end now.
 let END_DOUBLE_PRESS_SEC = 1.0
