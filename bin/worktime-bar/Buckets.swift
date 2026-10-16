@@ -524,7 +524,7 @@ final class SpecialTargetPanel: NSObject {
 
     private let panel: NSPanel
     private var radios: [NSButton] = []
-    private let hoursField = NSTextField(string: "2")
+    private let hoursField = NSTextField(string: "")
     private let daysField = NSTextField(string: "5")
     private let totalLabel = NSTextField(labelWithString: "")
     private let pctField = NSTextField(string: "0")
@@ -574,13 +574,14 @@ final class SpecialTargetPanel: NSObject {
             rows.addArrangedSubview(row)
         }
 
+        hoursField.placeholderString = "2h"
         for fld in [hoursField, daysField, pctField] {
             fld.alignment = .right
-            fld.widthAnchor.constraint(equalToConstant: 40).isActive = true
+            fld.widthAnchor.constraint(equalToConstant: fld === hoursField ? 56 : 40).isActive = true
             fld.target = self
             fld.action = #selector(edited)
         }
-        let perDay = NSStackView(views: [hoursField, NSTextField(labelWithString: "h per day ·"),
+        let perDay = NSStackView(views: [hoursField, NSTextField(labelWithString: "per day ·"),
                                          daysField, NSTextField(labelWithString: "days ="),
                                          totalLabel])
         perDay.orientation = .horizontal
@@ -635,7 +636,27 @@ final class SpecialTargetPanel: NSObject {
     }
 
     private var days: Int { Int(daysField.stringValue) ?? 0 }
-    private var hours: Double { Double(hoursField.stringValue) ?? -1 }
+    // Per-day duration as hours; -1 when unparseable. Accepts "2h", "90m", "45s",
+    // "1h30m", and a bare number (read as hours).
+    private var hours: Double {
+        let text = hoursField.stringValue.trimmingCharacters(in: .whitespaces).lowercased()
+        if let bare = Double(text) { return bare }
+        let unit: [Character: Double] = ["h": 1, "m": 1.0 / 60, "s": 1.0 / 3600]
+        var total = 0.0, num = "", seen = false
+        for c in text where c != " " {
+            if let mult = unit[c] {
+                guard let n = Double(num) else { return -1 }
+                total += n * mult
+                num = ""
+                seen = true
+            } else if c.isNumber || c == "." {
+                num.append(c)
+            } else {
+                return -1
+            }
+        }
+        return seen && num.isEmpty ? total : -1
+    }
 
     private var pct: Double { Double(pctField.stringValue) ?? -1 }
 
