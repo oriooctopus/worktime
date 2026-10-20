@@ -219,6 +219,13 @@ RECENT_MAX = 5
 UNFOCUSED_GAP_START = 0.5
 UNFOCUSED_GAP_MAX = 2
 UNFOCUSED_RAMP_MIN = 10
+# The ramp is a bank that distraction draws down. Each earlier unfocused bout
+# that ended short of the ramp adds a strike (the padding and short cutoffs it
+# got were free tracking); each one that reached the ramp pays one back. Every
+# strike stretches the next ramp by UNFOCUSED_DEBT_STEP, up to UNFOCUSED_DEBT_MAX
+# strikes -- a run of short bouts widens its cutoff more slowly, never stops it.
+UNFOCUSED_DEBT_STEP = 0.25
+UNFOCUSED_DEBT_MAX = 4
 
 # Where a bout ends once the silence after it has outlasted the cutoff. "last"
 # stops at the last tracked event plus TAIL_SEC -- work for five minutes, step
@@ -405,16 +412,33 @@ def mode_at(timeline: list[tuple[int, str]], sec: int) -> str:
     return mode
 
 
-def gap_sec_for(mode: str, elapsed_sec: float) -> int:
+def debt_scale(prior: list[list[int]], timeline: list[tuple[int, str]]) -> float:
+    """How much longer than UNFOCUSED_RAMP_MIN the next bout's ramp runs.
+
+    Replays the bouts before it: a short unfocused one adds a strike, one that
+    reached the ramp removes one. 1.0 with a clean record.
+    """
+    debt = 0
+    for first, last in prior:
+        if mode_at(timeline, first) != "unfocused":
+            continue
+        if last - first >= UNFOCUSED_RAMP_MIN * 60:
+            debt = max(0, debt - 1)
+        else:
+            debt = min(UNFOCUSED_DEBT_MAX, debt + 1)
+    return 1 + UNFOCUSED_DEBT_STEP * debt
+
+
+def gap_sec_for(mode: str, elapsed_sec: float, scale: float = 1.0) -> int:
     """How long a bout this long is allowed to go quiet before it has ended.
 
     Constant in focused mode. In unfocused mode it opens at
     UNFOCUSED_GAP_START and grows linearly to UNFOCUSED_GAP_MAX across
-    UNFOCUSED_RAMP_MIN of continuous bout.
+    UNFOCUSED_RAMP_MIN * scale of continuous bout (see debt_scale).
     """
     if mode != "unfocused":
         return GAP_AFTER * 60
-    ramp = min(1.0, max(0.0, elapsed_sec / (UNFOCUSED_RAMP_MIN * 60)))
+    ramp = min(1.0, max(0.0, elapsed_sec / (UNFOCUSED_RAMP_MIN * 60 * scale)))
     return int((UNFOCUSED_GAP_START + (UNFOCUSED_GAP_MAX - UNFOCUSED_GAP_START) * ramp) * 60)
 
 
@@ -432,7 +456,8 @@ def chain_bouts(stamps: list[int],
     split_at: list[int] = []
     for s in stamps:
         thr = gap_sec_for(mode_at(timeline, s),
-                          bouts[-1][1] - bouts[-1][0] if bouts else 0)
+                          bouts[-1][1] - bouts[-1][0] if bouts else 0,
+                          debt_scale(bouts[:-1], timeline))
         if bouts and s - bouts[-1][1] <= thr:
             bouts[-1][1] = s
         else:
@@ -484,7 +509,8 @@ def build_bouts(stamps: list[int],
     def tail_want(i: int) -> int:
         cutoff = (split_at[i + 1] if i + 1 < len(raw)
                   else gap_sec_for(mode_at(timeline, raw[i][1]),
-                                   raw[i][1] - raw[i][0]))
+                                   raw[i][1] - raw[i][0],
+                                   debt_scale(raw[:i], timeline)))
         want = TAIL_SEC + int(tail_frac * max(0, cutoff - TAIL_SEC))
         if i + 1 == len(raw) and now_s is not None:
             want = min(want, max(TAIL_SEC, now_s - raw[i][1]))
@@ -501,7 +527,8 @@ def build_bouts(stamps: list[int],
         # day's total however short its cutoff got.
         if mode_at(timeline, raw[i][0]) == "unfocused":
             want = int(want * min(1.0, (raw[i][1] - raw[i][0])
-                                  / (UNFOCUSED_RAMP_MIN * 60)))
+                                  / (UNFOCUSED_RAMP_MIN * 60
+                                     * debt_scale(raw[:i], timeline))))
         if i == 0:
             lead_used[i] = min(want, raw[i][0])
             continue
@@ -733,7 +760,8 @@ def live_cutoff(day: str, stamps_sec: list[int]) -> int:
     cutoff_start = max(ends) * 60 if ends else 0
     relevant = [s for s in stamps_sec if s > cutoff_start]
     bouts, _ = chain_bouts(sorted(relevant), mode_timeline(day))
-    return gap_sec_for(mode_now(), bouts[-1][1] - bouts[-1][0] if bouts else 0)
+    return gap_sec_for(mode_now(), bouts[-1][1] - bouts[-1][0] if bouts else 0,
+                       debt_scale(bouts[:-1], mode_timeline(day)))
 
 
 @functools.lru_cache(maxsize=None)

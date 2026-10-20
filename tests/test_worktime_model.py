@@ -191,6 +191,31 @@ class FocusModes(unittest.TestCase):
         mins, _, _ = build(warmup + [end + 240], mode="unfocused")
         self.assertEqual(len(mins), 2)
 
+    def test_clean_record_has_no_debt(self):
+        tl = [(0, "unfocused")]
+        self.assertEqual(wp.debt_scale([], tl), 1.0)
+        self.assertEqual(wp.debt_scale([[0, 700]], tl), 1.0)
+
+    def test_short_bouts_accrue_debt_and_slow_the_ramp(self):
+        tl = [(0, "unfocused")]
+        short = [[i * 1000, i * 1000 + 30] for i in range(3)]
+        scale = wp.debt_scale(short, tl)
+        self.assertEqual(scale, 1 + 3 * wp.UNFOCUSED_DEBT_STEP)
+        self.assertLess(wp.gap_sec_for("unfocused", 300, scale),
+                        wp.gap_sec_for("unfocused", 300))
+
+    def test_debt_is_capped_and_paid_back_by_a_real_bout(self):
+        tl = [(0, "unfocused")]
+        short = [[i * 1000, i * 1000 + 30] for i in range(20)]
+        self.assertEqual(wp.debt_scale(short, tl),
+                         1 + wp.UNFOCUSED_DEBT_MAX * wp.UNFOCUSED_DEBT_STEP)
+        paid = short + [[50000, 50000 + wp.UNFOCUSED_RAMP_MIN * 60]]
+        self.assertEqual(wp.debt_scale(paid, tl),
+                         1 + (wp.UNFOCUSED_DEBT_MAX - 1) * wp.UNFOCUSED_DEBT_STEP)
+
+    def test_focused_bouts_do_not_count_toward_debt(self):
+        self.assertEqual(wp.debt_scale([[0, 30]] * 5, [(0, "focused")]), 1.0)
+
     def test_unfocused_credits_less_than_focused_for_the_same_day(self):
         stamps = [HH(9, 0) + i * 100 for i in range(20)]
         _, _, foc = build(stamps, mode="focused")
