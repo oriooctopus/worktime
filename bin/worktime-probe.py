@@ -1841,8 +1841,22 @@ def _changed_goal_sec(goals: dict, day: str) -> int:
         return 0
     for c in goals.get("changes", []):
         if c["from"] <= day and (c["to"] is None or day <= c["to"]):
-            sec = int(round(c["hours"] * 3600)) if c["mode"] == "set" else sec + c["delta_sec"]
+            sec = int(round(c["hours"] * 3600)) if c["mode"] == "set" else sec + _change_share_sec(goals, c)
     return max(sec, 0)
+
+
+def _change_share_sec(goals: dict, c: dict) -> int:
+    """One day's share of an "add" change. Over a finite range the amount is a
+    total spread evenly across the range's workdays; open-ended, it is per day.
+    Kept in step by hand with changeShare in the Vault Dashboard widget."""
+    if c["to"] is None:
+        return c["delta_sec"]
+    n, d = 0, c["from"]
+    while d <= c["to"]:
+        if _base_goal_sec(goals, d):
+            n += 1
+        d = shift_day(d, 1)
+    return int(round(c["delta_sec"] / n))
 
 
 def goal_sec_for(day: str) -> int:

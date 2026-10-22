@@ -559,6 +559,9 @@ everything else.
   "hours", "from", "to"}]` in the same file re-baseline the goal over a date
   range (`to: null` = open-ended, the new default from `from` on). They apply in
   the order made — `set` replaces, `add` stacks — and skip weekends and days off.
+  An `add` over a finite range is a *total* spread evenly across that range's
+  workdays (−2h30 over Thu–Sun is −1h15 each on Thu and Fri); open-ended, it is
+  per day.
   Unlike a carry they never draw on banked surplus: days are simply measured
   against the new baseline, so backdating one shifts those past weeks' surplus
   (a settled week's tally can go negative) while existing carries stay as they
