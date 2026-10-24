@@ -35,6 +35,11 @@ struct BucketInfo {
     var meetingRawSec = 0
     var meetingCreditedSec = 0
     var special = SpecialInfo()
+    var weekCreditedSec = 0
+    var weekTargetSec = 0
+    // The goals of the week's days up to today: where the bar would be had
+    // every goal so far been met.
+    var weekPaceSec = 0
 }
 
 func parseBuckets(_ j: [String: Any]) -> BucketInfo {
@@ -42,6 +47,10 @@ func parseBuckets(_ j: [String: Any]) -> BucketInfo {
     let main = j["main"] as! [String: Any]
     b.mainCreditedSec = main["credited_sec"] as! Int
     b.mainTargetSec = main["target_sec"] as! Int
+    let week = j["week"] as! [String: Any]
+    b.weekCreditedSec = week["credited_sec"] as! Int
+    b.weekTargetSec = week["target_sec"] as! Int
+    b.weekPaceSec = week["pace_sec"] as! Int
     let meetings = j["meetings"] as! [String: Any]
     b.meetingRawSec = meetings["raw_sec"] as! Int
     b.meetingCreditedSec = meetings["credited_sec"] as! Int
@@ -197,6 +206,69 @@ final class BucketRowView: NSView {
         // The target tick, at the right end of the track.
         NSColor.labelColor.withAlphaComponent(0.6).setFill()
         NSRect(x: x + w - 1, y: barY - 2, width: 2, height: barH + 4).fill()
+    }
+}
+
+// The week as one line: label, a thin bar and "done / goal". The dashed tick is
+// where the bar would be had every goal so far this week been met; it is left
+// off when no day has had a goal yet.
+final class WeekRowView: NSView {
+    private let fraction: CGFloat
+    private let paceFraction: CGFloat?
+
+    init(width: CGFloat, credited: Int, target: Int, pace: Int) {
+        self.fraction = min(max(CGFloat(credited) / CGFloat(target), 0), 1)
+        self.paceFraction = pace > 0 ? min(CGFloat(pace) / CGFloat(target), 1) : nil
+        super.init(frame: NSRect(x: 0, y: 0, width: width, height: 20))
+
+        let font = NSFont.systemFont(ofSize: 11)
+        let label = singleLineLabel(NSMutableAttributedString(string: "Week", attributes: [
+            .font: font, .foregroundColor: NSColor.secondaryLabelColor]))
+        let tail = NSMutableAttributedString(string: hm(credited), attributes: [
+            .font: font, .foregroundColor: NSColor.labelColor])
+        tail.append(NSAttributedString(string: " / \(hm(target))", attributes: [
+            .font: font, .foregroundColor: NSColor.secondaryLabelColor]))
+        let value = singleLineLabel(tail)
+        value.alignment = .right
+        for v in [label, value] {
+            v.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(v)
+        }
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            label.centerYAnchor.constraint(equalTo: centerYAnchor),
+            value.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
+            value.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    private static let barX: CGFloat = 14 + 38
+    private static let valueW: CGFloat = 92
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        let x = Self.barX
+        let w = bounds.width - x - 14 - Self.valueW - 8
+        let barH: CGFloat = 4
+        let barY = (bounds.height - barH) / 2
+        NSColor.labelColor.withAlphaComponent(0.14).setFill()
+        NSBezierPath(roundedRect: NSRect(x: x, y: barY, width: w, height: barH),
+                     xRadius: 2, yRadius: 2).fill()
+        MAIN_GREEN.setFill()
+        NSBezierPath(roundedRect: NSRect(x: x, y: barY, width: w * fraction, height: barH),
+                     xRadius: 2, yRadius: 2).fill()
+        if let p = paceFraction {
+            let tick = NSBezierPath()
+            let tx = min(x + w * p, x + w - 0.75)
+            tick.move(to: NSPoint(x: tx, y: barY - 3))
+            tick.line(to: NSPoint(x: tx, y: barY + barH + 3))
+            tick.lineWidth = 1.5
+            tick.setLineDash([2, 1.5], count: 2, phase: 0)
+            NSColor.labelColor.withAlphaComponent(0.55).setStroke()
+            tick.stroke()
+        }
     }
 }
 

@@ -1992,7 +1992,8 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         // is exactly what a rebuild costs: emptying an open menu dismisses it
         // half a second later, which is the whole reason the flip now hides
         // rows instead.
-        let key = ([worked, symbol, why, status.state, status.mode,
+        let weekKey = "\(bk.weekCreditedSec)/\(bk.weekTargetSec)/\(bk.weekPaceSec)"
+        let key = ([worked, weekKey, symbol, why, status.state, status.mode,
                     status.feedNotice ?? "", status.linkFrom ?? ""] + debug
                    + periods.map { p in
                        let s = periodStrings(p)
@@ -2044,6 +2045,13 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
                            status.focusPct.map { "\($0)% focus" }]
                 .compactMap { $0 }.joined(separator: " · "))
         m.addItem(mainRow)
+        // A week with no goal at all (every day off) has nothing to divide by.
+        if bk.weekTargetSec > 0 {
+            let weekRow = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+            weekRow.view = WeekRowView(width: 300, credited: bk.weekCreditedSec,
+                                       target: bk.weekTargetSec, pace: bk.weekPaceSec)
+            m.addItem(weekRow)
+        }
         if spk.visible {
             let spRow = NSMenuItem(title: "", action: nil, keyEquivalent: "")
             if let t = spk.target {

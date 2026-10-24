@@ -1919,6 +1919,26 @@ def special_block(day: str, now: datetime | None = None) -> dict:
             "visible": target is not None or sec > 0}
 
 
+def week_block(day: str) -> dict:
+    """Main's progress through `day`'s Mon-Sun week: every day's goal summed,
+    and the credited time of each day's snapshot. `pace_sec` is the goal of the
+    days up to and including `day`, i.e. what would be done if every goal so
+    far had been met; the menu draws it as a tick."""
+    monday = shift_day(day, -datetime.strptime(day, "%Y-%m-%d").weekday())
+    target = credited = pace = 0
+    for i in range(7):
+        d = shift_day(monday, i)
+        t = main_target_for(d)
+        target += t
+        if d <= day:
+            pace += t
+        path = snapshot_path(d)
+        if os.path.exists(path):
+            with open(path) as fh:
+                credited += json.load(fh)["buckets"]["main"]["credited_sec"]
+    return {"target_sec": target, "credited_sec": credited, "pace_sec": pace}
+
+
 def _evidence_minutes(day: str) -> set[int]:
     """Minutes holding ordinary work evidence other than the meeting app.
 
@@ -6001,6 +6021,7 @@ def status() -> dict:
         # Special is re-read live rather than taken from the snapshot: an open
         # span grows by the second and the menu shows a running figure.
         buckets["special"] = special_block(day, now)
+        buckets["week"] = week_block(day)
         worked = snap.get("worked", [])
         # Annotate each period with the desktop-caused dead time it should
         # answer for, charged to the period holding the DESKTOP STAMP rather

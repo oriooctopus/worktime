@@ -626,3 +626,16 @@ def test_a_cut_splits_a_special_span_and_an_add_merges_touching_ones(world):
 
 def hhmm_of(m):
     return wp.hhmm_of(m)
+
+
+def test_week_block_sums_the_weeks_goals_and_credited_and_paces_to_today(world):
+    # Wed 2026-03-04: Mon-Fri at the default 4h = 20h, pace is Mon..Wed = 12h.
+    os.makedirs(wp.VAULT_SNAPSHOT_DIR, exist_ok=True)
+    for d, credited in (("2026-03-02", 3600), ("2026-03-03", 7200)):
+        with open(wp.snapshot_path(d), "w") as fh:
+            json.dump({"buckets": {"main": {"credited_sec": credited}}}, fh)
+    wk = wp.week_block("2026-03-04")
+    assert wk == {"target_sec": 20 * 3600, "credited_sec": 3 * 3600,
+                  "pace_sec": 12 * 3600}
+    # Sunday belongs to the same week as the Monday before it.
+    assert wp.week_block("2026-03-08")["pace_sec"] == 20 * 3600
