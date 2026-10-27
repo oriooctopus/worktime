@@ -25,7 +25,7 @@ spec.loader.exec_module(wp)
 
 class StateIsolation(unittest.TestCase):
     def test_every_state_path_is_outside_the_real_state_dir(self):
-        for name in ("STATE", "SPECIAL_LOG", "SPECIAL_TARGETS", "MARKS",
+        for name in ("STATE", "SPECIAL_LOG", "MARKS",
                      "MEETINGS", "SESSION_END", "FOCUS_DIR"):
             path = getattr(wp, name)
             self.assertFalse(

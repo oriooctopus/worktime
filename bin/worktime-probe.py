@@ -1485,7 +1485,9 @@ DEFAULT_GOAL_HOURS = 4
 #    "changes": [{"id", "mode": "add"|"set", "delta_sec": n | "hours": h,
 #                 "from": "YYYY-MM-DD", "to": "YYYY-MM-DD"|null,
 #                 "counts": false}],   # omitted = counts toward surplus
-#    "carries": [{"from_week": "<monday>", "delta_sec": n, "days": [...]}]}
+#    "carries": [{"from_week": "<monday>", "delta_sec": n, "days": [...]}],
+#    "special_targets": [{"set", "set_day", "start_day", "end_day",
+#                         "target_sec", "main_deduct_sec"}]}
 # `changes` re-baseline the goal over a date range (null `to` = new default
 # from `from` on); unlike carries they never draw on banked surplus -- by
 # default the surplus is simply measured against the new baseline, backdated or
@@ -1495,6 +1497,8 @@ DEFAULT_GOAL_HOURS = 4
 # `carries` is a ledger of one week's surplus (+) or deficit (-) spread evenly
 # over `days`: a surplus lowers each day's goal by delta_sec / len(days). They
 # are kept apart from the goals themselves so they stack and undo one at a time.
+# `special_targets` is one row per "set the special target" action, newest
+# decides; the widget writes them too, so they live here and not in STATE.
 # The widget resolves the same rule (goalFor in the Vault Dashboard note) so a
 # past day with no snapshot target and a fresh edit both show the right figure.
 GOALS_FILE = os.path.join(wc.dashboard_dir(), "worktime-goals.json")
@@ -1502,8 +1506,6 @@ MEETING_WEIGHT = 2 / 3
 # on / off toggles and meeting routing answers, in one file so one replay sees
 # them in the order they were made.
 SPECIAL_LOG = os.path.join(STATE, "special.jsonl")
-# One row per "set the special target" action; the newest row decides.
-SPECIAL_TARGETS = os.path.join(STATE, "special-targets.jsonl")
 
 
 def _day_start_ts(day: str) -> float:
@@ -1787,9 +1789,10 @@ def set_special_target(hours: float, days: int, main_pct: float = 0) -> dict:
            "end_day": shift_day(today, days - 1),
            "target_sec": int(round(hours * 3600))}
     rec["main_deduct_sec"] = int(round(rec["target_sec"] * main_pct / 100))
-    os.makedirs(STATE, exist_ok=True)
-    with open(SPECIAL_TARGETS, "a") as fh:
-        fh.write(json.dumps(rec) + "\n")
+    goals = _read_goals()
+    goals.setdefault("special_targets", []).append(rec)
+    with open(GOALS_FILE, "w") as fh:
+        json.dump(goals, fh, indent=1)
     return rec
 
 
@@ -1800,10 +1803,8 @@ def _target_row_for(day: str) -> dict | None:
     there, including for days the older row would still have covered. Looked
     up per day so a past day shows the target it was actually under.
     """
-    if not os.path.exists(SPECIAL_TARGETS):
-        return None
-    rows = [json.loads(l) for l in open(SPECIAL_TARGETS) if l.strip()]
-    rows = [r for r in rows if r["set_day"] <= day]
+    rows = [r for r in _read_goals().get("special_targets", [])
+            if r["set_day"] <= day]
     if not rows:
         return None
     r = rows[-1]
@@ -1859,14 +1860,18 @@ def _change_share_sec(goals: dict, c: dict) -> int:
     return int(round(c["delta_sec"] / n))
 
 
+def _read_goals() -> dict:
+    if not os.path.exists(GOALS_FILE):
+        return {}
+    with open(GOALS_FILE) as fh:
+        return json.load(fh)
+
+
 def goal_sec_for(day: str) -> int:
     """Main's goal on `day`, before any special-target deduction: the goal as
     set, after goal changes, less every carry landing on the day, floored at
     zero. No file means all defaults."""
-    goals = {}
-    if os.path.exists(GOALS_FILE):
-        with open(GOALS_FILE) as fh:
-            goals = json.load(fh)
+    goals = _read_goals()
     carried = sum(c["delta_sec"] / len(c["days"])
                   for c in goals.get("carries", []) if day in c["days"])
     return max(int(round(_changed_goal_sec(goals, day) - carried)), 0)
@@ -5716,7 +5721,7 @@ def activity_fingerprint(day: str) -> str:
         # snapshot would freeze its special total. Five minutes matches the bar's
         # reminder cadence.
         parts.append(f"special-open:{int(time.time()) // 300}")
-    for p in (MARKS, MAIN_CUTS, MEETINGS, SPECIAL_LOG, SPECIAL_TARGETS,
+    for p in (MARKS, MAIN_CUTS, MEETINGS, SPECIAL_LOG, GOALS_FILE,
               APPROVALS, NOTES, MODEFILE, IDLE_CLAIMS,
               os.path.join(SLACK_DIR, f"{day}.json"),
               os.path.join(FOCUS_DIR, f"{day}.jsonl"),

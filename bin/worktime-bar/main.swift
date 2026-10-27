@@ -1500,7 +1500,6 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
     // The open questions raised by special time, held so they are not released
     // the moment the closure that created them returns.
     var routePanel: MeetingRoutePanel?
-    var targetPanel: SpecialTargetPanel?
     // Which of the two activity views is showing, remembered across launches.
     // The choice is about how the reader wants to read the day rather than
     // about anything happening in it, so having it reset every time the app is
@@ -2076,22 +2075,6 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
                                   action: #selector(toggleSpecial), keyEquivalent: "p")
         spToggle.keyEquivalentModifierMask = [.control, .command, .option]
         m.addItem(spToggle)
-        let targetHost = NSMenuItem(
-            title: spk.target.map { "Special target…  \(hm($0.targetSec)) · \($0.days)d" }
-                ?? "Special target…  none",
-            action: nil, keyEquivalent: "")
-        let targetSub = NSMenu()
-        for (i, span) in SpecialTargetPanel.spans.enumerated() {
-            let mi = NSMenuItem(title: span.days == 0 ? "Custom…" : span.title,
-                                action: #selector(pickSpecialTarget(_:)), keyEquivalent: "")
-            mi.tag = i
-            // Same reason as the End Session rows: the sweep at the bottom of
-            // build() only walks the top level.
-            mi.target = self
-            targetSub.addItem(mi)
-        }
-        targetHost.submenu = targetSub
-        m.addItem(targetHost)
         m.addItem(.separator())
 
         let st = NSMenuItem(title: "", action: nil, keyEquivalent: "")
@@ -2675,18 +2658,6 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         probeQueue.async {
             _ = runProbe(["special", turnOn ? "on" : "off"])
             DispatchQueue.main.async { self.refresh() }
-        }
-    }
-
-    // A menu pick of a span opens the panel with that span chosen; the panel
-    // is where hours are entered and what sets the target.
-    @objc func pickSpecialTarget(_ sender: NSMenuItem) {
-        targetPanel = SpecialTargetPanel(preselect: sender.tag) { [weak self] totalHours, days, mainPct in
-            self?.targetPanel = nil
-            probeQueue.async {
-                _ = runProbe(["special_target", String(totalHours), String(days), String(mainPct)])
-                DispatchQueue.main.async { self?.refresh() }
-            }
         }
     }
 

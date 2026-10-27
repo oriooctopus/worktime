@@ -57,7 +57,6 @@ class World:
                         ("MEETINGS", "meetings.jsonl"),
                         ("MAIN_CUTS", "main-cuts.jsonl"),
                         ("SPECIAL_LOG", "special.jsonl"),
-                        ("SPECIAL_TARGETS", "special-targets.jsonl"),
                         ("GOALS_FILE", "worktime-goals.json"),
                         ("SESSION_END", "session-end.json"),
                         ("MODEFILE", "mode.jsonl"),

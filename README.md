@@ -572,16 +572,16 @@ everything else.
   Day view, a link in Ledger view) is hidden until toggled and edits them, each
   with its own undo. Past snapshots keep the target they were written with until
   `backfill` rebuilds them; the widget always shows the live figure.
-- **Special target.** Defaults to none (0h). **Special target…** in the menu
-  (Today / 3 days / A week / Custom…) opens a panel for hours per day × days, and
-  the target is a **total** across that span — 6h over 3 days is one number, not
+- **Special target.** Defaults to none (0h). The target is set from the Vault Dashboard's day view
+  (click the special figure beside the Main line) as hours per day × days, and
+  is a **total** across that span — 6h over 3 days is one number, not
   2h a day — that *replaces* the current one; a newer target does not revive an
   older one. Setting 0 clears it. Each day reads the target it was actually under.
-  The panel's **Take __ % off main** sets aside part of the special target to
+  The editor's **take __ % off main** sets aside part of the special target to
   come out of main's four hours instead of sitting on top of them: 30m of special
   at 50% makes main's target 3h45m. The deduction is fixed when the target is set
   (from the target, not from special time tracked), spread evenly over the span's
-  days, and replaced along with the target. CLI: `special_target <hours> <days> [main_pct]`.
+  days, and replaced along with the target. The bar has no target editor. CLI: `special_target <hours> <days> [main_pct]`.
 - **A call while special is on** raises **Main or Special?**, every time. *Main*
   means special pauses for that call and resumes after it (the call becomes
   ordinary weighted main time); *Special* keeps the call in special at full
@@ -594,14 +594,14 @@ everything else.
 **Files** (all under `~/.claude/stats/worktime/`, append-only like `marks.jsonl`):
 `special.jsonl` holds `on` / `off` toggles, `route` answers and the `add` / `cut`
 range rows a session conversion writes;
-`special-targets.jsonl` holds one row per target set. Every figure is derived
-from them on read.
+every target set is a row in `special_targets` of `Dashboard/worktime-goals.json`
+(the widget can only write in the vault). Every figure is derived from them on read.
 
 **Menu.** Two bars replace the old "worked today" line: Main (solid for full
 credit, a hatched tail for the meeting credit, a tick at the target, `+41m over`
 past it, with the focus % still in the caption) and Special. The Special bar is
 hidden on a day with no special target and no special time, planned or tracked;
-the **Start special time** and **Special target…** rows stay.
+the **Start special time** row stays.
 
 **Snapshot and status.** `Dashboard/worktime/<date>.json` keeps `work_sec` as
 the raw main total, so anything written before buckets keeps its meaning, and
