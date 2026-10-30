@@ -58,6 +58,20 @@ def build(stamps, mode="focused"):
 HH = lambda h, m, s=0: h * 3600 + m * 60 + s
 
 
+
+def write_activity_day(d, day, body):
+    """Writes `body` (header plus rows) as the hour chunks activity_day_lines reads."""
+    header, rows = body.split("|---|---|---|---|---|\n")[0] + "|---|---|---|---|---|\n", \
+        body.split("|---|---|---|---|---|\n")[1]
+    by_hour = {}
+    for line in rows.splitlines(keepends=True):
+        by_hour.setdefault(line.split("|")[1].strip().split(":")[0].zfill(2), []).append(line)
+    os.makedirs(os.path.join(d, day), exist_ok=True)
+    for hour, lines in by_hour.items():
+        with open(os.path.join(d, day, f"{hour}.md"), "w") as fh:
+            fh.write(header + "".join(lines))
+
+
 class PeriodModel(unittest.TestCase):
     def test_single_prompt_is_at_least_a_minute(self):
         mins, _, _sec = build([HH(10, 0)])
@@ -774,8 +788,7 @@ class GithubFilter(unittest.TestCase):
         d = tempfile.mkdtemp()
         body = ("| time | source | direction | who | detail |\n"
                 "|---|---|---|---|---|\n") + "".join(rows)
-        with open(os.path.join(d, f"{day}.md"), "w") as fh:
-            fh.write(body)
+        write_activity_day(d, day, body)
         # CHROME_DIR is redirected at an empty directory as well, or every
         # assertion here would also be reading whatever the person running the
         # suite happened to browse on the test day.
@@ -977,9 +990,8 @@ class GithubLiveHistory(unittest.TestCase):
     def _rows(self, profiles, export=""):
         root = self._chrome(profiles)
         act = tempfile.mkdtemp()
-        with open(os.path.join(act, f"{self.DAY}.md"), "w") as fh:
-            fh.write("| time | source | direction | who | detail |\n"
-                     "|---|---|---|---|---|\n" + export)
+        write_activity_day(act, self.DAY, "| time | source | direction | who | detail |\n"
+                           "|---|---|---|---|---|\n" + export)
         old, old_act = wp.wc.CHROME_DIR, wp.ACTIVITY_DIR
         try:
             wp.wc.CHROME_DIR, wp.ACTIVITY_DIR = root, act
@@ -1629,16 +1641,16 @@ class RecentActivities(unittest.TestCase):
         got = self.acts(prompts=[("09:00", "x" * 500)])
         self.assertEqual(len(got[0]["what"]), wp.ACTIVITY_TEXT_CHARS)
 
-    def test_desktop_prompts_are_not_listed_as_work(self):
+    def test_desktop_prompts_are_listed_as_desktop_not_work(self):
         # They reach the model with the OPPOSITE polarity: a prompt on the
-        # other machine is evidence of being away from this job. Listing one
-        # under "work" would have the tracker asserting the reverse of what it
-        # concluded. Read through the real parsers off a real activity file.
+        # other machine is evidence of being away from this job. They are
+        # listed, but under their own "desktop" kind -- never as work, which
+        # would have the tracker asserting the reverse of what it concluded.
+        # Read through the real parsers off a real activity file.
         d = tempfile.mkdtemp()
-        with open(os.path.join(d, f"{DAY}.md"), "w") as fh:
-            fh.write("| time | source | direction | who | detail |\n|---|---|---|---|---|\n"
-                     "| 09:00 | claude | prompt | me | build the iOS app |\n"
-                     "| 09:05 | chrome | visit | synced | a PR · scaledata/sdmain |\n")
+        write_activity_day(d, DAY, "| time | source | direction | who | detail |\n|---|---|---|---|---|\n"
+                           "| 09:00 | claude | prompt | me | build the iOS app |\n"
+                           "| 09:05 | chrome | visit | synced | a PR · scaledata/sdmain |\n")
         saved = (wp.ACTIVITY_DIR, wp.wc.CHROME_DIR, wp.full_day, wp.slack_for,
                  wp.approval_rows_for)
         try:
@@ -1655,16 +1667,16 @@ class RecentActivities(unittest.TestCase):
             (wp.ACTIVITY_DIR, wp.wc.CHROME_DIR, wp.full_day, wp.slack_for,
              wp.approval_rows_for) = saved
             wp._gh_live_cache.clear()
-        self.assertEqual([(a["kind"], a["t"]) for a in got], [("browsing", "09:05")])
+        self.assertEqual([(a["kind"], a["t"]) for a in got],
+                         [("browsing", "09:05"), ("desktop", "09:00")])
 
     def test_desktop_prompts_still_reach_the_model_they_belong_to(self):
         # The exclusion above is about this list, not about the signal: the
         # hole-punching path must still see it, or dropping it from the menu
         # would have quietly changed what the dot reports.
         d = tempfile.mkdtemp()
-        with open(os.path.join(d, f"{DAY}.md"), "w") as fh:
-            fh.write("| time | source | direction | who | detail |\n|---|---|---|---|---|\n"
-                     "| 09:00 | claude | prompt | me | build the iOS app |\n")
+        write_activity_day(d, DAY, "| time | source | direction | who | detail |\n|---|---|---|---|---|\n"
+                           "| 09:00 | claude | prompt | me | build the iOS app |\n")
         old = wp.ACTIVITY_DIR
         try:
             wp.ACTIVITY_DIR = d

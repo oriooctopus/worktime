@@ -160,7 +160,7 @@ def test_the_remote_path_carries_the_real_spaces(rig):
     activity_argv = rig.launches[0][0][0]
     remote_arg = next(a for a in activity_argv if a.startswith("esme@"))
     assert remote_arg == (
-        "esme@100.103.237.24:/mnt/c/Users/Esme Louise Robinson/Documents/"
+        "esme@100.103.237.24:/mnt/c/Users/Esme\\ Louise\\ Robinson/Documents/"
         "obsidian-vault/Dashboard/activity/")
 
 
@@ -172,7 +172,7 @@ def test_the_usage_rsync_carries_the_real_remote_path(rig):
     usage_argv = rig.launches[1][0][0]
     remote_arg = next(a for a in usage_argv if a.startswith("esme@"))
     assert remote_arg == (
-        "esme@100.103.237.24:/mnt/c/Users/Esme Louise Robinson/Documents/"
+        "esme@100.103.237.24:/mnt/c/Users/Esme\\ Louise\\ Robinson/Documents/"
         "obsidian-vault/Dashboard/usage/")
     local_arg = usage_argv[-1]
     assert local_arg.rstrip("/").endswith(os.path.join("vault", "usage"))

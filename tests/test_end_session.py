@@ -60,8 +60,8 @@ class LastEntryEndCase(unittest.TestCase):
         # is not instantaneous. A stop that ignored it would credit this last
         # minute less than simply walking away does, so the person who pressed
         # the shortcut would come out behind the one who did not.
-        self.assertEqual(wp.TAIL_SEC, 20)
-        self.assertEqual(wp.last_entry_end([at(14, 29, 50)]), 14 * 60 + 30)
+        self.assertEqual(wp.TAIL_SEC, 10)
+        self.assertEqual(wp.last_entry_end([at(14, 29, 55)]), 14 * 60 + 30)
 
     def test_tail_does_not_move_a_minute_it_cannot_reach(self):
         self.assertEqual(wp.last_entry_end([at(14, 29, 10)]), 14 * 60 + 29)
