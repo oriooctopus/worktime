@@ -55,6 +55,8 @@ def mid_transaction(tmp_path):
 
     writer = sqlite3.connect(db, isolation_level=None)
     writer.execute("PRAGMA cache_size=1")
+    # Newer sqlite builds only spill once this threshold is lowered as well.
+    writer.execute("PRAGMA cache_spill=1")
     writer.execute("BEGIN IMMEDIATE")
     writer.execute("UPDATE visits SET v=?", (UNCOMMITTED,))
     assert os.path.exists(db + "-journal"), "fixture never produced a hot journal"
