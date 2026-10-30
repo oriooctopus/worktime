@@ -122,6 +122,17 @@ endings = 0
 for _ in 0..<Int(SETTLE) + 2 { if step(false) { endings += 1 } }
 check(endings == 1, "a resumed call shorter than a minute never ended (\(endings))")
 
+// Dictation tools capture from helper processes, so matching is by prefix; real
+// meeting clients, including ones that merely resemble a dictation bundle, count.
+check(!captureCountsAsCall(bundleID: "com.electron.wispr-flow"), "wispr main app counted as a call")
+check(!captureCountsAsCall(bundleID: "com.electron.wispr-flow.helper"), "wispr helper counted as a call")
+check(!captureCountsAsCall(bundleID: "com.electron.wispr-flow.accessibility-mac-app"), "wispr accessibility app counted as a call")
+check(!captureCountsAsCall(bundleID: "com.gizmolabs.openwhispr.helper"), "openwhispr helper counted as a call")
+check(captureCountsAsCall(bundleID: "us.zoom.xos"), "zoom not counted as a call")
+check(captureCountsAsCall(bundleID: "com.google.Chrome.helper"), "chrome meet not counted as a call")
+check(captureCountsAsCall(bundleID: "com.tinyspeck.slackmacgap.helper"), "slack huddle not counted as a call")
+check(captureCountsAsCall(bundleID: "com.granola.app.helper"), "granola not counted as a call")
+
 if failures.isEmpty {
     print("call detector: all checks passed")
 } else {

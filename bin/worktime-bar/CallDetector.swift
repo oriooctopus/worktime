@@ -8,6 +8,20 @@
 
 import Foundation
 
+// Dictation tools hold the microphone for as long as someone talks to them, so
+// to a reading of "is anything capturing" an afternoon of dictating is
+// indistinguishable from a meeting. Matched by prefix because they capture from
+// helper processes (com.electron.wispr-flow.helper) rather than the main app.
+let DICTATION_BUNDLE_PREFIXES = [
+    "com.electron.wispr-flow",
+    "com.gizmolabs.openwhispr",
+]
+
+/// Whether input capture by this process counts toward a call.
+func captureCountsAsCall(bundleID: String) -> Bool {
+    !DICTATION_BUNDLE_PREFIXES.contains { bundleID.hasPrefix($0) }
+}
+
 struct CallDetector {
     // A run of input capture shorter than this was not a meeting. Siri, a
     // notification chime being sampled, a "can you hear me" in another app,

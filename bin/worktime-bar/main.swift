@@ -1459,12 +1459,57 @@ func deviceIsRunning(_ id: AudioObjectID) -> Bool {
     return value != 0
 }
 
-/// True while any process anywhere is capturing audio input. App-agnostic by
-/// construction: it is a property of the device, so a call in a browser tab, a
-/// native client, or something the calendar has never heard of all read the
-/// same.
+// Per-process view (macOS 14.4+): which processes hold an input stream, and who
+// they are. The device-level reading above cannot say whose capture it is, so a
+// dictation tool looked exactly like a meeting.
+func audioProcessIDs() -> [AudioObjectID] {
+    var addr = AudioObjectPropertyAddress(
+        mSelector: kAudioHardwarePropertyProcessObjectList,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain)
+    var size: UInt32 = 0
+    guard AudioObjectGetPropertyDataSize(
+        AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size) == noErr
+    else { return [] }
+    var ids = [AudioObjectID](repeating: 0,
+                              count: Int(size) / MemoryLayout<AudioObjectID>.size)
+    guard AudioObjectGetPropertyData(
+        AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size, &ids) == noErr
+    else { return [] }
+    return ids
+}
+
+func processIsCapturing(_ id: AudioObjectID) -> Bool {
+    var addr = AudioObjectPropertyAddress(
+        mSelector: kAudioProcessPropertyIsRunningInput,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain)
+    var value: UInt32 = 0
+    var size = UInt32(MemoryLayout<UInt32>.size)
+    guard AudioObjectGetPropertyData(id, &addr, 0, nil, &size, &value) == noErr else { return false }
+    return value != 0
+}
+
+func processBundleID(_ id: AudioObjectID) -> String {
+    var addr = AudioObjectPropertyAddress(
+        mSelector: kAudioProcessPropertyBundleID,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain)
+    var value: Unmanaged<CFString>?
+    var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+    guard AudioObjectGetPropertyData(id, &addr, 0, nil, &size, &value) == noErr,
+          let bundle = value?.takeRetainedValue()
+    else { return "" }
+    return bundle as String
+}
+
+/// True while a process other than a dictation tool is capturing audio input.
+/// App-agnostic otherwise: a call in a browser tab, a native client, or
+/// something the calendar has never heard of all read the same.
 func anythingIsCapturing() -> Bool {
-    audioDeviceIDs().contains { deviceHasInput($0) && deviceIsRunning($0) }
+    audioProcessIDs().contains {
+        processIsCapturing($0) && captureCountsAsCall(bundleID: processBundleID($0))
+    }
 }
 
 // MARK: - The menu bar item
