@@ -116,6 +116,20 @@ let HOTKEY_ID_END = UInt32(3)
 let HOTKEY_ID_SPECIAL = UInt32(4)
 let HOTKEY_ID_MENU = UInt32(5)
 
+// ⌘⌥ plus the number row, ` through 0, banks bonus time: ` is 30 seconds, 1-9
+// are that many minutes, 0 is ten. IDs 10... map to BONUS_KEYS by offset.
+let BONUS_KEYS: [(code: Int, sec: Int)] = [
+    (kVK_ANSI_Grave, 30),
+    (kVK_ANSI_1, 60), (kVK_ANSI_2, 120), (kVK_ANSI_3, 180), (kVK_ANSI_4, 240),
+    (kVK_ANSI_5, 300), (kVK_ANSI_6, 360), (kVK_ANSI_7, 420), (kVK_ANSI_8, 480),
+    (kVK_ANSI_9, 540), (kVK_ANSI_0, 600),
+]
+let HOTKEY_ID_BONUS_BASE = UInt32(10)
+
+// How long after the press input must resume before it counts as "back to
+// work": the chord's own key-up and the hand leaving the keyboard are not.
+let BONUS_INPUT_GRACE_SEC = 1.5
+
 // Absolute, not `/usr/bin/env python3`. launchd hands this process a PATH of
 // /usr/bin:/bin:/usr/sbin:/sbin, so `env` resolves to Apple's /usr/bin/python3
 // (3.9), which cannot even import the probe -- `str | None` in an annotation
@@ -1552,6 +1566,15 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
     // press raises the panel already up rather than stacking a new one
     // behind it, each with its own copy of the number being typed.
     var trackPanel: TrackPanel?
+    // The bonus in flight, if any. Held so a second press, early input or the
+    // countdown ending all resolve the same one exactly once.
+    var bonusActive = false
+    var bonusTotalSec = 0
+    var bonusBucket = "main"
+    var bonusStart = Date()
+    var bonusPanel: CountdownPanel?
+    var bonusPoll: Timer?
+    var bonusHotKeyRefs: [EventHotKeyRef?] = Array(repeating: nil, count: 11)
     // The ⌥⌘E undo panel. Stays on screen for END_UNDO_SEC; a second press
     // while it is showing skips the countdown and commits immediately -- at
     // the last entry if it came within END_DOUBLE_PRESS_SEC, else at this minute.
@@ -1604,6 +1627,12 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
                               EventParamType(typeEventHotKeyID), nil,
                               MemoryLayout<EventHotKeyID>.size, nil, &id)
             DispatchQueue.main.async {
+                if id.id >= HOTKEY_ID_BONUS_BASE {
+                    if !bar.menuIsOpen {
+                        bar.startBonus(sec: BONUS_KEYS[Int(id.id - HOTKEY_ID_BONUS_BASE)].sec)
+                    }
+                    return
+                }
                 switch id.id {
                 // Guarded like the others: the Track time row carries ⌥W as
                 // its key equivalent, so with the menu open both would fire.
@@ -1650,6 +1679,82 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
                                                         id: HOTKEY_ID_MENU),
                                           GetApplicationEventTarget(), 0, &menuHotKeyRef)
         FileHandle.standardError.write("hotkey cmd+opt+M register -> \(menuErr)\n".data(using: .utf8)!)
+        for (i, key) in BONUS_KEYS.enumerated() {
+            let e = RegisterEventHotKey(UInt32(key.code), HOTKEY_MODS,
+                                        EventHotKeyID(signature: OSType(0x574B_5453),
+                                                      id: HOTKEY_ID_BONUS_BASE + UInt32(i)),
+                                        GetApplicationEventTarget(), 0, &bonusHotKeyRefs[i])
+            FileHandle.standardError.write("hotkey cmd+opt+bonus[\(key.sec)s] register -> \(e)\n".data(using: .utf8)!)
+        }
+    }
+
+    // ⌘⌥` / 1-9 / 0. Ends whatever shift is running, then counts the bonus
+    // forward from this press. Work resuming before it finishes banks what
+    // elapsed forward and the rest behind the press; the probe owns that
+    // arithmetic. Pressing another bonus resolves the running one first.
+    func startBonus(sec: Int) {
+        if bonusActive { resolveBonus() }
+        let bucket = status.state == "special" ? "special" : "main"
+        bonusActive = true
+        bonusTotalSec = sec
+        bonusBucket = bucket
+        bonusStart = Date()
+        probeQueue.async { _ = runProbe(["end_session"]) }
+        let label = sec < 60 ? "\(sec)s" : "\(sec / 60)m"
+        DispatchQueue.global(qos: .utility).async {
+            notify("Bonus \(label) started (\(bucket)) — it counts from now.")
+        }
+        let panel = CountdownPanel(
+            meeting: "Bonus \(label)",
+            seconds: sec,
+            buttonTitle: "Stop bonus",
+            messageFor: { "Bonus time (\(bucket)) — \($0)s left. Any input ends it early." },
+            onExpire: { [weak self] in self?.resolveBonus() },
+            onCancel: { [weak self] in self?.resolveBonus() })
+        bonusPanel = panel
+        let t = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
+            guard let self = self, self.bonusActive else { return }
+            let elapsed = Date().timeIntervalSince(self.bonusStart)
+            if elapsed > BONUS_INPUT_GRACE_SEC,
+               FocusLog.idleSeconds() < elapsed - BONUS_INPUT_GRACE_SEC {
+                self.resolveBonus()
+            }
+        }
+        RunLoop.main.add(t, forMode: .common)
+        bonusPoll = t
+    }
+
+    func resolveBonus() {
+        guard bonusActive else { return }
+        bonusActive = false
+        bonusPoll?.invalidate()
+        bonusPoll = nil
+        bonusPanel?.close()
+        bonusPanel = nil
+        let total = bonusTotalSec
+        let after = min(total, Int(Date().timeIntervalSince(bonusStart)))
+        let bucket = bonusBucket
+        probeQueue.async {
+            guard case .ok(let out) = runProbe(["bonus", String(total), String(after), bucket]),
+                  let data = out.data(using: .utf8),
+                  let r = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else {
+                FileHandle.standardError.write(
+                    "bonus: probe failed for \(total)s\n".data(using: .utf8)!)
+                return
+            }
+            let claimed = r["claimed"] as? Int ?? 0
+            let carry = r["carry_sec"] as? Int ?? 0
+            let before = r["before"] as? Int ?? 0
+            DispatchQueue.global(qos: .utility).async {
+                var msg = claimed == 0 ? "Bonus banked \(total)s toward the next minute."
+                    : "Bonus: \(claimed)m added as \(bucket)"
+                if before > 0 && claimed > 0 { msg += " (\(before)m inserted behind)" }
+                if carry > 0 && claimed > 0 { msg += ", \(carry)s carried" }
+                notify(msg + ".")
+            }
+            DispatchQueue.main.async { self.refresh() }
+        }
     }
 
     func applicationDidFinishLaunching(_: Notification) {
