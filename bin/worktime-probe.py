@@ -59,6 +59,10 @@ Usage:
                                           newest n special minutes back to main
   worktime-probe.py track -<n> clip|split  -- take the newest n minutes of main
                                           off today
+  worktime-probe.py bonus <total_sec> <after_sec> main|special
+                                          -- bank a bonus of total_sec seconds,
+                                          after_sec of it forward from the
+                                          press, the rest inserted behind it
 """
 
 from __future__ import annotations  # 3.8 can parse the annotations
@@ -2366,6 +2370,7 @@ def link_last_session() -> dict:
 # minutes needed claiming precisely because nothing was watching them, so the
 # note says where they came from rather than what they were.
 TRACK_NOTE = "tracked by hand"
+BONUS_NOTE = "bonus time"
 
 # How the claim behaves when it runs into work the tracker already counted.
 #
@@ -2491,6 +2496,80 @@ def track_back(minutes: int, mode: str = "clip") -> dict:
     return {"tracked": bool(spans), "bucket": "main", "mode": mode,
             "asked": minutes, "claimed": minutes - unplaced,
             "unplaced": unplaced,
+            "spans": [{"start": hhmm_of(a), "end": hhmm_of(b)}
+                      for a, b in spans]}
+
+
+def _bonus_carry_path() -> str:
+    return os.path.join(STATE, "bonus-carry.json")
+
+
+def _bonus_carry(day: str) -> int:
+    if not os.path.exists(_bonus_carry_path()):
+        return 0
+    rec = json.load(open(_bonus_carry_path()))
+    return rec["sec"] if rec["day"] == day else 0
+
+
+def bonus(total_sec: int, after_sec: int, bucket: str) -> dict:
+    """Bank a bonus of `total_sec` seconds pressed `after_sec` seconds ago.
+
+    The bonus starts at the press and runs forward. Whatever of it elapsed
+    before work resumed (`after_sec`) is placed forward from the press; the
+    remainder is inserted behind the press with the same walk `track` uses for
+    its split rule, so it fills the free minutes in front of counted work
+    rather than overlapping it.
+
+    Marks are minute-granular, so seconds accumulate in a per-day carry and
+    only whole minutes are written: two 30s bonuses make one minute. The carry
+    is spent from the pool first, so the forward share is whole minutes of
+    what actually elapsed and the rest goes behind.
+    """
+    if bucket not in ("main", "special"):
+        return {"tracked": False, "why": f"unknown bucket {bucket!r}"}
+    after_sec = max(0, min(after_sec, total_sec))
+    now = now_local()
+    day = now.strftime("%Y-%m-%d")
+    lo = _day_start_ts(day)
+    press_m = int((now.timestamp() - after_sec - lo) // 60)
+    pool = total_sec + _bonus_carry(day)
+    minutes, carry = divmod(pool, 60)
+    os.makedirs(STATE, exist_ok=True)
+    json.dump({"day": day, "sec": carry}, open(_bonus_carry_path(), "w"))
+    if minutes == 0:
+        return {"tracked": False, "bucket": bucket, "claimed": 0,
+                "carry_sec": carry, "after": 0, "before": 0}
+    after_min = min(minutes, after_sec // 60)
+    before_min = minutes - after_min
+
+    events = events_for(day)
+    write_vault_snapshot(day, events)
+    worked = json.load(open(snapshot_path(day))).get("worked", [])
+    counted = list(worked)
+    if bucket == "special":
+        counted += [{"start": int(s // 60), "end": -(-int(e) // 60)}
+                    for s, e in special_spans_for(day, now)]
+    spans: list[list[int]] = []
+    if after_min:
+        spans.append([press_m, press_m + after_min])
+        counted.append({"start": press_m, "end": press_m + after_min})
+    placed, _ = claim_spans(counted, press_m, before_min, True)
+    spans = placed + spans
+
+    for a, b in spans:
+        if bucket == "main":
+            add_mark(f"{hhmm_of(a)}-{hhmm_of(b)}", BONUS_NOTE)
+        else:
+            with open(SPECIAL_LOG, "a") as fh:
+                fh.write(json.dumps({"event": "add", "from": lo + a * 60,
+                                     "to": lo + b * 60, "day": day,
+                                     "at": now.isoformat()}) + "\n")
+    if spans:
+        write_vault_snapshot(day, events_for(day))
+    claimed = sum(b - a for a, b in spans)
+    return {"tracked": claimed > 0, "bucket": bucket, "claimed": claimed,
+            "asked": minutes, "carry_sec": carry, "after": after_min,
+            "before": before_min,
             "spans": [{"start": hhmm_of(a), "end": hhmm_of(b)}
                       for a, b in spans]}
 
@@ -6409,6 +6488,8 @@ if __name__ == "__main__":
             else:
                 out = track_back(n, mode)
             print(json.dumps(out))
+    elif cmd == "bonus":
+        print(json.dumps(bonus(int(sys.argv[2]), int(sys.argv[3]), sys.argv[4])))
     elif cmd == "status":
         # One small line for the menu bar: what the tracker thinks right now.
         print(json.dumps(status()))
