@@ -553,7 +553,9 @@ everything else.
   deficit (-) spread evenly over the chosen days, a surplus lowering each day's
   goal, floored at 0. The widget's ⚙ section applies one to next week / 2 weeks /
   4 weeks counted from the week viewed (or the rest of the current week), lists
-  carries in and out with Undo each, and both weeks say so above the rows. A 0h goal shows "no goal today" instead of a bar. The special target's
+  carries in and out with Undo each, and both weeks say so above the rows. The
+  Ledger view lists every week from the first carry week to the current one,
+  including weeks no carry touched. A 0h goal shows "no goal today" instead of a bar. The special target's
   deduction (below) comes off whatever the goal is.
 - **Goal changes.** `"changes": [{"id", "mode": "add"|"set", "delta_sec" |
   "hours", "from", "to"}]` in the same file re-baseline the goal over a date
