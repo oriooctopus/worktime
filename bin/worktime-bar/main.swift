@@ -138,6 +138,9 @@ let BONUS_INPUT_GRACE_SEC = 1.5
 // amber that is indistinguishable from a genuine idle reading.
 let PYTHON = "/opt/homebrew/bin/python3"
 
+// How long to wait before re-sending a meeting_end the probe could not run.
+let MEETING_CLOSE_RETRY_SEC: TimeInterval = 30
+
 // How often to ask CoreAudio whether anything is capturing. Cheaper than the
 // probe poll -- it is a couple of HAL property reads and touches no
 // subprocess, no file and no network -- so it can run faster than POLL_SEC
@@ -3397,10 +3400,32 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
 
     // `at` is HH:MM the call actually went quiet; nil means now. The countdown
     // passes it because the call ended SETTLE_SEC plus the countdown ago.
+    //
+    // A failed close is retried until it lands. The result used to be dropped,
+    // so a probe that could not launch for a minute (Homebrew swapping the
+    // python3 symlink mid-upgrade) left the meeting open, growing to the 3h
+    // cap, after the call had ended. "Now" is resolved to a minute here, once:
+    // a retry minutes later must still stamp when the call ended.
     func closeMeeting(at: String?) {
         meetingOpenedHere = false
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm"
+        let end = at ?? f.string(from: Date())
+        attemptMeetingClose(at: end)
+    }
+
+    private func attemptMeetingClose(at end: String) {
         probeQueue.async {
-            _ = runProbe(["meeting_end"] + (at.map { [$0] } ?? []))
+            let run = runProbe(["meeting_end", end])
+            if case .failed = run {
+                FileHandle.standardError.write(
+                    "meeting_end \(end) failed; retrying in \(Int(MEETING_CLOSE_RETRY_SEC))s\n"
+                        .data(using: .utf8)!)
+                probeQueue.asyncAfter(deadline: .now() + MEETING_CLOSE_RETRY_SEC) {
+                    self.attemptMeetingClose(at: end)
+                }
+                return
+            }
             DispatchQueue.main.async { self.refresh() }
         }
     }
