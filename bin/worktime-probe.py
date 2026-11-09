@@ -4036,11 +4036,11 @@ def stamp_epoch(day: str, t: str) -> float:
 SESSION_LIST_N = 8
 
 # How many of a session's own rows travel with it, for the submenu that shows
-# what the session was made of. Twenty rather than the dozen a tooltip could
-# hold: a submenu is a menu, so it scrolls when it outgrows the screen instead
-# of spilling off it, and an hour-long stretch has more than a dozen things in
-# it worth reading.
-SESSION_TIP_N = 20
+# what the session was made of. Two hundred: a submenu is a menu, so it scrolls
+# when it outgrows the screen instead of spilling off it, and a long stretch
+# has far more than twenty things in it worth reading -- at twenty, "... and 62
+# more" was a dead line the reader could not scroll to.
+SESSION_TIP_N = 200
 
 
 def group_sessions(rows: list[dict], worked: list[dict],
