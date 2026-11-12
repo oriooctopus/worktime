@@ -8,16 +8,20 @@ import AppKit
 // and a panel rather than a notification because Focus swallows those.
 final class WorkSourcePanel {
     private let panel: NSPanel
-    private let onYes: () -> Void
+    private let source: LocalSource
+    private let onYes: (LocalSource) -> Void
     private let onNo: () -> Void
 
     private(set) var yes: NSButton!
     private(set) var no: NSButton!
+    /// The Track pull-down, for a folder only.
+    private(set) var trackMenu: NSPopUpButton?
     let titleText: String
     let messageText: String
 
     init(source: LocalSource, present: Bool = true,
-         onYes: @escaping () -> Void, onNo: @escaping () -> Void) {
+         onYes: @escaping (LocalSource) -> Void, onNo: @escaping () -> Void) {
+        self.source = source
         self.onYes = onYes
         self.onNo = onNo
         switch source.kind {
@@ -51,8 +55,23 @@ final class WorkSourcePanel {
         message.textColor = .secondaryLabelColor
         message.lineBreakMode = .byTruncatingMiddle
 
-        let yes = NSButton(title: "Track", target: nil, action: nil)
-        yes.bezelStyle = .rounded
+        // A folder gets a pull-down so the answer can be its parent or any
+        // other folder; a port or a deck has nothing wider to offer.
+        let yes: NSButton
+        if source.kind == .directory {
+            let menu = NSPopUpButton(frame: .zero, pullsDown: true)
+            menu.addItem(withTitle: "Track")
+            addChoice(to: menu, title: "This folder", action: #selector(trackThisTapped))
+            if let parent = Self.parent(of: source) {
+                addChoice(to: menu, title: "Parent: \(parent.label)", action: #selector(trackParentTapped))
+            }
+            addChoice(to: menu, title: "Choose folder\u{2026}", action: #selector(trackCustomTapped))
+            trackMenu = menu
+            yes = menu
+        } else {
+            yes = NSButton(title: "Track", target: nil, action: nil)
+            yes.bezelStyle = .rounded
+        }
         let no = NSButton(title: "Not work", target: nil, action: nil)
         no.bezelStyle = .rounded
 
@@ -76,8 +95,10 @@ final class WorkSourcePanel {
         ])
         self.yes = yes
         self.no = no
-        yes.target = self
-        yes.action = #selector(yesTapped)
+        if source.kind != .directory {
+            yes.target = self
+            yes.action = #selector(yesTapped)
+        }
         no.target = self
         no.action = #selector(noTapped)
 
@@ -91,9 +112,43 @@ final class WorkSourcePanel {
         }
     }
 
+    private func addChoice(to menu: NSPopUpButton, title: String, action: Selector) {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+        item.target = self
+        menu.menu?.addItem(item)
+    }
+
+    /// The folder one level up, or nil at the filesystem root.
+    static func parent(of source: LocalSource) -> LocalSource? {
+        let up = URL(string: source.value)!.deletingLastPathComponent()
+        guard up.path != "/" else { return nil }
+        return LocalSource(kind: .directory, value: up.absoluteString)
+    }
+
     @objc private func yesTapped() {
         close()
-        onYes()
+        onYes(source)
+    }
+
+    @objc private func trackThisTapped() { yesTapped() }
+
+    @objc private func trackParentTapped() {
+        close()
+        onYes(Self.parent(of: source)!)
+    }
+
+    @objc private func trackCustomTapped() {
+        let chooser = NSOpenPanel()
+        chooser.canChooseFiles = false
+        chooser.canChooseDirectories = true
+        chooser.allowsMultipleSelection = false
+        chooser.directoryURL = URL(string: source.value)
+        NSApp.activate(ignoringOtherApps: true)
+        guard chooser.runModal() == .OK, let url = chooser.url else { return }
+        var value = url.absoluteString
+        if !value.hasSuffix("/") { value += "/" }
+        close()
+        onYes(LocalSource(kind: .directory, value: value))
     }
 
     @objc private func noTapped() {

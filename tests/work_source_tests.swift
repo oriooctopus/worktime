@@ -73,16 +73,35 @@ enum WorkSourceTests {
 
         var yes = 0, no = 0
         var panel: WorkSourcePanel? = WorkSourcePanel(
-            source: port!, present: false, onYes: { yes += 1 }, onNo: { no += 1 })
+            source: port!, present: false, onYes: { _ in yes += 1 }, onNo: { no += 1 })
         check(panel!.titleText == "Track localhost:9110 as work?", "title names the port, got \(panel!.titleText)")
         RunLoop.main.run(until: Date().addingTimeInterval(2))
         check(yes == 0 && no == 0, "nothing fires on its own")
         panel!.yes.performClick(nil)
         check(yes == 1 && no == 0, "Track fires yes only")
-        panel = WorkSourcePanel(source: dir!, present: false, onYes: { yes += 1 }, onNo: { no += 1 })
+        panel = WorkSourcePanel(source: dir!, present: false, onYes: { _ in yes += 1 }, onNo: { no += 1 })
         check(panel!.titleText == "Track this folder as work?", "title names a folder, got \(panel!.titleText)")
         panel!.no.performClick(nil)
         check(yes == 1 && no == 1, "Not work fires no only")
+
+        // A folder's Track is a pull-down: this folder, its parent, or a chosen one.
+        var tracked: [String] = []
+        panel = WorkSourcePanel(source: dir!, present: false,
+                                onYes: { tracked.append($0.value) }, onNo: {})
+        let titles = panel!.trackMenu!.itemTitles
+        check(titles.count == 4 && titles[0] == "Track" && titles[1] == "This folder"
+              && titles[2].hasPrefix("Parent: ") && titles[3].hasPrefix("Choose folder"),
+              "folder pull-down items, got \(titles)")
+        panel!.trackMenu!.menu!.performActionForItem(at: 2)
+        let up = WorkSourcePanel.parent(of: dir!)!.value
+        check(tracked == [up] && up != dir!.value && dir!.value.hasPrefix(up),
+              "Parent tracks the enclosing folder, got \(tracked)")
+        panel = WorkSourcePanel(source: dir!, present: false,
+                                onYes: { tracked.append($0.value) }, onNo: {})
+        panel!.trackMenu!.menu!.performActionForItem(at: 1)
+        check(tracked == [up, dir!.value], "This folder tracks the folder itself, got \(tracked)")
+        check(WorkSourcePanel(source: port!, present: false, onYes: { _ in }, onNo: {}).trackMenu == nil,
+              "a port keeps the plain Track button")
 
         // The prompter writes the answer through to the profile.
         let path2 = NSTemporaryDirectory() + "worksource2-\(getpid()).json"

@@ -172,7 +172,7 @@ final class WorkSourcePrompter {
             self.inFlight = source.dismissKey
             self.panel = WorkSourcePanel(
                 source: source, present: self.present,
-                onYes: { [weak self] in self?.answered { $0.track(source) } },
+                onYes: { [weak self] chosen in self?.answered { $0.track(chosen) } },
                 onNo: { [weak self] in self?.answered { $0.dismiss(source) } })
         }
     }
