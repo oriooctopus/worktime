@@ -839,9 +839,12 @@ func singleLineLabel(_ text: NSMutableAttributedString) -> NSTextField {
 // colour: it sat directly above that period's time range and had to read as
 // part of the same block rather than as a coloured banner.
 final class StatusRowView: NSView {
-    init(width: CGFloat, symbol: String, text: String, color: NSColor) {
-        super.init(frame: NSRect(x: 0, y: 0, width: width, height: 21))
+    private let symbol: String
+    private let color: NSColor
+    private let field: NSTextField
 
+    private static func attributed(_ symbol: String, _ text: String,
+                                   _ color: NSColor) -> NSMutableAttributedString {
         let attr = NSMutableAttributedString(string: symbol + " ", attributes: [
             .font: NSFont.systemFont(ofSize: 12, weight: .medium),
             .foregroundColor: color,
@@ -850,7 +853,21 @@ final class StatusRowView: NSView {
             .font: NSFont.systemFont(ofSize: 12, weight: .medium),
             .foregroundColor: NSColor.labelColor,
         ]))
-        let field = singleLineLabel(attr)
+        return attr
+    }
+
+    /// Re-text the row in place. The unfocused countdown ticks every second,
+    /// and rebuilding an open menu dismisses it, so the live row is edited
+    /// rather than replaced.
+    func update(text: String) {
+        field.attributedStringValue = StatusRowView.attributed(symbol, text, color)
+    }
+
+    init(width: CGFloat, symbol: String, text: String, color: NSColor) {
+        self.symbol = symbol
+        self.color = color
+        field = singleLineLabel(StatusRowView.attributed(symbol, text, color))
+        super.init(frame: NSRect(x: 0, y: 0, width: width, height: 21))
         field.translatesAutoresizingMaskIntoConstraints = false
         addSubview(field)
 
@@ -1532,6 +1549,9 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
     // tick (instead of only at POLL_SEC) is what lets the blink count down
     // smoothly between polls rather than jumping every 5s.
     var lastActivityAt: Date?
+    var statusRow: StatusRowView?
+    var statusBaseWhy = ""
+    var countdownTimer: Timer?
     // What the last failed poll was, and how long the run of them has been
     // going. Kept on the Bar rather than in Status because it is not a reading
     // of the day -- it is the reason there is no reading of the day, and the
@@ -1873,7 +1893,10 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         // the menu could not have updated even once. That is the other half of
         // why the dot looked live and the menu looked frozen -- the dot's
         // updates all landed in the moments the menu was closed.
-        for t in [timer, blinkTimer, audioTimer] {
+        countdownTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
+            self.tickCountdown()
+        }
+        for t in [timer, blinkTimer, audioTimer, countdownTimer] {
             if let t { RunLoop.main.add(t, forMode: .common) }
         }
     }
@@ -2004,6 +2027,26 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         dotImage(WORKING, hollow: false, half: status.pendingSec != nil)
     }
 
+    /// "  ·  19s left of 30s" from the live clock, unfocused working bouts only.
+    /// Computed from lastActivityAt (anchored at the last poll) so it keeps
+    /// moving between the 5s polls instead of freezing at the polled value.
+    func countdownSuffix() -> String {
+        guard status.mode == "unfocused", status.state == "working",
+              let anchor = lastActivityAt, let cutoff = status.gapAfterSec
+        else { return "" }
+        let leftSec = Int(ceil(Double(cutoff) - Date().timeIntervalSince(anchor)))
+        guard leftSec > 0 else { return "" }
+        // Under a minute of cutoff the bout has only just opened, so say
+        // seconds -- "1m left of 1m" would claim twice what a 30s cutoff has.
+        if cutoff < 60 { return "  ·  \(leftSec)s left of \(cutoff)s" }
+        let left = Int(ceil(Double(leftSec) / 60))
+        return "  ·  \(left)m left of \(Int((Double(cutoff) / 60).rounded()))m"
+    }
+
+    func tickCountdown() {
+        statusRow?.update(text: statusBaseWhy + countdownSuffix())
+    }
+
     func tickBlink() {
         guard status.state == "working",
               let anchor = lastActivityAt,
@@ -2072,25 +2115,11 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         // widening to 5m" label implies would have ended it. Naming both halves
         // -- what is left, and of what -- makes the rule in force visible while
         // it is still in force.
-        var why = status.why
-        if status.mode == "unfocused", status.state == "working",
-           let quiet = status.quietSec, let cutoff = status.gapAfterSec {
-            // Ceil, so the countdown reads "1m left" for the whole final minute
-            // rather than dropping to a 0m that never corresponds to anything:
-            // the moment it truly reaches zero the state is no longer working
-            // and this line is gone.
-            // Under a minute of cutoff the bout has only just opened, so say
-            // seconds -- "1m left of 1m" would claim twice what a 30s cutoff has.
-            if cutoff < 60 {
-                let leftSec = cutoff - quiet
-                if leftSec > 0 { why += "  ·  \(leftSec)s left of \(cutoff)s" }
-            } else {
-                let left = Int(ceil(Double(cutoff - quiet) / 60))
-                if left > 0 {
-                    why += "  ·  \(left)m left of \(Int((Double(cutoff) / 60).rounded()))m"
-                }
-            }
-        }
+        // The countdown is NOT part of `why` here: it moves every second and is
+        // painted from the live clock by tickCountdown(). Keeping it out of the
+        // menu key means a tick never forces a rebuild of an open menu.
+        let why = status.why
+        statusBaseWhy = why
 
         // The failing poll's own account of itself, red-state only. Three
         // lines and a count: what was run, how it ended, what it managed to
@@ -2234,7 +2263,9 @@ final class Bar: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVali
         // The wider row while the failure block is under it: the menu is
         // already that wide there, and this line is the one the block explains.
         st.view = StatusRowView(width: debug.isEmpty ? 300 : DEBUG_ROW_WIDTH,
-                                symbol: symbol, text: why, color: color)
+                                symbol: symbol,
+                                text: why + countdownSuffix(), color: color)
+        statusRow = st.view as? StatusRowView
         m.addItem(st)
 
         if let notice = status.feedNotice {
