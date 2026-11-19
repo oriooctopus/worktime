@@ -207,8 +207,8 @@ MIN_PERIOD_SEC = min_period_state()
 # every few minutes in between. Under the focused rule those prompts are four
 # minutes apart, chain into one span, and an hour of half-attention publishes as
 # an hour of work. Unfocused mode declines to assume and makes the session earn
-# it: a bout opens with a 30-second cutoff and widens toward UNFOCUSED_GAP_MAX (two
-# minutes, never the full GAP_AFTER) as it runs, reaching it after UNFOCUSED_RAMP_MIN of continuous work.
+# it: a bout opens with a 30-second cutoff and widens toward UNFOCUSED_GAP_MAX (90
+# seconds, never the full GAP_AFTER) as it runs, reaching it after UNFOCUSED_RAMP_MIN of continuous work.
 #
 # The ramp is driven by the bout's own elapsed length, not by a count of
 # prompts. Ten prompts inside a minute is one thought typed quickly, not ten
@@ -221,7 +221,7 @@ SHORT_FOCUS_FILE = os.path.join(STATE, "short-focus.json")
 SHORT_FOCUS_RECENT_FILE = os.path.join(STATE, "short-focus-recent.json")
 RECENT_MAX = 5
 UNFOCUSED_GAP_START = 0.5
-UNFOCUSED_GAP_MAX = 2
+UNFOCUSED_GAP_MAX = 1.5
 UNFOCUSED_RAMP_MIN = 10
 # The ramp is a bank that distraction draws down. Each earlier unfocused bout
 # that ended short of the ramp adds a strike (the padding and short cutoffs it
@@ -230,6 +230,11 @@ UNFOCUSED_RAMP_MIN = 10
 # strikes -- a run of short bouts widens its cutoff more slowly, never stops it.
 UNFOCUSED_DEBT_STEP = 0.25
 UNFOCUSED_DEBT_MAX = 4
+# What the ramp runs on is focus credit, not the bout's length. Each prompt
+# that follows the last by no more than UNFOCUSED_GAP_START adds that interval;
+# each one that follows it later costs the excess over UNFOCUSED_GAP_START
+# (floored at zero). A long bout of frequent interaction builds credit toward
+# the widest cutoff, and a long bout of sparse prompts bleeds it back down.
 
 # Where a bout ends once the silence after it has outlasted the cutoff. "last"
 # stops at the last tracked event plus TAIL_SEC -- work for five minutes, step
@@ -447,27 +452,34 @@ def gap_sec_for(mode: str, elapsed_sec: float, scale: float = 1.0) -> int:
 
 
 def chain_bouts(stamps: list[int],
-                timeline: list[tuple[int, str]]) -> tuple[list[list[int]], list[int]]:
+                timeline: list[tuple[int, str]]
+                ) -> tuple[list[list[int]], list[int], list[int]]:
     """Group sorted second-of-day stamps into bouts under the mode in force.
 
-    Returns (bouts, split_at): each bout as [first, last], and alongside it the
-    threshold in seconds that separated it from the bout before. Those
-    thresholds are kept rather than recomputed because the padding below has to
-    respect the very silence that split the pair -- in unfocused mode that is a
-    different number at every boundary.
+    Returns (bouts, split_at, credits): each bout as [first, last]; alongside
+    it the threshold in seconds that separated it from the bout before; and the
+    focus credit (seconds) each bout ended with. The thresholds are kept rather
+    than recomputed because the padding below has to respect the very silence
+    that split the pair -- in unfocused mode that is a different number at
+    every boundary. The credit is the ramp's input (see UNFOCUSED_GAP_START).
     """
     bouts: list[list[int]] = []
     split_at: list[int] = []
+    credits: list[int] = []
     for s in stamps:
         thr = gap_sec_for(mode_at(timeline, s),
-                          bouts[-1][1] - bouts[-1][0] if bouts else 0,
+                          credits[-1] if bouts else 0,
                           debt_scale(bouts[:-1], timeline))
         if bouts and s - bouts[-1][1] <= thr:
+            dt = s - bouts[-1][1]
+            start = int(UNFOCUSED_GAP_START * 60)
+            credits[-1] = max(0, credits[-1] + (dt if dt <= start else -(dt - start)))
             bouts[-1][1] = s
         else:
             bouts.append([s, s])
             split_at.append(thr)
-    return bouts, split_at
+            credits.append(0)
+    return bouts, split_at, credits
 
 
 def build_bouts(stamps: list[int],
@@ -505,7 +517,7 @@ def build_bouts(stamps: list[int],
     second short of the next bout. `now_s` keeps the last bout, whose cutoff
     may not have lapsed yet, from being credited with time not yet happened.
     """
-    present, split_at = chain_bouts(stamps, timeline)
+    present, split_at, credits = chain_bouts(stamps, timeline)
     raw = [list(p) for p in present]
     lead_used = [0] * len(raw)
     budgets = [0] * len(raw)
@@ -513,7 +525,7 @@ def build_bouts(stamps: list[int],
     def tail_want(i: int) -> int:
         cutoff = (split_at[i + 1] if i + 1 < len(raw)
                   else gap_sec_for(mode_at(timeline, raw[i][1]),
-                                   raw[i][1] - raw[i][0],
+                                   credits[i],
                                    debt_scale(raw[:i], timeline)))
         want = TAIL_SEC + int(tail_frac * max(0, cutoff - TAIL_SEC))
         if i + 1 == len(raw) and now_s is not None:
@@ -530,7 +542,7 @@ def build_bouts(stamps: list[int],
         # prompt would still bank its padding, so the mode would hardly move the
         # day's total however short its cutoff got.
         if mode_at(timeline, raw[i][0]) == "unfocused":
-            want = int(want * min(1.0, (raw[i][1] - raw[i][0])
+            want = int(want * min(1.0, credits[i]
                                   / (UNFOCUSED_RAMP_MIN * 60
                                      * debt_scale(raw[:i], timeline))))
         if i == 0:
@@ -763,8 +775,8 @@ def live_cutoff(day: str, stamps_sec: list[int]) -> int:
     ends = read_session_ends(day)
     cutoff_start = max(ends) * 60 if ends else 0
     relevant = [s for s in stamps_sec if s > cutoff_start]
-    bouts, _ = chain_bouts(sorted(relevant), mode_timeline(day))
-    return gap_sec_for(mode_now(), bouts[-1][1] - bouts[-1][0] if bouts else 0,
+    bouts, _, credits = chain_bouts(sorted(relevant), mode_timeline(day))
+    return gap_sec_for(mode_now(), credits[-1] if bouts else 0,
                        debt_scale(bouts[:-1], mode_timeline(day)))
 
 

@@ -159,7 +159,23 @@ class FocusModes(unittest.TestCase):
         for elapsed in (wp.UNFOCUSED_RAMP_MIN * 60, 36000):
             self.assertEqual(wp.gap_sec_for("unfocused", elapsed),
                              wp.UNFOCUSED_GAP_MAX * 60)
-        self.assertEqual(wp.UNFOCUSED_GAP_MAX, 2)
+        self.assertEqual(wp.UNFOCUSED_GAP_MAX, 1.5)
+
+    def test_credit_builds_with_frequent_prompts(self):
+        stamps = list(range(0, 601, 30))
+        _, _, credits = wp.chain_bouts(stamps, [(0, "unfocused")])
+        self.assertEqual(credits, [600])
+        self.assertEqual(wp.gap_sec_for("unfocused", credits[0]),
+                         wp.UNFOCUSED_GAP_MAX * 60)
+
+    def test_credit_drains_when_prompts_are_sparse(self):
+        # 5 minutes of 30s prompts earns a 60s cutoff; prompts 60s apart then
+        # cost 30s of credit each, so the cutoff shrinks until the bout splits
+        # even though it keeps getting longer.
+        stamps = list(range(0, 301, 30)) + [300 + 60 * i for i in range(1, 12)]
+        bouts, _, credits = wp.chain_bouts(stamps, [(0, "unfocused")])
+        self.assertGreater(len(bouts), 1)
+        self.assertLess(credits[0], 300)
 
     def test_unfocused_never_exceeds_focused(self):
         for elapsed in range(0, 3600, 30):

@@ -343,8 +343,10 @@ A prompt run chains prompts closer together than `GAP_AFTER` (5 minutes in
 focused mode) into one work period. The period starts 20 seconds before its
 first prompt and ends 20 seconds after its last one, floored at one minute
 total. In unfocused mode the gap
-threshold ramps from 30 seconds up to 5 over the first 10 minutes of the bout,
-so a sparse stream of prompts between meetings doesn't inflate the day.
+threshold ramps from 30 seconds up to 90 seconds as the bout builds focus credit:
+ten minutes of prompts no more than 30 seconds apart reaches the top, and prompts
+spaced further apart than that drain the credit and pull the threshold back down.
+So a sparse stream of prompts between meetings doesn't inflate the day.
 
 **Idle time is measured but currently NOT taken back out** (`IDLE_SUBTRACTS =
 False` in `bin/worktime-probe.py`). The rule was: any stretch the machine went
