@@ -8,6 +8,38 @@ The problem it solves: a meeting produces no prompts, and reviewing a pull
 request for twenty minutes produces neither prompts nor a call. To a
 prompt-only probe both look identical to lunch.
 
+## Philosophy
+
+**Precise, but effortless.** The count should be right to the minute and cost
+you nothing to produce. Nearly everything is observed rather than entered: the
+prompts you send, the app in front while your hand is on the machine, the page
+you reviewed, the microphone being open. You never start a timer.
+
+**Go the extra mile on what can't be observed.** Some work leaves no trace: a
+call that began as a DM, a corridor conversation, a phone call that just ended,
+a stretch of reading. Each of those has a one-step fix that is easy *in the
+moment*, because nobody corrects a day at 6pm from memory:
+
+- a call prompts **Are you in a meeting?** and backdates the start by the
+  minute it took to ask
+- a meeting ending shows a 10-second **Keep tracking** panel instead of
+  silently stopping
+- **Link with Last Session** claims a gap you were actually working through
+- **⌥W** logs time you already know the length of, placed in minutes that
+  were really free
+- **⌥⌘E** ends the day at the minute you mean
+- **I am here** answers a false "away"
+
+**Never guess in the generous direction.** When the tracker can't tell, it
+asks you or counts less. Allow lists over exclude lists, a human declaration
+over silence, and a missed minute you can add back over an invented one you'd
+never notice.
+
+**Make it customizable.** Every default here is a claim about one person's day,
+not about work in general. Clone it, run the `worktime-setup` skill, and change
+what counts as work, what counts as a break, and which apps count. Start with
+`worktime-fit-survey` to see what will work on your machine at all.
+
 ## Layout
 
 ```
